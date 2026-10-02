@@ -1,0 +1,65 @@
+{
+  "version": "revroute-v8-fixed-2026-09-11",
+  "status": "fixed design constants; not selected on outer-test outcomes",
+  "routing": {
+    "training_days": 189,
+    "min_curve_episodes": 3,
+    "spline_method": "pchip",
+    "spline_method_note": "Curve-template spline. 'pchip' is the frozen v7 routing geometry (run_nhsn28_v7_final.py used build_curve_routing's own default). autodelphirf/engine.py previously hardcoded 'penalized_bspline', which flattened the curve/stage routing coordinates (point_ess 696 -> 11822) and collapsed RED's mean-AE gain over Null from 16.7% to 0.94% on nhsn28. spline_basis/spline_penalty apply only to 'penalized_bspline'.",
+    "gamma": 1.0,
+    "spline_basis": 6,
+    "spline_penalty": 0.001,
+    "initial_lag_source": "minimum lag in immutable full prepared-stream metadata"
+  },
+  "residual": {
+    "min_history": 100,
+    "trees": 300,
+    "min_samples_leaf": 5
+  },
+  "rr_delphirf": {
+    "cluster_max_rows": 3000,
+    "fit_max_rows": 4000,
+    "min_cluster_rows": 50,
+    "k_max_per_location": 18,
+    "min_process_releases": 3,
+    "qr_alpha": 0.001,
+    "include_location_effect": false,
+    "seed": 20260913,
+    "train_genuine_events_only": true,
+    "support_stop_after": 3,
+    "note": "Current RevRoute Delphi-RF clusters mature-history location-lag tasks, selects the finest Tukey structural-gap cut, and predicts by frozen task lookup. No silhouette, minimum-cluster-row rule, soft weighting, or prediction-time trajectory routing is used. fit_max_rows is only a numerical fitting cap; it does not determine the task partition."
+  },
+  "graph_fused_delphirf": {
+    "lambda_s": 0.001,
+    "lambda_f": 0.1,
+    "graph": "complete affinity-weighted graph within each prespecified lag group",
+    "tuning": "prespecified or training-only chronological validation; never random folds or outer-test outcomes"
+  },
+  "calibration_reliability": {
+    "minimum_history": 10,
+    "adjacent_lag_radius": 1,
+    "eta": 0.9,
+    "caution_cut": 0.7,
+    "high_risk_cut": 0.9,
+    "reference_policy": "completed pre-evaluation inner rolling origins only"
+  },
+  "process_monitor": {
+    "recent_days": 28,
+    "history_days": 84,
+    "minimum_recent_report_dates": 4,
+    "minimum_history_report_dates": 8,
+    "watch_threshold": 3.0,
+    "rediagnose_threshold": 5.0,
+    "epsilon_scale": 1e-08
+  },
+  "evaluation": {
+    "early_lag_max": 14,
+    "bootstrap_repetitions": 500,
+    "scale": "raw reporting scale"
+  },
+  "required_validation": [
+    "report all settings with each run",
+    "report sensitivity analyses for routing bandwidth, history windows, and support thresholds",
+    "do not describe these constants as data-selected unless a completed inner-origin selection artifact is supplied"
+  ]
+}

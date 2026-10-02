@@ -1,0 +1,19 @@
+{
+  "description": "Canonical prepared-triangle column names. Dataset JSON files inherit this mapping and may override only a source column name when an input has a different name.",
+  "columns": {
+    "geo_value": "geo_value",
+    "reference_date": "reference_date",
+    "report_date": "report_date",
+    "target_date": "target_date",
+    "lag": "lag",
+    "target_lag": "target_lag",
+    "as_of_value": "log_value_7dav",
+    "genuine_event": "genuine_event"
+  },
+  "schedule_columns": {
+    "origin_date": "test_date",
+    "experiment_end_date": "experiment_end_date",
+    "training_days": "training_days",
+    "target_column": "target_column"
+  }
+}

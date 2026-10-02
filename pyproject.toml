@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autodelphirf"
+version = "0.1.0"
+description = "An end-to-end pipeline for diagnosing, forecasting, and evaluating revised data"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "Jingjing Tang", email = "jtang2@andrew.cmu.edu" }]
+keywords = ["epidemiology", "surveillance", "data revision", "nowcasting", "forecast evaluation"]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+
+# Lower bounds are the versions whose behaviour the package relies on, not the
+# newest available: pandas 2.0 for the copy-on-write-compatible frame handling
+# and `Series.dt` semantics used throughout, numpy 1.23 for the typed
+# quantile/nan functions, scipy 1.9 for `linprog`'s HiGHS default, and
+# scikit-learn 1.1 for `QuantileRegressor` plus the current
+# `OneHotEncoder(handle_unknown=...)` contract.
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.23",
+    "scipy>=1.9",
+    "scikit-learn>=1.1",
+    "matplotlib>=3.6",
+]
+
+[project.optional-dependencies]
+# Prepared triangles are written as Parquet by default; pyarrow is what reads
+# them back. It is optional only because `--triangle-format csv` exists for
+# hosts where an Arrow build is unavailable.
+parquet = ["pyarrow>=12"]
+test = ["pytest>=7.0"]
+dev = ["pytest>=7.0", "pyarrow>=12", "build>=1.0"]
+
+[project.urls]
+Homepage = "https://github.com/cmu-delphi/AutoDelphiRF"
+"Bug Tracker" = "https://github.com/cmu-delphi/AutoDelphiRF/issues"
+"DelphiRF (required for preprocessing)" = "https://github.com/cmu-delphi/DelphiRF"
+
+[project.scripts]
+autodelphirf = "autodelphirf.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# The frozen design constants, the prepared-triangle schema, the dataset
+# template, and the R bridge into DelphiRF all ship inside the wheel; nothing
+# in the package reads a file from outside its own installation.
+autodelphirf = ["resources/*.json", "resources/*.R", "resources/web/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: end-to-end runs that need R and DelphiRF (deselect with -m 'not slow')",
+]
+filterwarnings = [
+    # A prepared triangle legitimately carries all-NaN feature columns for a
+    # location's earliest lags, and sklearn's imputer says so on every fit.
+    "ignore:Skipping features without any observed values:UserWarning",
+]

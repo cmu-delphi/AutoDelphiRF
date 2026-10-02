@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+.venv/
+venv/
+
+# Test / tooling caches
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# AutoDelphiRF working output. `autodelphirf run` writes prepared triangles, replayed
+# predictions, and reports here; all of it is regenerated from the raw archive
+# plus the dataset config, so none of it belongs in the repository.
+autodelphirf_work/
+output/
+results/
+
+# OS
+.DS_Store

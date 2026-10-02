@@ -1,0 +1,35 @@
+{
+  "_comment": "Starter template for a new dataset. Copy this file to <your_dataset_name>.json, fill in the fields below, and run: python3 code/run_autodelphirf.py --config config/datasets/<your_dataset_name>.json --diagnosis-only  first, to check the input schema before running the full replay. Remove every _comment key (they are not recognized fields; only present here as guidance) before using the file.",
+  "name": "your_dataset_name",
+  "prepared_dir": "../../data/raw_preprocessed/your_dataset_name",
+  "output_dir": "../../output/system/your_dataset_name",
+  "schedule_file": "test_dates.csv",
+  "value_transform": "log1p",
+  "include_genuine_events_only": true,
+  "_input_columns_comment": "input_columns is only needed if your prepared triangle's column names differ from the canonical names in config/prepared_triangle_schema.json. Map canonical name -> your source column name below; omit any pair that already matches (the defaults from prepared_triangle_schema.json apply automatically).",
+  "input_columns": {
+    "geo_value": "geo_value",
+    "reference_date": "reference_date",
+    "report_date": "report_date",
+    "target_date": "target_date",
+    "lag": "lag",
+    "target_lag": "target_lag",
+    "as_of_value": "log_value_7dav",
+    "genuine_event": "genuine_event"
+  },
+  "model_methods": [
+    "baseline_null",
+    "delphirf"
+  ],
+  "prediction_layers": [
+    "baseline_null",
+    "delphirf"
+  ],
+  "method_params": {},
+  "_comparator_comment": "Leave comparator_file null unless you have an externally computed method to import -- see config/comparator_file_schema.json and config/comparator_file_template.csv for the contract.",
+  "comparator_file": null,
+  "comparator_method_column": "method",
+  "comparator_prediction_column": "prediction",
+  "comparator_methods": {},
+  "reliability_reference_file": null
+}

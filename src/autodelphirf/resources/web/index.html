@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AutoDelphiRF</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body data-token="__AUTODELPHIRF_TOKEN__">
+
+<header class="masthead">
+  <div class="wrap">
+    <h1>AutoDelphiRF</h1>
+    <p class="lede">Drop a revision archive below. AutoDelphiRF will diagnose it, ask you about
+      anything it cannot decide on its own, then run the experiment and write a report.</p>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <!-- 1. Environment -------------------------------------------------- -->
+  <section class="card" id="card-environment" aria-labelledby="h-environment">
+    <h2 id="h-environment"><span class="step">1</span> Environment</h2>
+    <div id="environment-body" class="status-row">
+      <span class="spinner" aria-hidden="true"></span> Checking for R and DelphiRF&hellip;
+    </div>
+  </section>
+
+  <!-- 2. Archive ------------------------------------------------------ -->
+  <section class="card" id="card-upload" aria-labelledby="h-upload">
+    <h2 id="h-upload"><span class="step">2</span> Your archive</h2>
+    <p class="hint">One row per <strong>(location, reference date, report date, value)</strong>.
+      CSV, gzipped CSV, or Parquet. Nothing leaves this machine.</p>
+
+    <div id="dropzone" class="dropzone" tabindex="0" role="button"
+         aria-describedby="dropzone-hint">
+      <svg class="drop-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" stroke="currentColor"
+              stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      <p class="drop-title">Drop your archive here</p>
+      <p id="dropzone-hint" class="drop-sub">or click to choose a file</p>
+      <input type="file" id="file-input" accept=".csv,.gz,.parquet" hidden>
+    </div>
+
+    <div id="upload-progress" class="progress" hidden>
+      <div class="progress-bar"><div class="progress-fill" id="upload-fill"></div></div>
+      <p class="hint" id="upload-progress-text">Reading&hellip;</p>
+    </div>
+    <div id="upload-result" hidden></div>
+  </section>
+
+  <!-- 3. Columns ------------------------------------------------------ -->
+  <section class="card" id="card-columns" hidden aria-labelledby="h-columns">
+    <h2 id="h-columns"><span class="step">3</span> What is in each column?</h2>
+    <p class="hint">AutoDelphiRF guessed from the column names. Correct anything it got wrong.</p>
+    <div id="column-form" class="field-grid"></div>
+
+    <fieldset class="inline-choice">
+      <legend>What does the value measure?</legend>
+      <label><input type="radio" name="value-type" value="count" checked>
+        <span><strong>A count or fraction</strong> &mdash; one value column</span></label>
+      <label><input type="radio" name="value-type" value="fraction">
+        <span><strong>A fraction</strong> &mdash; a numerator and a denominator</span></label>
+    </fieldset>
+
+    <div id="denominator-field" hidden></div>
+
+    <div class="actions">
+      <button id="diagnose-button" class="primary">Diagnose this archive</button>
+      <span id="diagnose-status" class="status-inline"></span>
+    </div>
+  </section>
+
+  <!-- 4. Diagnosis + the target-lag question -------------------------- -->
+  <section class="card" id="card-diagnosis" hidden aria-labelledby="h-diagnosis">
+    <h2 id="h-diagnosis"><span class="step">4</span> What AutoDelphiRF found</h2>
+    <dl id="diagnosis-facts" class="facts"></dl>
+    <div id="diagnosis-notes"></div>
+
+    <div class="question" id="lag-question">
+      <h3 id="lag-question-title">How long until a value is final?</h3>
+      <p class="question-body" id="lag-question-body"></p>
+
+      <figure class="viz-root" id="completion-figure">
+        <figcaption>
+          <span class="fig-title">Median relative error against the latest observed value</span>
+          <span class="fig-sub">Each point is a candidate horizon and reports the median for
+            context. The recommendation uses a separate rule: at least 90% of location and
+            reference-date combinations must be within 10% relative error.</span>
+        </figcaption>
+        <div id="completion-chart" class="chart"></div>
+        <details class="table-view">
+          <summary>Show these numbers as a table</summary>
+          <div id="completion-table"></div>
+        </details>
+      </figure>
+
+      <div class="answers" id="lag-answers"></div>
+      <div class="custom-lag" id="custom-lag" hidden>
+        <label for="custom-lag-input">Use this horizon instead, in days</label>
+        <div class="custom-lag-row">
+          <input type="number" id="custom-lag-input" min="1" max="3650" step="1">
+          <button id="custom-lag-apply" class="secondary">Re-diagnose with this value</button>
+        </div>
+        <p class="hint" id="custom-lag-note"></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5. Retraining schedule ------------------------------------------ -->
+  <section class="card" id="card-schedule" hidden aria-labelledby="h-schedule">
+    <h2 id="h-schedule"><span class="step">5</span> How often should it retrain?</h2>
+    <p class="hint">AutoDelphiRF is evaluated retrospectively: at each date below it refits on
+      the history visible at that date, predicts forward, and moves on. That is the
+      <em>retraining interval</em>, not just an evaluation stride &mdash; so it sets both how
+      current each model is and how long the run takes.</p>
+
+    <div class="field-grid">
+      <label>Retrain every (days)
+        <input type="number" id="retrain-days" min="1" max="3650" step="1">
+        <span class="hint" id="retrain-days-hint"></span>
+      </label>
+      <label>First retraining origin
+        <input type="date" id="first-origin-date">
+        <span class="hint" id="first-origin-hint"></span>
+      </label>
+    </div>
+
+    <div id="schedule-preview" aria-live="polite"></div>
+
+    <div class="actions">
+      <button id="schedule-reset" class="secondary">Back to the defaults</button>
+      <button id="schedule-continue" class="primary">Use this schedule</button>
+    </div>
+  </section>
+
+  <!-- 6. Methods ------------------------------------------------------ -->
+  <section class="card" id="card-methods" hidden aria-labelledby="h-methods">
+    <h2 id="h-methods"><span class="step">6</span> Which methods should run?</h2>
+    <p class="hint">The defaults are the smallest run that answers &ldquo;is routing worth
+      anything on my data&rdquo;. The rest fit forests and take substantially longer.</p>
+    <div id="layer-list" class="layer-list"></div>
+
+    <details class="advanced">
+      <summary>Advanced settings</summary>
+      <div class="field-grid">
+        <label>Training window (days)
+          <input type="number" id="training-days" min="30" step="1"
+                 placeholder="diagnosed">
+        </label>
+        <label>Skip locations with fewer rows than
+          <input type="number" id="min-location-rows" min="1" step="1" value="100">
+        </label>
+        <label>Triangle format
+          <select id="triangle-format">
+            <option value="parquet">Parquet</option>
+            <option value="csv">CSV (no Arrow needed)</option>
+          </select>
+        </label>
+      </div>
+    </details>
+
+    <div class="actions">
+      <button id="run-button" class="primary large">Run the experiment</button>
+      <span id="run-status" class="status-inline"></span>
+    </div>
+  </section>
+
+  <!-- 7. Run ---------------------------------------------------------- -->
+  <section class="card" id="card-run" hidden aria-labelledby="h-run">
+    <h2 id="h-run"><span class="step">7</span> Retraining</h2>
+    <div class="run-header">
+      <span id="run-state" class="badge">starting</span>
+      <span id="run-elapsed" class="hint"></span>
+      <button id="stop-run" class="secondary" hidden>Stop</button>
+      <button id="resume-run" class="secondary" hidden>Resume</button>
+    </div>
+    <div id="run-progress" hidden>
+      <div class="progress-bar"><div class="progress-fill" id="run-fill"></div></div>
+      <p class="hint" id="run-progress-text"></p>
+    </div>
+    <pre id="run-log" class="log" aria-live="polite" aria-label="Run log"></pre>
+    <div id="run-result" hidden></div>
+  </section>
+
+  <!-- 8. Results -------------------------------------------------------- -->
+  <section class="card" id="card-results" hidden aria-labelledby="h-results">
+    <h2 id="h-results"><span class="step">8</span> What came out</h2>
+    <div id="results-headline"></div>
+
+    <figure class="viz-root" id="origin-figure" hidden>
+      <figcaption>
+        <span class="fig-title">Mean absolute error at each retraining origin</span>
+        <span class="fig-sub" id="origin-fig-sub"></span>
+      </figcaption>
+      <div id="origin-chart" class="chart"></div>
+      <div id="origin-shortfall"></div>
+      <details class="table-view">
+        <summary>Show these numbers as a table</summary>
+        <div id="origin-table"></div>
+      </details>
+    </figure>
+
+    <div id="results-pooling"></div>
+    <div id="results-links"></div>
+  </section>
+
+</main>
+
+<footer class="wrap footer">
+  <p>Preprocessing is performed by
+    <a href="https://github.com/cmu-delphi/DelphiRF">DelphiRF</a>.
+    This page talks only to the local <code>autodelphirf web</code> process.</p>
+</footer>
+
+<div id="js-failure" class="js-failure" role="alert" hidden></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

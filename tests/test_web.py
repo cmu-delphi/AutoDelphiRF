@@ -152,7 +152,7 @@ def test_diagnosis_returns_the_curve_the_page_plots(session, archive_bytes):
     assert all(float(lag) >= 0 and 0 <= float(error) for lag, error in curve.items())
 
 
-def test_a_user_horizon_produces_the_confirmation_prompt_the_page_shows(session, archive_bytes):
+def test_a_user_target_lag_produces_the_confirmation_prompt_the_page_shows(session, archive_bytes):
     session.store_archive("a.csv", archive_bytes)
     report = session.diagnose({"reference_col": "reference_date", "report_col": "report_date",
                                "geo_col": "geo_value", "value_cols": ["value"],
@@ -163,16 +163,16 @@ def test_a_user_horizon_produces_the_confirmation_prompt_the_page_shows(session,
 
 @pytest.mark.parametrize("value,expected", [(None, None), ("", None), (14, 14), ("14", 14),
                                             (14.0, 14)])
-def test_a_horizon_field_reads_the_values_the_page_can_send(value, expected):
+def test_a_target_lag_field_reads_the_values_the_page_can_send(value, expected):
     assert optional_int(value, "target_lag") == expected
 
 
 @pytest.mark.parametrize("value", [{}, {"a": 1}, [], [7], True, "abc"])
-def test_a_horizon_field_that_is_not_a_number_names_itself(value):
+def test_a_target_lag_field_that_is_not_a_number_names_itself(value):
     """A 400 naming the field, not a TypeError from inside the pipeline.
 
     The page once passed its click handler's Event straight through as the
-    horizon; an Event serialises to ``{}``, and ``int({})`` surfaced as an
+    target lag; an Event serialises to ``{}``, and ``int({})`` surfaced as an
     opaque 500. Whatever the page sends, a bad value has to say which field
     it was.
     """
@@ -180,7 +180,7 @@ def test_a_horizon_field_that_is_not_a_number_names_itself(value):
         optional_int(value, "target_lag")
 
 
-def test_a_non_numeric_horizon_is_refused_before_the_archive_is_read(session, archive_bytes):
+def test_a_non_numeric_target_lag_is_refused_before_the_archive_is_read(session, archive_bytes):
     session.store_archive("a.csv", archive_bytes)
     with pytest.raises(PreparationError, match="target_lag must be a whole number"):
         session.diagnose({"reference_col": "reference_date", "report_col": "report_date",

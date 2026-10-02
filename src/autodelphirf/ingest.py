@@ -9,7 +9,7 @@ EPS = 1e-8
 DEFAULT_CANDIDATE_LAGS = (0, 7, 14, 21, 28, 35, 42, 56, 70, 84, 98, 120, 150, 180, 240, 300, 365)
 DEFAULT_COMPLETION_THRESHOLD = 0.10
 DEFAULT_COMPLETION_RATE = 0.90
-DEFAULT_MATURITY_FLOOR_DAYS = 60
+DEFAULT_LATE_OBSERVATION_FLOOR_DAYS = 60
 # Fixed design constant, not suggested from data (see module docstring).
 DEFAULT_TRAINING_WINDOW_DAYS = 180
 
@@ -55,13 +55,13 @@ def resolve_target_lag(suggested_lag: int, user_target_lag: int | None = None) -
 
       * No user-specified lag: use the suggestion outright. No confirmation
         needed.
-      * User-specified lag larger than the suggestion: a longer lag can only
-        make the mature target more stable, so the default is to keep the
+      * User-specified lag larger than the suggestion: a longer lag uses a
+        later target value and can make it more stable, so the default is to keep the
         user's larger value. The user is told what the suggestion was and
         asked whether they want to stick with their larger value; if they
         do not respond, the default keeps their larger value.
       * User-specified lag smaller than the suggestion: overriding downward
-        risks an immature target, so the default is to use the suggested
+        may use a target value before revisions are sufficiently stable, so the default is to use the suggested
         (larger) value instead. The user is told what the suggestion was and
         asked whether they want to stick with their smaller value; if they
         do not respond, the default uses the suggested value, not their
@@ -84,15 +84,15 @@ def resolve_target_lag(suggested_lag: int, user_target_lag: int | None = None) -
                 "target_lag_confirmation_prompt": None}
     if user_target_lag > suggested_lag:
         prompt = (f"The automatic diagnosis suggests a target lag of {suggested_lag} days; "
-                  f"you specified {user_target_lag} days, which is larger. A longer lag can only "
-                  f"make the mature target more stable, so the default is to keep your specified "
+                  f"you specified {user_target_lag} days, which is larger. A longer lag uses a "
+                  f"later target value and can make it more stable, so the default is to keep your specified "
                   f"{user_target_lag}-day lag. Reply if you would rather use the suggested "
                   f"{suggested_lag}-day lag instead.")
         return {"resolved_target_lag": user_target_lag, "target_lag_resolution": "user_larger_kept_by_default",
                 "target_lag_confirmation_prompt": prompt}
     prompt = (f"The automatic diagnosis suggests a target lag of {suggested_lag} days; you specified "
-              f"{user_target_lag} days, which is smaller. Overriding the suggestion downward risks an "
-              f"immature target, so the default is to use the suggested {suggested_lag}-day lag "
+              f"{user_target_lag} days, which is smaller. The smaller lag may use a target value "
+              f"before revisions are sufficiently stable, so the default is to use the suggested {suggested_lag}-day lag "
               f"instead of your {user_target_lag}-day value. Reply if you would rather stick with "
               f"your smaller {user_target_lag}-day lag.")
     return {"resolved_target_lag": suggested_lag, "target_lag_resolution": "suggested_kept_over_smaller_user_value",
@@ -138,15 +138,15 @@ def _revision_magnitude_gaps(archive: pd.DataFrame) -> dict:
             "q75": quantiles[0.75], "most_common_gap_days": {int(k): int(v) for k, v in common.items()}}
 
 
-def _target_lag_suggestion(archive: pd.DataFrame, candidate_lags, maturity_floor_days: int,
+def _target_lag_suggestion(archive: pd.DataFrame, candidate_lags, late_observation_floor_days: int,
                            completion_threshold: float,
                            completion_rate: float) -> tuple[int, dict, dict]:
-    """Smallest candidate lag where the requested share of mature episodes
+    """Smallest candidate lag where the requested share of eligible episodes
     has relative completion error within ``completion_threshold``.
     """
     cutoff = archive.report_date.max()
-    mature_pairs = archive[["geo_value", "reference_date"]].drop_duplicates()
-    mature_pairs = mature_pairs[(cutoff - mature_pairs.reference_date).dt.days >= maturity_floor_days]
+    eligible_pairs = archive[["geo_value", "reference_date"]].drop_duplicates()
+    eligible_pairs = eligible_pairs[(cutoff - eligible_pairs.reference_date).dt.days >= late_observation_floor_days]
     keys = ["geo_value", "reference_date"]
     # ``archive`` is already sorted by (geo_value, reference_date, lag).
     last_value = archive.groupby(keys, observed=True).last()[["value"]].rename(columns={"value": "y_last"})
@@ -155,7 +155,7 @@ def _target_lag_suggestion(archive: pd.DataFrame, candidate_lags, maturity_floor
     chosen = None
     for lag in candidate_lags:
         at_lag = archive[archive.lag <= lag].groupby(keys, observed=True).last()[["value"]]
-        merged = mature_pairs.merge(at_lag, on=keys, how="inner").merge(last_value, on=keys, how="inner")
+        merged = eligible_pairs.merge(at_lag, on=keys, how="inner").merge(last_value, on=keys, how="inner")
         if merged.empty:
             continue
         current = merged.value.to_numpy(dtype="float64")
@@ -186,7 +186,7 @@ def _reference_axis_feature_lags(archive: pd.DataFrame) -> tuple[float, list]:
     """Reference-axis cadence and the recommended revision-feature lags.
 
     Reference-axis lagged terms compare neighboring reference dates at a
-    fixed maturity and must respect the reference-date cadence. The cadence
+    fixed target lag and must respect the reference-date cadence. The cadence
     Delta_ref is the
     typical spacing, in days, between consecutive reference dates for a
     location; the recommended revision-feature lags are its first two
@@ -213,7 +213,7 @@ def diagnose_raw_archive(raw: pd.DataFrame, *, geo_value: str = "geo_value",
                          value: str = "value", candidate_lags=DEFAULT_CANDIDATE_LAGS,
                          completion_threshold: float = DEFAULT_COMPLETION_THRESHOLD,
                          completion_rate: float = DEFAULT_COMPLETION_RATE,
-                         maturity_floor_days: int = DEFAULT_MATURITY_FLOOR_DAYS,
+                         late_observation_floor_days: int = DEFAULT_LATE_OBSERVATION_FLOOR_DAYS,
                          training_window_days: int | None = None,
                          user_target_lag: int | None = None) -> DiagnosisReport:
     """Diagnose a raw revision archive and recommend RevRoute's preprocessing
@@ -268,7 +268,7 @@ def diagnose_raw_archive(raw: pd.DataFrame, *, geo_value: str = "geo_value",
     cadence, feature_lags = _reference_axis_feature_lags(archive)
 
     target_lag, completion_curve, completion_band = _target_lag_suggestion(
-        archive, candidate_lags, maturity_floor_days, completion_threshold,
+        archive, candidate_lags, late_observation_floor_days, completion_threshold,
         completion_rate)
     lag_resolution = resolve_target_lag(target_lag, user_target_lag)
     window = DEFAULT_TRAINING_WINDOW_DAYS if training_window_days is None else int(training_window_days)

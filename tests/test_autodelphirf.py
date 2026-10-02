@@ -30,11 +30,11 @@ def test_diagnosis_uses_scheduled_target_column():
 
 def test_input_schema_renames_noncanonical_source_columns():
     source = pd.DataFrame({"event": ["2020-01-01"], "issue": ["2020-01-02"],
-                           "mature": ["2020-01-03"], "place": ["a"], "age": [1],
-                           "horizon": [2], "asof": [1.2]})
+                           "target_ready": ["2020-01-03"], "place": ["a"], "age": [1],
+                           "target_lag_source": [2], "asof": [1.2]})
     mapped = apply_input_schema(source, {"geo_value": "place", "reference_date": "event",
-        "report_date": "issue", "target_date": "mature", "lag": "age",
-        "target_lag": "horizon", "as_of_value": "asof"})
+        "report_date": "issue", "target_date": "target_ready", "lag": "age",
+        "target_lag": "target_lag_source", "as_of_value": "asof"})
     assert {"geo_value", "reference_date", "report_date", "target_date", "lag",
             "target_lag", "log_value_7dav"}.issubset(mapped.columns)
 

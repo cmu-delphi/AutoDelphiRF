@@ -21,7 +21,7 @@ which diagnoses the archive, preprocesses it through DelphiRF, runs rolling
 training and testing, and writes ``work/results/report/report.html``.
 
 ``autodelphirf web`` is the same workflow with the questions asked on a page
-rather than through flags -- above all the maturity horizon, where the
+rather than through flags -- above all the target lag, where the
 diagnosis makes a recommendation the user is meant to accept or override.
 """
 from __future__ import annotations
@@ -92,11 +92,11 @@ def preparation_options(include_archive: bool = True) -> argparse.ArgumentParser
         "Each of these is diagnosed from the archive when omitted. Anything set here is "
         "recorded as a user override in preparation.json.")
     diagnosed.add_argument("--target-lag", type=int, metavar="L",
-                           help="maturity horizon in days; reconciled with the diagnosed one")
+                           help="target lag in days; reconciled with the recommended one")
     diagnosed.add_argument("--confirm-target-lag", action="store_true",
                            help="use --target-lag even when the diagnosis disagrees. Without "
-                                "this, a value shorter than the diagnosed horizon loses to the "
-                                "diagnosis, since a short horizon risks an immature target.")
+                                "this, a value shorter than the recommended target lag loses to "
+                                "the diagnosis because its target value may be less stable.")
     diagnosed.add_argument("--temporal-resolution", choices=("daily", "weekly"),
                            help="reporting cadence")
     diagnosed.add_argument("--lag-terms", metavar="N,N",
@@ -290,7 +290,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="inspect a raw archive without writing anything",
         description="Read a raw revision archive and report what AutoDelphiRF would do with it: "
                     "cadence, genuine-revision rate, feature lags, and the recommended "
-                    "maturity horizon L. Pure Python -- R and DelphiRF are not needed.")
+                    "target lag L. Pure Python -- R and DelphiRF are not needed.")
     diagnose.add_argument("--json", action="store_true", help="print the full report as JSON")
     diagnose.set_defaults(handler=command_diagnose, layers=DEFAULT_LAYERS)
 
@@ -328,7 +328,7 @@ def build_parser() -> argparse.ArgumentParser:
         "web", help="open the browser UI: drag a file in, answer the questions",
         description="Start a local web UI on this machine. Drop a raw archive onto the page, "
                     "answer the questions AutoDelphiRF cannot decide on its own (above all the "
-                    "maturity horizon), and watch the run. Nothing is uploaded anywhere: the "
+                    "target lag), and watch the run. Nothing is uploaded anywhere: the "
                     "page talks only to this process.")
     web.add_argument("--port", type=int, default=8765,
                      help="port to listen on (default: 8765; 0 picks a free one)")

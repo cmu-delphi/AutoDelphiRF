@@ -65,7 +65,7 @@ def _profile_statistics(delta, gaps, zero_count=None):
     itself is reused (it is also element 3).
     """
     if not len(delta):
-        raise ValueError("a mature task realization needs task-lag and mature releases")
+        raise ValueError("a completed task realization needs the task-lag release and target-lag release")
     med = _exact_median(delta)
     share = (float(zero_count) / delta.size if zero_count is not None
              else float(np.mean(delta == 0)))
@@ -80,7 +80,7 @@ def _profile(lags, values, report_days):
 
 
 def _increments(lags, values, start, target_lag):
-    """Spline/linear future increments on the relative horizon 1..L-lag."""
+    """Spline or linear future increments from the current lag through L."""
     from scipy.interpolate import CubicSpline
     order = np.argsort(lags)
     lags, values = np.asarray(lags, float)[order], np.asarray(values, float)[order]
@@ -94,13 +94,13 @@ def _increments(lags, values, start, target_lag):
 
 @dataclass(frozen=True)
 class EpisodeSummary:
-    """Reusable mature-episode quantities indexed by genuinely observed lag."""
+    """Reusable completed-revision quantities indexed by genuinely observed lag."""
     profiles: dict[int, np.ndarray]
     trajectories: dict[int, np.ndarray]
 
 
 def _summarize_episode(request):
-    """Fit one full-horizon spline and derive every task-lag suffix from it."""
+    """Fit one spline through the target lag and derive every task-lag suffix."""
     key, lags, values, days, target_value, target_lag = request
     from scipy.interpolate import CubicSpline
     # Built with numpy rather than a per-episode DataFrame. Each step is the
@@ -128,22 +128,22 @@ def _summarize_episode(request):
         lag_array = lag_array[last_of_run]
         value_array = value_array[last_of_run]
         day_array = day_array[last_of_run]
-    horizon = int(target_lag)
+    endpoint_lag = int(target_lag)
     observed_lags = lag_array.astype(int)
-    if len(lag_array) and horizon not in set(observed_lags.tolist()) and np.isfinite(target_value):
-        # The mature endpoint is the lag-L release carried by the target column.
+    if len(lag_array) and endpoint_lag not in set(observed_lags.tolist()) and np.isfinite(target_value):
+        # The target endpoint is the lag-L release carried by the target column.
         reference_day = int(day_array[0] - lag_array[0])
-        lag_array = np.concatenate([lag_array, [float(horizon)]])
+        lag_array = np.concatenate([lag_array, [float(endpoint_lag)]])
         value_array = np.concatenate([value_array, [float(target_value)]])
-        day_array = np.concatenate([day_array, np.array([reference_day + horizon], np.int64)])
+        day_array = np.concatenate([day_array, np.array([reference_day + endpoint_lag], np.int64)])
         order = np.argsort(lag_array, kind="stable")
         lag_array, value_array, day_array = lag_array[order], value_array[order], day_array[order]
-    if len(lag_array) < 2 or horizon not in set(lag_array.astype(int).tolist()):
+    if len(lag_array) < 2 or endpoint_lag not in set(lag_array.astype(int).tolist()):
         return key, None
     lags = lag_array
     values = value_array
     days = day_array
-    # Evaluate once on the complete prescribed horizon. Tasks still use only
+    # Evaluate once through the complete prescribed target lag. Tasks still use only
     # genuinely observed start lags; values before the first release are never
     # routed, but retaining the full 0..L grid makes every cached episode share
     # the same indexing convention.
@@ -186,7 +186,7 @@ def _summarize_episode(request):
 
 
 class EpisodeSummaryCache:
-    """Replay-scoped, leakage-safe cache of immutable mature episode summaries.
+    """Replay-scoped, leakage-safe cache of immutable completed-revision summaries.
 
     ``n_jobs=1`` is deliberately the default. Values above one use threads to
     prepare previously unseen episodes; SciPy's spline evaluation releases the
@@ -268,7 +268,7 @@ def build_task_geometry(training: pd.DataFrame, target_lag: int, *,
                         episode_cache: EpisodeSummaryCache | None = None,
                         geometry_n_jobs: int = 1,
                         distance_backend: str = "scalar"):
-    """Build all three finite task components from mature history only.
+    """Build all three finite task components from completed revision history only.
 
     ``distance_backend="prototypes"`` stops after constructing the observable
     task summaries used by RevRoute's sparse search. ``"scalar"`` remains as

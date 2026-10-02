@@ -134,14 +134,14 @@ diagnose = diagnose_prepared_data
 # ---------------------------------------------------------------------------
 # Target-lag diagnosis
 # ---------------------------------------------------------------------------
-# Defaults of the frozen selection rule. The maturity horizon L is the
+# Defaults of the frozen selection rule. The recommended target lag L is the
 # EARLIEST cadence-aligned lag at which at least ``completion_rate`` of
 # location--reference pairs sit within ``relative_error`` of that episode's
 # latest available value. Episodes with less than ``min_followup_days`` of
-# follow-up are excluded so a not-yet-mature series cannot be treated as
-# finalized. The rule is evidence about the data; it never overrides a user's
+# follow-up are excluded so a series without enough later observations cannot
+# be treated as finalized. The rule is evidence about the data; it never overrides a user's
 # declared choice (see ``resolve_target_lag``).
-# The horizon is diagnosed from the data provided: retrospectively that is the
+# The target lag is diagnosed from the data provided: retrospectively that is the
 # whole archive, and in deployment whatever was available at the first run
 # (pass ``selection_cutoff``). No location--reference-date pair is filtered out
 # by default -- a pair simply contributes at the candidate lags where it has an
@@ -161,7 +161,7 @@ def diagnose_target_lag(prepared: pd.DataFrame, *, value_column: str = "value_7d
                         max_lag: int | None = None,
                         max_first_lag: int | None = TARGET_LAG_RULE["max_first_lag"],
                         extra_lags=(), selection_cutoff=None) -> dict:
-    """Diagnose the maturity horizon L from the observed revision process.
+    """Recommend target lag L from the observed revision process.
 
     Returns the selected lag, the per-lag completion evidence behind it, and a
     status string. Selects the earliest cadence-aligned lag where at least
@@ -170,7 +170,7 @@ def diagnose_target_lag(prepared: pd.DataFrame, *, value_column: str = "value_7d
 
     The comparator is each episode's latest available value in the supplied
     archive -- not an assumed final truth -- so a triangle truncated near its
-    own configured horizon can only ever recommend a lag inside the range it
+    own configured target lag can only ever recommend a lag inside the range it
     contains. That limit is reported as ``max_lag_examined``.
     """
     if not 0 < completion_rate <= 1 or not 0 <= relative_error or cadence_days < 1:
@@ -188,7 +188,7 @@ def diagnose_target_lag(prepared: pd.DataFrame, *, value_column: str = "value_7d
         return {"selected_target_lag": None, "status": "no rows before the selection cutoff",
                 "rule": {}, "completion": []}
     frame = frame.sort_values(keys + ["report_date"])
-    # Only episodes observed far enough past issuance can testify to maturity.
+    # Only episodes with enough later observations can inform the recommendation.
     span = frame.groupby(keys, observed=True).lag.agg(["min", "max"])
     eligible_index = span if not min_followup_days else span[span["max"] >= min_followup_days]
     # ...and only episodes ALSO observed from early on can be compared across
@@ -199,9 +199,9 @@ def diagnose_target_lag(prepared: pd.DataFrame, *, value_column: str = "value_7d
     # earliest lag to cross the rate" compares incomparable subsets.
     if max_first_lag is not None:
         eligible_index = eligible_index[eligible_index["min"] <= max_first_lag]
-    mature = eligible_index.index
+    eligible_pairs = eligible_index.index
     frame = frame.set_index(keys)
-    frame = frame.loc[frame.index.isin(mature)].reset_index()
+    frame = frame.loc[frame.index.isin(eligible_pairs)].reset_index()
     if frame.empty:
         return {"selected_target_lag": None,
                 "status": (f"no location-reference pair has both {min_followup_days} days of follow-up "
@@ -210,10 +210,10 @@ def diagnose_target_lag(prepared: pd.DataFrame, *, value_column: str = "value_7d
     latest = (frame.groupby(keys, observed=True).tail(1)[keys + [value_column]]
               .rename(columns={value_column: "latest_value"}))
     ceiling = int(frame.lag.max() if max_lag is None else min(max_lag, frame.lag.max()))
-    # Candidate horizons sit on the retraining cadence (weekly by default).
+    # Candidate target lags sit on the retraining cadence (weekly by default).
     candidates = [lag for lag in range(cadence_days, ceiling + 1) if lag % cadence_days == 0]
     # ``extra_lags`` are REPORTED but never selectable: a user's declared
-    # horizon is often off the retraining cadence (chng uses 60, not a
+    # target lag is often off the retraining cadence (chng uses 60, not a
     # multiple of 7), and its own within-tolerance rate is exactly what is
     # needed to judge that choice against the rule's criterion.
     reportable = sorted({int(x) for x in extra_lags if 0 < int(x) <= ceiling}
@@ -221,17 +221,17 @@ def diagnose_target_lag(prepared: pd.DataFrame, *, value_column: str = "value_7d
     selectable = set(candidates)
     candidates = sorted(set(candidates).union(reportable))
     if not candidates:
-        # The archive does not reach the first cadence-aligned horizon, so
+        # The archive does not reach the first cadence-aligned target lag, so
         # there is nothing to score. Reported as a status, not raised: it is a
         # property of the data, and the caller (pipeline, or `revroute
-        # diagnose`) already handles an unselectable horizon by falling back
+        # diagnose`) already handles an unselectable target lag by falling back
         # to the user's declared L. Returning early also keeps the empty
         # candidate list out of ``merge_asof`` below, where an empty
         # ``DataFrame({"lag": []})`` is float64 and fails the exact join-key
         # dtype check against the triangle's integer lag.
         return {"selected_target_lag": None,
-                "status": (f"no candidate horizon: the triangle reaches lag {ceiling}, short of "
-                           f"the first cadence-aligned horizon at {cadence_days} days. Lower "
+                "status": (f"no candidate target lag: the triangle reaches lag {ceiling}, short of "
+                           f"the first cadence-aligned target lag at {cadence_days} days. Lower "
                            "cadence_days, or supply a triangle with longer follow-up."),
                 "rule": {"cadence_days": cadence_days, "max_lag_examined": ceiling},
                 "completion": []}
@@ -239,8 +239,8 @@ def diagnose_target_lag(prepared: pd.DataFrame, *, value_column: str = "value_7d
     # release at or BEFORE l, carried forward -- not a release dated exactly l.
     # Matching l exactly evaluated only the episodes that happened to publish
     # on that very day, which on a Wed/Fri reporter is ~1.4% of episodes and
-    # produced a horizon set by a 96-row sliver. Forward filling gives every
-    # mature episode an as-of value at every candidate lag.
+    # produced a recommendation from a 96-row sliver. Forward filling gives every
+    # eligible episode an as-of value at every candidate lag.
     # Explicit key works on the older pandas release still used by the
     # packaged test environment, where ``how="cross"`` incorrectly attempts
     # to infer common columns.
@@ -272,7 +272,7 @@ def diagnose_target_lag(prepared: pd.DataFrame, *, value_column: str = "value_7d
             "min_followup_days": min_followup_days, "cadence_days": cadence_days,
             "max_first_lag": max_first_lag,
             "reported_only_lags": reportable,
-            "max_lag_examined": ceiling, "pairs_used": int(len(mature)),
+            "max_lag_examined": ceiling, "pairs_used": int(len(eligible_pairs)),
             "selection_cutoff": None if selection_cutoff is None else str(pd.Timestamp(selection_cutoff).date())}
     if not eligible:
         return {"selected_target_lag": None,
@@ -290,11 +290,11 @@ def diagnose_target_lag(prepared: pd.DataFrame, *, value_column: str = "value_7d
 
 def resolve_target_lag(diagnosed: dict, user_target_lag: int | None,
                        confirmed: bool, dataset: str) -> tuple[int, str]:
-    """Decide which maturity horizon a run uses, and record why.
+    """Decide which target lag a run uses, and record why.
 
     The user's declared choice always wins, but never silently: when it
     disagrees with the diagnosis the run stops until the choice is explicitly
-    confirmed, so nobody adopts a horizon without having seen the recommended
+    confirmed, so nobody adopts a target lag without having seen the recommended
     one. With no declared choice the diagnosed value is used.
     """
     suggested = diagnosed.get("selected_target_lag")
@@ -311,7 +311,7 @@ def resolve_target_lag(diagnosed: dict, user_target_lag: int | None,
     if not confirmed:
         raise ValueError(
             f"dataset '{dataset}' declares target_lag={user_target_lag} but the "
-            f"diagnosed horizon is {suggested} ({diagnosed.get('status')}). Set "
+            f"recommended target lag is {suggested} ({diagnosed.get('status')}). Set "
             f"\"confirmed\": true for this dataset in the target-lag params file to "
             "proceed with your own choice, or remove target_lag to use the diagnosed one.")
     return user_target_lag, f"user choice, confirmed over diagnosed {suggested}"
@@ -320,8 +320,8 @@ def resolve_target_lag(diagnosed: dict, user_target_lag: int | None,
 def raw_archive_for_diagnosis(dataset: str, manifest_path, max_lag: int = 240):
     """Load a dataset's RAW archive as ``(geo_value, reference_date, lag, value)``.
 
-    The target-lag rule needs follow-up past any candidate horizon, and a
-    prepared triangle is truncated at the horizon it was built with -- so
+    The target-lag rule needs follow-up past any candidate target lag, and a
+    prepared triangle is truncated at the target lag it was built with, so
     diagnosing L from it is circular and fails the follow-up requirement on
     every dataset whose triangle stops before 60 days. The raw archive carries
     the full revision history, which is what the rule was defined on.

@@ -27,7 +27,7 @@
     "seed": 20260913,
     "train_genuine_events_only": true,
     "support_stop_after": 3,
-    "note": "Current RevRoute Delphi-RF clusters mature-history location-lag tasks, selects the finest Tukey structural-gap cut, and predicts by frozen task lookup. No silhouette, minimum-cluster-row rule, soft weighting, or prediction-time trajectory routing is used. fit_max_rows is only a numerical fitting cap; it does not determine the task partition."
+    "note": "Current RevRoute Delphi-RF clusters location-lag tasks from completed revision history, selects the finest Tukey structural-gap cut, and predicts by frozen task lookup. No silhouette, minimum-cluster-row rule, soft weighting, or prediction-time trajectory routing is used. fit_max_rows is only a numerical fitting cap; it does not determine the task partition."
   },
   "graph_fused_delphirf": {
     "lambda_s": 0.001,

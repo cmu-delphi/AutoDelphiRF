@@ -57,7 +57,7 @@ requires_delphirf = pytest.mark.skipif(
 def test_one_command_turns_a_raw_archive_into_a_report(tmp_path):
     """The documented one-liner, run exactly as a new user would run it."""
     archive = tmp_path / "archive.csv"
-    # Slow enough revision that a multi-week horizon is diagnosable, and long
+    # Slow enough revision that a multi-week target lag can be recommended, and long
     # enough that the training window plus several test origins fit.
     archive_frame(days=300, max_lag=60, halflife=9.0).to_csv(archive, index=False)
     work = tmp_path / "work"

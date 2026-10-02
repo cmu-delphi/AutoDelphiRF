@@ -112,7 +112,7 @@ def test_fraction_signals_are_diagnosed_on_the_ratio_not_the_numerator(tmp_path)
     frame = archive_frame(days=120, locations=("aa",))
     # A numerator that never settles, over a denominator that tracks it: the
     # RATIO is stable from lag 0, so diagnosing the numerator alone would
-    # report a long horizon where the modelled quantity needs a short one.
+    # report a long target lag where the modelled quantity needs a short one.
     frame["numerator"] = frame.value
     frame["denominator"] = frame.value * 2
     path = tmp_path / "fraction.csv"
@@ -146,9 +146,9 @@ def test_each_override_is_recorded_so_provenance_survives(tmp_path, archive_csv)
     assert spec.smoothed is False
 
 
-def test_a_user_horizon_is_reconciled_with_the_diagnosis_rather_than_taken_blindly(
+def test_a_user_target_lag_is_reconciled_with_the_diagnosis_rather_than_taken_blindly(
         tmp_path, archive_csv):
-    """The longer horizon wins by default; the disagreement is kept on record."""
+    """The longer target lag wins by default; the disagreement is kept on record."""
     spec = build_spec("d", archive_csv, tmp_path / "out", target_lag=120)
     assert "target_lag" in spec.overrides
     assert spec.diagnosis["user_target_lag"] == 120

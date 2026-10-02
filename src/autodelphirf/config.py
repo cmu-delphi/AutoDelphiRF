@@ -43,8 +43,8 @@ class DatasetConfig:
     # (q_error, q_regret, harm_frequency) but the categorical alert reports
     # "reference distribution unavailable" as the configured fallback.
     reliability_reference_file: Path | None
-    # Section 4's matured interval calibration and per-case risk score are
-    # per-row prospective scans over a growing matured history. That is fine at
+    # Interval calibration from completed revisions and per-case risk score are
+    # per-row prospective scans over growing completed revision history. That is fine at
     # a few thousand evaluated cases and prohibitive at a few million (chng
     # issues 1.77M), so a dataset may switch them off. Bootstrap CIs are not
     # affected. Default True: every existing dataset keeps the full layer.

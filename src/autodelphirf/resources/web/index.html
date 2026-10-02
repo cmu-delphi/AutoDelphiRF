@@ -87,7 +87,7 @@
       <figure class="viz-root" id="completion-figure">
         <figcaption>
           <span class="fig-title">Median relative error against the latest observed value</span>
-          <span class="fig-sub">Each point is a candidate horizon and reports the median for
+          <span class="fig-sub">Each point is a candidate target lag and reports the median for
             context. The recommendation uses a separate rule: at least 90% of location and
             reference-date combinations must be within 10% relative error.</span>
         </figcaption>
@@ -100,7 +100,7 @@
 
       <div class="answers" id="lag-answers"></div>
       <div class="custom-lag" id="custom-lag" hidden>
-        <label for="custom-lag-input">Use this horizon instead, in days</label>
+        <label for="custom-lag-input">Use this target lag instead, in days</label>
         <div class="custom-lag-row">
           <input type="number" id="custom-lag-input" min="1" max="3650" step="1">
           <button id="custom-lag-apply" class="secondary">Re-diagnose with this value</button>

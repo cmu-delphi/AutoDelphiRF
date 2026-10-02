@@ -45,7 +45,7 @@ def learn_task_pools(prepared: pd.DataFrame, schedule: pd.DataFrame, output: Pat
             "tasks_singleton_pct": float(100 * pool_shape.loc[pool_shape.tasks.eq(1), "tasks"].sum() / represented_tasks),
             "threshold": float(threshold),
             "unrepresented_task_policy": "nearest lag in same location; nearest lag globally for new location",
-            "small_pool_policy": "if <10 rows, expand to matching test lags; if still <10, use all mature fold rows",
+            "small_pool_policy": "if <10 rows, expand to matching test lags; if still <10, use all fold rows with available target values",
             "fallback_is_engineering_extension": True})
         for (geo, lag), label in zip(geometry.tasks, labels):
             rows.append({"fold": position, "cutoff": cutoff, "geo_value": str(geo),

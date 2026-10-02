@@ -121,8 +121,8 @@ autodelphirf diagnose --archive my_archive.csv
 ```
 
 This reports the archive size, location count, date ranges, reference-date and
-report-date cadence, revision rate, suggested feature lags, suggested maturity
-horizon, and training-window length. It writes no files and does not require R.
+report-date cadence, revision rate, suggested feature lags, recommended target
+lag, and training-window length. It writes no files and does not require R.
 
 Use the same column options that you would use for a full run:
 
@@ -191,9 +191,9 @@ autodelphirf run \
   --out autodelphirf_work
 ```
 
-### Choose the maturity horizon
+### Choose the target lag
 
-AutoDelphiRF diagnoses a maturity horizon from the archive. To provide one:
+AutoDelphiRF recommends an operational target lag from the archive. To provide one:
 
 ```bash
 autodelphirf run \
@@ -254,7 +254,7 @@ workflow lets you:
 1. Select a revision archive.
 2. Identify the date, location, and value columns.
 3. Review the pre-diagnosis.
-4. Confirm the maturity horizon.
+4. Confirm the target lag.
 5. Choose models and retraining settings.
 6. Start, stop, or resume the run.
 7. Review the results and generated report.

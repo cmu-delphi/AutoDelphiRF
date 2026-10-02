@@ -148,13 +148,13 @@ def normalize_lag_dtypes(prepared: pd.DataFrame) -> pd.DataFrame:
 
     A non-integral value is an error, not something to round away: a lag of
     3.5 days means the triangle was built against a different notion of a
-    reporting day, and silently truncating it would misalign every horizon.
+    reporting day, and silently truncating it would misalign every target date.
 
     A column with no missing values becomes plain ``int64`` rather than the
     nullable ``Int64``, because ``merge_asof`` compares join-key dtypes
     exactly and an extension dtype on one side is as much a mismatch as a
     float. Only ``target_lag``, which is legitimately missing for an episode
-    that never matured, needs the nullable dtype.
+    without an available target value needs the nullable dtype.
     """
     for column in INTEGER_COLUMNS:
         if column not in prepared or pd.api.types.is_integer_dtype(prepared[column]):
@@ -194,11 +194,11 @@ def raw_archive_manifest_path() -> Path | None:
 
 
 def load_target_lag_params(dataset: str, path: Path | None = None) -> tuple[int | None, bool, dict]:
-    """The user's declared horizon for one dataset, if the params file has one.
+    """The user's declared target lag for one dataset, if the params file has one.
 
     Returns ``(target_lag, confirmed, rule_overrides)``. A missing file or a
     missing entry means "no declared choice", which routes the run to the
-    diagnosed horizon.
+    recommended target lag.
     """
     path = path or target_lag_params_path()
     if path is None or not Path(path).exists():
@@ -405,7 +405,7 @@ def _load_reliability_reference(config: DatasetConfig, method: str | None = None
 
 def run_reliability_and_calibration(long: pd.DataFrame, config: DatasetConfig,
                                     wide: pd.DataFrame | None = None) -> dict[str, pd.DataFrame]:
-    """Section 4: matured interval calibration, risk-score/alert, bootstrap CIs.
+    """Interval calibration from completed revisions, risk-score/alert, bootstrap CIs.
 
     Wired into the standard pipeline output (not an optional side
     computation): every dataset run produces a calibration table, a
@@ -540,18 +540,18 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
         params["initial_lag"] = config.initial_lag
     params["include_red"] = "red" in config.prediction_layers
     params["target_column"] = str(schedule.target_column.iloc[0])
-    # The maturity horizon L: diagnosed from the revision process, then
+    # Target lag L: recommended from the revision process, then
     # reconciled with the user's declared choice. The user always wins, but
     # never without having been shown the recommendation.
     user_lag, confirmed, rule = load_target_lag_params(config.name)
     if user_lag is None and "target_lag" in schedule:
         # A schedule that already states one acts as the declared choice, so a
         # dataset set up before the params file keeps working unchanged.
-        horizons = set(schedule.target_lag.dropna().astype(int))
-        if len(horizons) == 1:
-            user_lag, confirmed = horizons.pop(), True
+        target_lags = set(schedule.target_lag.dropna().astype(int))
+        if len(target_lags) == 1:
+            user_lag, confirmed = target_lags.pop(), True
     # Diagnose from the RAW archive when one is registered: a prepared
-    # triangle is truncated at the horizon it was built with, so diagnosing L
+    # triangle is truncated at the target lag it was built with, so diagnosing L
     # from it is circular and fails the follow-up requirement outright on
     # every dataset whose triangle stops short of it.
     # A triangle created by ``autodelphirf prepare`` carries the diagnosis made
@@ -585,13 +585,13 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
             source = f"prepared triangle ({source}; truncated, so the diagnosis is limited)"
         diagnosed["source"] = source
     resolved, reason = resolve_target_lag(diagnosed, user_lag, confirmed, config.name)
-    # The triangle ENCODES its horizon: data_preprocessing() builds the target
+    # The triangle encodes its target lag: data_preprocessing() builds the target
     # column and target_date from the ref_lag it was given, and writes the same
     # value into the schedule. So a run cannot adopt a different L than the one
     # its triangle was built with -- the eligibility filter would cut at one
-    # horizon while the targets held another. Diagnosis informs PREPROCESSING
-    # (see code/diagnose_target_lag_stage.py); by the time a run reads a
-    # triangle, the horizon is already baked in and can only be checked.
+    # target lag while the targets held another. Diagnosis informs preprocessing;
+    # by the time a run reads a triangle, the target lag is already encoded and
+    # can only be checked.
     if "target_lag" in schedule:
         built = set(schedule.target_lag.dropna().astype(int))
         if len(built) == 1 and resolved != built.copy().pop():
@@ -599,11 +599,9 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
             raise ValueError(
                 f"dataset '{config.name}': this run would use L={resolved} ({reason}) but its "
                 f"prepared triangle was built with L={baked}, so its target column and "
-                f"target_date encode {baked}. Re-preprocess from raw at ref_lag={resolved} "
-                f"(code/diagnose_target_lag_stage.py writes the resolved horizon for "
-                f"full_package_pooling_preprocess.R), or set target_lag={baked} for this "
-                "dataset in config/target_lag_params.json.")
-    print(f"Final-value horizon: {resolved} days; recommendation: "
+                f"target_date encode {baked}. Re-run `autodelphirf prepare` from the raw "
+                f"archive with --target-lag {resolved}, or keep target_lag={baked} for this run.")
+    print(f"Target lag: {resolved} days; recommendation: "
           f"{diagnosed.get('selected_target_lag')} days ({reason})", flush=True)
     params["target_lag"] = resolved
     target_lag_record = {"resolved": resolved, "reason": reason,

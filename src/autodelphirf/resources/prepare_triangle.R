@@ -135,7 +135,7 @@ if (length(test_dates) == 0) {
        "to place a test origin. Supply --start-date/--end-date explicitly.", call. = FALSE)
 }
 
-# Keep a common prospective horizon plus enough earlier reference dates for
+# Keep a common target lag plus enough earlier reference dates for
 # every training window; this shrinks the grid without dropping eligible rows.
 min_reference <- min(test_dates) - spec$training_days - spec$ref_lag - spec$upper - 35
 max_report <- max(test_dates) + spec$ref_lag

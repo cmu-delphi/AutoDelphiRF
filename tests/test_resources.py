@@ -111,7 +111,7 @@ def test_explicit_file_outranks_config_dir(tmp_path, monkeypatch):
 # --- the pipeline's use of them -------------------------------------------
 
 def test_pipeline_runs_without_any_target_lag_params_file(tmp_path, monkeypatch):
-    """No declared horizon means 'no choice', not a crash on Path(None)."""
+    """No declared target lag means 'no choice', not a crash on Path(None)."""
     from autodelphirf.pipeline import load_target_lag_params
 
     monkeypatch.delenv("AUTODELPHIRF_TARGET_LAG_PARAMS", raising=False)

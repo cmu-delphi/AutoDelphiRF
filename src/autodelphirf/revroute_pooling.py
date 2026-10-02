@@ -72,9 +72,9 @@ class SparseTaskGeometry:
             proc = cdist(self.profiles[a_index], self.profiles[b_index], metric="euclidean")
             left = np.vstack([self.trajectories[i] for i in a_index])
             right = np.vstack([self.trajectories[i] for i in b_index])
-            horizon = min(left.shape[1], right.shape[1])
-            curve = (cdist(left[:, :horizon], right[:, :horizon], metric="euclidean")
-                     / np.sqrt(horizon)) if horizon else np.zeros((len(a_index), len(b_index)))
+            common_length = min(left.shape[1], right.shape[1])
+            curve = (cdist(left[:, :common_length], right[:, :common_length], metric="euclidean")
+                     / np.sqrt(common_length)) if common_length else np.zeros((len(a_index), len(b_index)))
             stage = np.abs(self.stages[a_index][:, None] - self.stages[b_index][None, :])
             self._blocks[key] = np.stack([proc, curve, stage])
         return key, self._blocks[key]

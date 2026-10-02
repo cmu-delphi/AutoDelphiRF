@@ -165,7 +165,7 @@ def test_diagnose_json_emits_the_full_machine_readable_report(archive_csv, capsy
     assert "target_lag_completion_curve" in report
 
 
-def test_diagnose_surfaces_a_horizon_disagreement_for_confirmation(archive_csv, capsys):
+def test_diagnose_surfaces_a_target_lag_disagreement_for_confirmation(archive_csv, capsys):
     """A user's L is never adopted silently when the data disagrees."""
     assert cli.main(["diagnose", "--archive", str(archive_csv), "--target-lag", "365"]) == 0
     assert "CONFIRM" in capsys.readouterr().out

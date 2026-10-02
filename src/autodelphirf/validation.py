@@ -2,7 +2,7 @@
 
 Pure post-processing. Every function here consumes forecasts that were already
 issued and scored -- the standardized long prediction table and the per-case
-reliability record -- and uses matured outcomes only to judge them. Nothing is
+reliability record -- and uses finalized values only to evaluate them. Nothing is
 re-predicted, no model is fitted, and no threshold is tuned on these outputs.
 
   V1  Prediction validity (Sec. "V1"): point quality against the flat-line
@@ -115,7 +115,7 @@ def interval_calibration_by_lag(calibration: pd.DataFrame, taus, levels=LEVELS,
 
     The overall table already exists; the protocol additionally requires the
     same checks by exact lag and over the early-lag set, because pooling across
-    lags can hide a badly calibrated early region behind mature late cases.
+    lags can hide a badly calibrated early region behind later cases with finalized values.
     """
     from .calibration import add_interval_columns
     if calibration is None or calibration.empty:
@@ -157,7 +157,7 @@ def regime_stratified_differences(long: pd.DataFrame, wide: pd.DataFrame, pairs,
 
     Explanatory only. Every stratifier is known at issuance -- routed regime,
     distance to the routed medoid, number of regimes, process shift score,
-    exact lag -- so the bins never use a matured outcome. These do not become an
+    exact lag -- so the bins never use a finalized value. These do not become an
     estimator selector.
     """
     if wide is None or wide.empty:

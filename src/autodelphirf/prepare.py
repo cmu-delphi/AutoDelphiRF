@@ -226,7 +226,7 @@ def build_spec(name: str, raw_csv: Path, output_dir: Path, *, reference_col: str
     is the one exception worth stating: when the user's value disagrees with
     the diagnosed one, :func:`autodelphirf.ingest.resolve_target_lag`
     decides, and its prompt is carried into ``preparation.json`` -- no
-    horizon is adopted without the recommendation having been recorded.
+    target lag is adopted without the recommendation having been recorded.
     """
     if value_type not in VALUE_TYPES:
         raise PreparationError(f"value_type must be one of {VALUE_TYPES}, got {value_type!r}")
@@ -246,18 +246,18 @@ def build_spec(name: str, raw_csv: Path, output_dir: Path, *, reference_col: str
     if target_lag is not None:
         overrides.append("target_lag")
     # resolve_target_lag already reconciled a user value with the suggestion,
-    # keeping the safer (longer) horizon by default and recording the
+    # keeping the safer (longer) target lag by default and recording the
     # disagreement for confirmation. ``confirm_target_lag`` is the user having
     # ANSWERED that confirmation: the prompt says the default applies "if you
     # do not respond", so a response has to be able to win. Without it a user
-    # who deliberately wants a shorter horizon than the diagnosis has no way
+    # who deliberately wants a shorter target lag than the diagnosis has no way
     # to say so explicitly.
     resolved_lag = int(diagnosis["resolved_target_lag"])
     if confirm_target_lag:
         if target_lag is None:
             raise PreparationError(
                 "confirm_target_lag was set without a target_lag to confirm; there is nothing "
-                "to confirm when the horizon comes from the diagnosis.")
+                "to confirm when the target lag comes from the diagnosis.")
         resolved_lag = int(target_lag)
         overrides.append("target_lag_confirmed")
 

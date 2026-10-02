@@ -1,7 +1,7 @@
 """V1/V2 prospective-validation tests.
 
 The validation layer is pure post-processing: it must read already-issued
-forecasts and matured outcomes and never re-predict, re-fit, or retune an
+forecasts and finalized values and never re-predict, re-fit, or retune an
 alert threshold. These tests pin the arithmetic of each summary and the
 direction of each comparison.
 """

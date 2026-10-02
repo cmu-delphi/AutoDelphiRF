@@ -17,7 +17,7 @@ def archive_frame(days: int = 200, max_lag: int = 40, locations=("aa", "bb"),
     One row per (location, reference date, report date). Each episode starts
     at half its final value and closes the gap exponentially, so successive
     vintages differ -- which is what makes them genuine revision events -- and
-    the process converges, so a maturity horizon is diagnosable.
+    the revisions stabilize, so a target lag can be recommended.
     """
     rows = []
     reference_dates = pd.date_range("2022-01-01", periods=days)

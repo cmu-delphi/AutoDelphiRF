@@ -354,7 +354,7 @@ def test_the_stylesheet_defines_every_categorical_slot_in_both_modes(stylesheet)
 
 
 def test_a_flat_curve_does_not_divide_by_zero():
-    """Every candidate horizon equally good: max_error floors at 0.12."""
+    """Every candidate target lag equally good: max_error floors at 0.12."""
     _, _, pad, _, ys = chart_geometry([0, 7, 14], [0.0, 0.0, 0.0])
     assert all(y == pad["top"] + (240 - pad["top"] - pad["bottom"]) for y in ys)
 
@@ -366,7 +366,7 @@ def test_an_error_above_one_still_scales_inside_the_plot():
 
 
 def test_the_chart_degrades_when_there_is_nothing_to_plot(script):
-    """Fewer than two candidate horizons is a message, not a broken axis."""
+    """Fewer than two candidate target lags is a message, not a broken axis."""
     assert "points.length < 2" in script
 
 
@@ -380,7 +380,7 @@ def test_completion_chart_has_quantile_band_and_named_y_axis(script):
     assert "target_lag_completion_band" in script
     assert "10th–90th percentile" in script
     assert ">relative error</text>" in script
-    assert "Not enough candidate horizons" in script
+    assert "Not enough candidate target lags" in script
 
 
 def test_the_chart_ships_a_table_view_of_the_same_numbers(script, html):

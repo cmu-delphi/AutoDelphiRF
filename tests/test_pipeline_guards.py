@@ -7,7 +7,7 @@ than a usable message:
   * DelphiRF writes ``lag``/``target_lag`` as doubles (R date arithmetic
     yields numeric), and ``merge_asof`` compares join-key dtypes exactly;
   * a triangle whose follow-up stops short of the first cadence-aligned
-    horizon produced an empty candidate list, and an empty
+    target lag produced an empty candidate list, and an empty
     ``DataFrame({"lag": []})`` is float64.
 """
 from __future__ import annotations
@@ -58,7 +58,7 @@ def test_already_integer_lags_are_left_untouched():
 
 
 def test_a_missing_target_lag_survives_as_a_nullable_integer():
-    """An episode that never matured has no target_lag; that is not an error."""
+    """An episode without an available target value has no target_lag; that is not an error."""
     frame = prepared_frame().astype({"target_lag": "float64"})
     frame.loc[frame.index[0], "target_lag"] = np.nan
     normalized = normalize_lag_dtypes(frame)
@@ -113,10 +113,10 @@ def diagnosis_frame(max_lag: int, episodes: int = 40) -> pd.DataFrame:
 
 
 def test_a_triangle_shorter_than_the_cadence_reports_instead_of_crashing():
-    """No cadence-aligned horizon exists below lag 7; that is a status, not a stack trace."""
+    """No cadence-aligned target lag exists below lag 7; that is a status, not a stack trace."""
     result = diagnose_target_lag(diagnosis_frame(max_lag=6), value_column="value_7dav")
     assert result["selected_target_lag"] is None
-    assert "no candidate horizon" in result["status"]
+    assert "no candidate target lag" in result["status"]
     # The message must say what to do about it.
     assert "cadence_days" in result["status"]
     assert result["completion"] == []
@@ -127,7 +127,7 @@ def test_the_reported_ceiling_is_the_triangles_own_reach():
     assert result["rule"]["max_lag_examined"] == 5
 
 
-def test_a_shorter_cadence_finds_a_horizon_in_the_same_short_triangle():
+def test_a_shorter_cadence_finds_a_target_lag_in_the_same_short_triangle():
     """Confirms the early return is about the cadence, not about the data being unusable."""
     result = diagnose_target_lag(diagnosis_frame(max_lag=6), value_column="value_7dav",
                                  cadence_days=2)
@@ -194,7 +194,7 @@ def test_raw_archive_target_lag_uses_the_same_ninety_percent_rule():
                          "value": value})
     report = diagnose_raw_archive(
         pd.DataFrame(rows), candidate_lags=(7, 14, 21),
-        maturity_floor_days=0
+        late_observation_floor_days=0
     )
 
     # Preserve the website's existing median-error curve even though selection
@@ -285,7 +285,7 @@ def test_a_triangle_without_a_genuine_event_column_is_not_filtered_away():
     assert len(build_cases(prepared, schedule, True)) == 4
 
 
-def test_rows_with_no_matured_target_are_excluded_from_evaluation():
+def test_rows_with_no_available_target_value_are_excluded_from_evaluation():
     """A case with no truth cannot be scored, so it is not a case."""
     prepared = prepared_frame(rows=4).assign(log_value_target_7dav=[1.0, np.nan, 3.0, np.nan])
     schedule = schedule_frame(test_date=[pd.Timestamp("2024-01-01")],

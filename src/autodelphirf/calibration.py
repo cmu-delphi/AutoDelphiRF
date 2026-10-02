@@ -18,7 +18,7 @@ DEFAULT_HIGH_RISK_CUT = CALIBRATION_DEFAULTS.get("high_risk_cut", .9)
 
 
 # ---------------------------------------------------------------------------
-# Matured prospective history selection
+# Completed-revision history selection
 # ---------------------------------------------------------------------------
 
 #: Minimum positive-regret support before M_harm_eta is issued, and minimum
@@ -36,7 +36,7 @@ def qhigher(values, q: float) -> float:
 
 def calibration_stratum(row: pd.Series, history: pd.DataFrame, minimum: int | None = None,
                         adjacent_lag_radius: int | None = None) -> tuple[pd.DataFrame, str]:
-    """Select the matured historical forecast set used for calibration
+    """Select the historical forecast set with available target values used for calibration
     and reliability.
 
     Fallback hierarchy, exact-lag evidence always preferred:
@@ -117,7 +117,7 @@ def resolve_strata(test: pd.DataFrame, history: pd.DataFrame, minimum: int,
 
     ``calibration_stratum`` depends on the current row only through
     ``geo_value`` and ``lag``, so every forecast sharing that key selects the
-    identical matured support. The model-free spec (Sec. 2.2/2.7) requires the
+    identical completed-revision support. The model-free spec (Sec. 2.2/2.7) requires the
     fallback to be resolved once per key and joined onto forecast rows, and
     explicitly prohibits "any implementation that reconstructs C(q) ...
     independently for hundreds of thousands of duplicated forecast rows".
@@ -125,7 +125,7 @@ def resolve_strata(test: pd.DataFrame, history: pd.DataFrame, minimum: int,
     The archive is indexed once per origin by ``(geo_value, lag)`` and by
     ``lag``, so each key assembles its support from a handful of cached
     position arrays instead of running four boolean scans over the whole
-    matured history. Row order within a stratum is irrelevant: every quantity
+    completed revision history. Row order within a stratum is irrelevant: every quantity
     taken from it (quantiles and counts) is order-independent.
 
     ``counter`` decides what "enough history" means. The default counts rows,
@@ -230,7 +230,7 @@ def empirical_cdf_rank(reference: np.ndarray, values: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Matured prospective interval calibration
+# Prospective interval calibration from completed revisions
 # ---------------------------------------------------------------------------
 
 def calibrate(base: np.ndarray, row: pd.Series, history: pd.DataFrame, taus: np.ndarray = ROUTED_TAUS,
@@ -241,7 +241,7 @@ def calibrate(base: np.ndarray, row: pd.Series, history: pd.DataFrame, taus: np.
     For tau > 0.5:  A^+ = truth - q_tau;  add      max(Q_tau(A^+), 0).
 
     The adjustment is applied at every quantile in the configured grid. It
-    falls back to the uncalibrated ``base`` quantiles when matured history is
+    falls back to the uncalibrated ``base`` quantiles when completed revision history is
     insufficient. After calibrating each quantile independently, both sides
     are clamped toward the median to prevent crossing quantiles.
     """
@@ -265,7 +265,7 @@ def calibrate(base: np.ndarray, row: pd.Series, history: pd.DataFrame, taus: np.
 def prospective_calibration(long: pd.DataFrame, methods: tuple[str, ...] | list[str], taus: np.ndarray = ROUTED_TAUS,
                             minimum: int | None = None, adjacent_lag_radius: int | None = None,
                             value_transform: str | None = None) -> pd.DataFrame:
-    """Calibrate per fold/method from history matured by that fold's own cutoff.
+    """Calibrate per fold/method from history with target values available by that fold's own cutoff.
 
     ``long`` is a standardized long prediction table (see
     ``autodelphirf.pipeline.standardize_predictions``) with columns
@@ -281,7 +281,7 @@ def prospective_calibration(long: pd.DataFrame, methods: tuple[str, ...] | list[
     ``calibration_stratum`` depends on a row only through those two fields and
     the corrections depend only on the selected stratum, this is exactly
     equivalent to the per-row definition -- it is not an approximation. The
-    previous per-row implementation rescanned the matured archive for every
+    previous per-row implementation rescanned the completed revision history for every
     row, which is quadratic in the number of forecasts and prohibited by the
     spec.
     """
@@ -404,13 +404,13 @@ def forecast_quality_summary(history: pd.DataFrame, *, eta: float = DEFAULT_ETA,
     this layer: the spec removed ``p_harm``, the pre-evaluation archive and the
     isotonic map after the mapped probability failed its own accuracy test
     (negative Brier skill on 4 of 5 datasets, gaps to 0.45). What survives is
-    an interpretable statement of the form "8 of 42 comparable matured cases
+    an interpretable statement of the form "8 of 42 comparable cases with available target values
     (19%)".
 
     Conditional harm severity is NOT computed here: it needs its own comparable
     set selected on positive-harm support. See ``harm_severity_summary``.
 
-    ``history`` must contain only forecasts whose target matured before the
+    ``history`` must contain only forecasts whose target value was available before the
     current origin, with columns ``rr_ae`` and ``null_ae``. The reference
     arguments are accepted and ignored so archived callers keep working.
     """
@@ -493,7 +493,7 @@ def build_reliability_reference(training_predictions: pd.DataFrame, *, eta: floa
     are formed on the original reporting scale. It defaults to "log1p", which
     is right for count and directly-supplied-rate datasets but WRONG for a
     num/denom fraction triangle (those are "log"). Each inner case is summarized only from forecasts issued at
-    earlier cutoffs whose targets had matured by its cutoff. The result must
+    earlier cutoffs whose target values were available by its cutoff. The result must
     be frozen before outer evaluation: build this from data
     that ends strictly before the outer evaluation window begins.
     """
@@ -538,17 +538,17 @@ def build_reliability_reference(training_predictions: pd.DataFrame, *, eta: floa
     data["null_ae"] = np.abs(truth_raw - null_raw)
     rows = []
     for cutoff, current in data.groupby("cutoff", sort=True, observed=True):
-        matured = data[(data.cutoff < cutoff) & (data.target_date <= cutoff)]
+        available_history = data[(data.cutoff < cutoff) & (data.target_date <= cutoff)]
         cases = current.groupby(["geo_value", "lag"], observed=True).size().rename("case_n").reset_index()
         for _, case in cases.iterrows():
             candidates = [
-                (matured[(matured.geo_value.eq(case.geo_value)) & matured.lag.eq(case.lag)],
+                (available_history[(available_history.geo_value.eq(case.geo_value)) & available_history.lag.eq(case.lag)],
                  "location/exact-lag"),
-                (matured[(matured.geo_value.eq(case.geo_value)) &
-                         (matured.lag.sub(case.lag).abs() <= adjacent_lag_radius)],
+                (available_history[(available_history.geo_value.eq(case.geo_value)) &
+                         (available_history.lag.sub(case.lag).abs() <= adjacent_lag_radius)],
                  "location/adjacent-lags"),
-                (matured[matured.lag.eq(case.lag)], "global/exact-lag"),
-                (matured[matured.lag.sub(case.lag).abs() <= adjacent_lag_radius],
+                (available_history[available_history.lag.eq(case.lag)], "global/exact-lag"),
+                (available_history[available_history.lag.sub(case.lag).abs() <= adjacent_lag_radius],
                  "global/adjacent-lags"),
             ]
             selected = source = None

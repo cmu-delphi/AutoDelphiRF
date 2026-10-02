@@ -1,7 +1,7 @@
 /* AutoDelphiRF local UI.
  *
  * One dataset, six steps, one question that genuinely needs answering (the
- * maturity horizon L). Vanilla JS on purpose: this page is served by a local
+ * target lag L). Vanilla JS on purpose: this page is served by a local
  * process that may have no internet access, so nothing is fetched from a CDN.
  */
 'use strict';
@@ -287,7 +287,7 @@ async function runDiagnosis(userTargetLag = null, acceptCustomLag = false) {
       );
       return;
     }
-    // A re-diagnosis is an answer to the horizon question, so scroll to the
+    // A re-diagnosis is an answer to the target-lag question, so scroll to the
     // answer buttons rather than back to the top of the card: the recommendation
     // and the curve are already read by then, and landing above them hides the
     // one control that unlocks the rest of the page.
@@ -305,7 +305,7 @@ async function runDiagnosis(userTargetLag = null, acceptCustomLag = false) {
   }
 }
 
-/* --- 4. diagnosis and the horizon question ---------------------------- */
+/* --- 4. diagnosis and the target-lag question ------------------------- */
 
 function fact(term, value) {
   return `<div><dt>${term}</dt><dd>${value}</dd></div>`;
@@ -337,10 +337,9 @@ function renderLagQuestion(report, userTargetLag) {
   const answers = $('lag-answers');
   const custom = $('custom-lag');
 
-  body.innerHTML = `AutoDelphiRF scores predictions against the value a reference date
-    <em>settles at</em>. It needs to know how long that takes. From your archive's own
-    completion curve, the recommendation is
-    <strong>${recommended} days</strong> &mdash; the first candidate horizon at which the
+  body.innerHTML = `AutoDelphiRF forecasts the target value reported at a prespecified
+    target lag. From your archive's historical revisions, the recommendation is
+    <strong>${recommended} days</strong> &mdash; the first candidate target lag at which the
     relative error is within 10% for at least 90% of location and reference-date
     combinations. The chart below still
     shows median relative error as supplementary diagnostic information.`;
@@ -359,7 +358,7 @@ function renderLagQuestion(report, userTargetLag) {
   // silence.
   if (userTargetLag != null) {
     $('custom-lag-note').textContent =
-      `Re-diagnosed with ${userTargetLag} days. Choose which horizon to use from the `
+      `Re-diagnosed with ${userTargetLag} days. Choose which target lag to use from the `
       + 'buttons above, and the retraining schedule opens next.';
   }
 
@@ -389,7 +388,7 @@ function renderLagQuestion(report, userTargetLag) {
     </button>`).join('') + `
     <button class="secondary" id="choose-other">
       <span class="layer-name">Use a different value</span><br>
-      <span class="layer-desc">I know this stream's horizon</span>
+      <span class="layer-desc">I know this stream's target lag</span>
     </button>`);
 
   answers.querySelectorAll('button[data-lag]').forEach((button) => {
@@ -520,7 +519,7 @@ function drawCompletionCurve(report) {
 
   const container = $('completion-chart');
   if (points.length < 2) {
-    container.innerHTML = `<p class="hint">Not enough candidate horizons to plot a curve.</p>`;
+    container.innerHTML = `<p class="hint">Not enough candidate target lags to plot a curve.</p>`;
     $('completion-table').innerHTML = '';
     return;
   }
@@ -595,8 +594,8 @@ function drawCompletionCurve(report) {
 
   container.innerHTML = `
     <svg viewBox="0 0 ${width} ${height}" role="img"
-         aria-label="Median relative error by candidate horizon with a 10th to 90th
-                     percentile band. Recommended horizon ${recommended} days.">
+         aria-label="Median relative error by candidate target lag with a 10th to 90th
+                     percentile band. Recommended target lag ${recommended} days.">
       ${gridlines}
       ${toleranceLine}
       ${shadedBand}
@@ -609,7 +608,7 @@ function drawCompletionCurve(report) {
       <line x1="${pad.left}" x2="${width - pad.right}" y1="${pad.top + plotHeight}"
             y2="${pad.top + plotHeight}" stroke="var(--border-strong)" stroke-width="1"/>
       <text x="${pad.left + plotWidth / 2}" y="${height - 1}" text-anchor="middle"
-            font-size="11.5" fill="var(--text-secondary)">candidate horizon (days after reference date)</text>
+            font-size="11.5" fill="var(--text-secondary)">candidate target lag (days after reference date)</text>
       <text x="15" y="${pad.top + plotHeight / 2}" text-anchor="middle"
             transform="rotate(-90 15 ${pad.top + plotHeight / 2})"
             font-size="11.5" fill="var(--text-secondary)">relative error</text>
@@ -652,7 +651,7 @@ function attachChartHover(container, points, recommended) {
 function renderCompletionTable(points, recommended) {
   $('completion-table').innerHTML = `
     <table>
-      <thead><tr><th>Candidate horizon</th><th>Median relative error</th></tr></thead>
+      <thead><tr><th>Candidate target lag</th><th>Median relative error</th></tr></thead>
       <tbody>${points.map((point) => `
         <tr class="${point.lag === recommended ? 'recommended' : ''}">
           <td>${point.lag} days${point.lag === recommended ? ' (recommended)' : ''}</td>
@@ -734,7 +733,7 @@ async function startRun() {
        ${needsDelphiModel
          ? 'Choose “Latest reported value” and/or “Revision-pattern matching” for now, or update the installed DelphiRF package.'
          : 'Set <code>AUTODELPHIRF_DELPHIRF_DIR</code> to a compatible DelphiRF source checkout and restart the server.'}<br>
-       <span class="hint">Your archive, horizon and schedule are unaffected &mdash; this
+       <span class="hint">Your archive, target lag and schedule are unaffected &mdash; this
        check runs at startup, so the server has to be restarted either way.</span>`);
     scrollIntoView('card-run');
     return;
@@ -1043,8 +1042,8 @@ function renderByOrigin(byOrigin) {
 }
 
 function renderOriginShortfall(evaluated) {
-  // The newest origins have no matured target yet -- scoring one needs L days
-  // of follow-up the archive does not have -- so the schedule asks for more
+  // The newest origins do not have their target values yet: scoring one needs
+  // L days of follow-up the archive does not have, so the schedule asks for more
   // origins than the replay can score. Said plainly rather than quietly
   // showing the smaller number.
   const scheduled = state.results ? state.results.origins_scheduled : 0;
@@ -1056,7 +1055,7 @@ function renderOriginShortfall(evaluated) {
   note.innerHTML = notice('warn',
     `The schedule asked for <strong>${scheduled}</strong> retrainings but
      <strong>${evaluated}</strong> could be scored. The rest are too recent: scoring an origin
-     needs a matured target, and the newest reference dates have not had time to settle.`);
+     needs the target value at lag L, and those values are not available yet.`);
 }
 
 function renderPooling(pools, profile) {

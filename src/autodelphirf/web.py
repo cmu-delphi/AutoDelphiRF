@@ -2,7 +2,7 @@
 
 ``autodelphirf web`` starts a small HTTP server on localhost and opens a page that
 walks one dataset through the whole workflow. It exists because the workflow
-has genuine *questions* in it -- above all the maturity horizon L, where
+has genuine *questions* in it -- above all the target lag L, where
 ``ingest.resolve_target_lag`` composes a prompt that says the default applies
 "if you do not respond", and until now there was nowhere to respond. On the
 command line that prompt is a line of text scrolling past. Here it is a
@@ -523,7 +523,7 @@ class Session:
 
             resolution = ("your confirmed choice" if request.get("confirm_target_lag")
                           else "matches the recommendation")
-            job.append(f"Final-value horizon: {spec.ref_lag} days ({resolution})")
+            job.append(f"Target lag: {spec.ref_lag} days ({resolution})")
             job.append(f"Methods: {', '.join(LAYER_LABELS.get(name, name) for name in layers)}")
             job.append(f"Retraining every {spec.testing_days} days from {spec.start_date} "
                        f"to {spec.end_date}")

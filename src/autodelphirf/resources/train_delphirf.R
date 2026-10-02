@@ -203,7 +203,7 @@ route_weights <- function(plan, target_geo, lag_value, sources) {
 # ---------------------------------------------------------------------------
 # Global fixed-effects Delphi-RF
 # ---------------------------------------------------------------------------
-# One penalized Delphi-RF fit over ALL mature rows of the fold -- every
+# One penalized Delphi-RF fit over ALL fold rows with available target values -- every
 # location and every lag together -- retaining additive location and lag
 # effects:
 #     Q_tau(Y* | x, i, l) = alpha_tau + gamma_{i,tau} + eta_{l,tau} + x' beta_tau.

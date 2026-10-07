@@ -251,7 +251,8 @@ def test_a_run_is_refused_up_front_when_delphirf_is_not_ready(tmp_path):
 api.state.environment = {delphirf: false, detail: 'DelphiRF predates what RevRoute needs.'};
 api.startRun();
 """, exports="startRun, state", node="run-result")
-    assert "AUTODELPHIRF_DELPHIRF_DIR" in html, "the refusal does not say how to fix it"
+    assert "as the README describes" in html, \
+        "the refusal does not say how to fix it"
     assert "DelphiRF predates what RevRoute needs." in html, "the reason is not passed through"
 
 
@@ -262,13 +263,13 @@ def test_a_ready_environment_does_not_block_the_run(tmp_path):
 api.state.environment = {delphirf: true, detail: 'installed DelphiRF'};
 try { api.startRun(); } catch (e) {}
 """, exports="startRun, state", node="run-result")
-    assert "AUTODELPHIRF_DELPHIRF_DIR" not in html
+    assert "is not ready" not in html
 
 
-def test_local_preprocessing_allows_baseline_without_installed_delphirf(tmp_path):
+def test_preprocessing_alone_allows_baseline_without_delphirf_models(tmp_path):
     html = run_in_jsc(tmp_path, """
 api.state.environment = {preprocessing: true, delphirf: false,
-  detail: 'compatible local DelphiRF preprocessing'};
+  detail: 'installed DelphiRF'};
 try { api.startRun(); } catch (e) {}
 """, exports="startRun, state", node="run-result")
     assert "The selected DelphiRF model is not ready" not in html

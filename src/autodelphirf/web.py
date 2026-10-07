@@ -35,7 +35,9 @@ to reason about.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import errno
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib import metadata
 import json
 import mimetypes
 import os
@@ -127,19 +129,6 @@ class RunStopped(RuntimeError):
     """Raised at a safe checkpoint after the user requests Stop."""
 
 
-def local_delphirf_dir() -> str | None:
-    """Find the explicitly configured or adjacent DelphiRF source checkout."""
-    configured = os.environ.get("AUTODELPHIRF_DELPHIRF_DIR")
-    if configured:
-        candidate = Path(configured).expanduser().resolve()
-        return str(candidate) if (candidate / "DESCRIPTION").is_file() else None
-    for parent in Path(__file__).resolve().parents:
-        candidate = parent / "DelphiRF"
-        if (candidate / "DESCRIPTION").is_file():
-            return str(candidate)
-    return None
-
-
 def safe_stem(name: str) -> str:
     """Reduce an uploaded filename to a safe dataset stem.
 
@@ -205,27 +194,78 @@ def optional_int(value, field: str) -> int | None:
             f"{field} must be a whole number of days, got {value!r}") from error
 
 
-def environment_report() -> dict:
-    """Whether R and a usable DelphiRF are present, for the page to show up front.
+def build_info() -> dict:
+    """Which AutoDelphiRF build is running: version, git commit and location.
 
-    Checked at startup rather than at the moment preprocessing runs, so a
-    user missing a prerequisite learns it before uploading anything.
+    Shown at startup and on the page so a stale install -- pip keeps an
+    installed copy with the same version even when asked for another branch --
+    or an old server still holding the port is visible rather than looking
+    like a DelphiRF problem.
+    """
+    from . import __version__
+    info = {"version": __version__, "commit": None, "branch": None,
+            "location": str(Path(__file__).resolve().parent)}
+    try:
+        direct_url = metadata.distribution("autodelphirf").read_text("direct_url.json")
+    except metadata.PackageNotFoundError:
+        direct_url = None
+    if direct_url:
+        try:
+            vcs = json.loads(direct_url).get("vcs_info") or {}
+        except ValueError:
+            vcs = {}
+        info["commit"] = (vcs.get("commit_id") or "")[:7] or None
+        info["branch"] = vcs.get("requested_revision")
+    if info["commit"] is None:
+        checkout = Path(__file__).resolve().parents[2]
+        if (checkout / ".git").exists() and shutil.which("git"):
+            try:
+                for key, flag in (("commit", "--short"), ("branch", "--abbrev-ref")):
+                    result = subprocess.run(["git", "-C", str(checkout), "rev-parse", flag, "HEAD"],
+                                            capture_output=True, text=True, timeout=10)
+                    if result.returncode == 0:
+                        info[key] = result.stdout.strip() or None
+            except (subprocess.SubprocessError, OSError):
+                pass
+    return info
+
+
+def describe_build(info: dict) -> str:
+    """One line naming the running build, e.g. ``0.1.1.dev0 (use-... @ 32a4ff6)``."""
+    source = " @ ".join(part for part in (info.get("branch"), info.get("commit")) if part)
+    return f"{info['version']}" + (f" ({source})" if source else "") + f", {info['location']}"
+
+
+def environment_report() -> dict:
+    """Whether R and a usable installed DelphiRF are present, for the page to show.
+
+    AutoDelphiRF only ever uses the DelphiRF package installed in R's library
+    (see the README for how to install it); a source checkout lying next to
+    this package is never loaded. The page asks for this report each time it
+    loads, so reinstalling DelphiRF takes effect on a page reload.
     """
     executable = os.environ.get("AUTODELPHIRF_RSCRIPT") or shutil.which("Rscript")
     report = {"rscript": executable, "preprocessing": False, "delphirf": False,
-              "delphirf_dir": None, "detail": ""}
+              "delphirf_version": None, "delphirf_path": None, "detail": ""}
     if not executable:
         report["detail"] = ("Rscript was not found. Diagnosis works without it, but building a "
                             "prepared triangle needs R and DelphiRF.")
         return report
-    source_dir = local_delphirf_dir()
-    if source_dir:
-        quoted = json.dumps(source_dir)
-        script = (f'suppressMessages(pkgload::load_all({quoted}, quiet=TRUE)); '
-                  'cat("onehot_weekdays" %in% names(formals(data_preprocessing)))')
-    else:
-        script = ('suppressMessages(library(DelphiRF)); '
-                  'cat("onehot_weekdays" %in% names(formals(DelphiRF::data_preprocessing)))')
+    # One line per fact so a missing piece is named, not just a FALSE.
+    script = (
+        'suppressMessages(library(DelphiRF)); ns <- asNamespace("DelphiRF"); '
+        'need <- c("ref_lag", "lagged_term_list", "value_type", "temporal_resol", '
+        '"smoothed", "target_lag_lower_tolerance", "target_lag_upper_tolerance"); '
+        'missing <- setdiff(need, names(formals(DelphiRF::data_preprocessing))); '
+        'if (!"model_backend" %in% names(formals(DelphiRF::revision_forecast))) '
+        'missing <- c(missing, "revision_forecast(model_backend)"); '
+        'if ("onehot_weekdays" %in% names(formals(DelphiRF:::create_params_list))) '
+        'missing <- c(missing, "create_params_list() without onehot_weekdays"); '
+        'cat("version=", as.character(utils::packageVersion("DelphiRF")), "\\n", sep=""); '
+        'cat("path=", find.package("DelphiRF"), "\\n", sep=""); '
+        'cat("missing=", paste(missing, collapse=", "), "\\n", sep=""); '
+        'cat("model=", exists("fit_quantreg_lasso", envir=ns, inherits=FALSE), "\\n", sep="")'
+    )
     try:
         result = subprocess.run([executable, "-e", script], capture_output=True,
                                 text=True, timeout=180)
@@ -233,36 +273,21 @@ def environment_report() -> dict:
         report["detail"] = f"Rscript found but could not be run: {error}"
         return report
     if result.returncode != 0:
-        report["detail"] = ("DelphiRF could not be loaded. Install it with "
-                            "the released DelphiRF package.")
+        report["detail"] = ("DelphiRF is not installed in R's library. Install it as "
+                            "the AutoDelphiRF README describes.")
         return report
-    if "TRUE" not in result.stdout:
-        report["detail"] = ("The installed DelphiRF predates the arguments AutoDelphiRF needs. "
-                            "Update the installed DelphiRF package.")
+    facts = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    report["delphirf_version"] = facts.get("version") or None
+    report["delphirf_path"] = facts.get("path") or None
+    installed = f"installed DelphiRF {report['delphirf_version']} ({report['delphirf_path']})"
+    if facts.get("missing"):
+        report["detail"] = (f"The {installed} predates what AutoDelphiRF needs "
+                            f"(missing: {facts['missing']}). Reinstall DelphiRF as the "
+                            "AutoDelphiRF README describes.")
         return report
     report["preprocessing"] = True
-    report["delphirf_dir"] = source_dir
-    # Preprocessing may load an adjacent source checkout through pkgload, while
-    # model training deliberately calls the installed package. Check those two
-    # capabilities independently so keeping the transferable DelphiRF source
-    # beside AutoDelphiRF does not disable a compatible installed copy.
-    installed_script = (
-        'suppressMessages(library(DelphiRF)); '
-        'cat("model_backend" %in% names(formals(DelphiRF::revision_forecast)) && '
-        'exists("fit_quantreg_lasso", envir=asNamespace("DelphiRF"), inherits=FALSE))'
-    )
-    try:
-        installed = subprocess.run([executable, "-e", installed_script], capture_output=True,
-                                   text=True, timeout=180)
-        report["delphirf"] = installed.returncode == 0 and "TRUE" in installed.stdout
-    except (subprocess.SubprocessError, OSError):
-        report["delphirf"] = False
-    if source_dir:
-        report["detail"] = f"compatible local DelphiRF preprocessing ({source_dir})"
-        if report["delphirf"]:
-            report["detail"] += "; compatible installed DelphiRF model backend"
-    else:
-        report["detail"] = "installed DelphiRF"
+    report["delphirf"] = facts.get("model") == "TRUE"
+    report["detail"] = installed
     return report
 
 
@@ -518,8 +543,7 @@ class Session:
                 min_location_rows=(optional_int(request.get("min_location_rows"),
                                                 "min_location_rows")
                                    or DEFAULT_MIN_LOCATION_ROWS),
-                triangle_format=request.get("triangle_format", "parquet"),
-                delphirf_dir=local_delphirf_dir())
+                triangle_format=request.get("triangle_format", "parquet"))
 
             resolution = ("your confirmed choice" if request.get("confirm_target_lag")
                           else "matches the recommendation")
@@ -702,7 +726,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path.startswith("/static/"):
             self._serve_static(path[len("/static/"):])
         elif path == "/api/environment":
-            self._guarded(lambda: self._json(self.server.environment))
+            self._guarded(self._refresh_environment)
         elif path == "/api/status":
             self._guarded(lambda: self._json(self.server.session.snapshot()))
         elif path == "/api/results":
@@ -766,6 +790,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "missing or invalid session token"}, 403)
             return
         action()
+
+    def _refresh_environment(self) -> None:
+        # Re-checked on every page load, so reinstalling DelphiRF while the
+        # server runs is picked up without a restart.
+        self.server.environment = environment_report()
+        self._json({**self.server.environment, "build": self.server.build})
 
     def _serve_results(self) -> None:
         job = self.server.session.job
@@ -835,6 +865,7 @@ class AutoDelphiRFServer(ThreadingHTTPServer):
         self.session = Session(work_dir)
         self.verbose = verbose
         self.environment = environment_report()
+        self.build = build_info()
         host = address[0]
         self.allowed_hosts = {host, "localhost", "127.0.0.1", "::1", ""}
 
@@ -843,10 +874,23 @@ def serve(host: str = "127.0.0.1", port: int = 8765, work_dir: Path | None = Non
           open_browser: bool = True, verbose: bool = False) -> AutoDelphiRFServer:
     """Start the UI and block until interrupted."""
     work_dir = Path(work_dir or Path.cwd() / "autodelphirf_work").resolve()
-    server = AutoDelphiRFServer((host, port), work_dir, verbose=verbose)
+    try:
+        server = AutoDelphiRFServer((host, port), work_dir, verbose=verbose)
+    except OSError as error:
+        if error.errno != errno.EADDRINUSE:
+            raise
+        # The usual cause is an earlier `autodelphirf web` still running. It
+        # keeps answering the open browser tab with whatever code it started
+        # with, so say so instead of leaving a traceback behind a working page.
+        raise SystemExit(
+            f"Port {port} is already in use, most likely by another AutoDelphiRF server.\n"
+            "That server keeps running the code it started with, even after a reinstall.\n"
+            'Stop it (pkill -f "autodelphirf") and start again, or pass --port to use '
+            "another port.") from None
     bound_port = server.server_address[1]
     url = f"http://{host}:{bound_port}/"
 
+    print(f"AutoDelphiRF {describe_build(server.build)}")
     print(f"AutoDelphiRF is running at {url}")
     print(f"Working directory: {work_dir}")
     environment = server.environment

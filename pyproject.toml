@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "autodelphirf"
-version = "0.1.0"
+version = "0.1.1.dev0"
 description = "An end-to-end pipeline for diagnosing, forecasting, and evaluating revised data"
 readme = "README.md"
 license = { text = "MIT" }

@@ -165,11 +165,42 @@ def test_the_target_column_follows_the_smoothing_choice(tmp_path, archive_csv):
 
 
 def test_weekly_streams_get_no_weekday_encoding(tmp_path, archive_csv):
-    """There is no within-week reporting structure in a weekly stream to encode."""
+    """There is no within-week reporting structure in a weekly stream to model."""
     weekly = build_spec("d", archive_csv, tmp_path / "out", temporal_resol="weekly")
     daily = build_spec("d", archive_csv, tmp_path / "out", temporal_resol="daily")
-    assert weekly.onehot_weekdays == {}
-    assert daily.onehot_weekdays
+    assert weekly.weekday_groups == {}
+    assert daily.weekday_groups
+
+
+def test_weekday_groups_are_model_settings_not_preprocessing_arguments(tmp_path, archive_csv):
+    spec = build_spec("d", archive_csv, tmp_path / "out",
+                      temporal_resol="daily", weekday_groups={"Weekend": ["Sat", "Sun"]})
+    payload = spec.to_r_spec()
+    assert payload["weekday_groups"] == {"Weekend": ["Sat", "Sun"]}
+    assert "onehot_weekdays" not in payload
+
+
+def test_pre_diagnosis_chooses_model_groups_from_observed_report_weekdays(
+        tmp_path, archive_csv, monkeypatch):
+    diagnosis = prepare.diagnose_archive(archive_csv, geo_col="geo_value",
+                                         reference_col="reference_date",
+                                         report_col="report_date", value_cols=("value",),
+                                         value_type="count")
+    diagnosis["temporal_resolution"] = "daily"
+    diagnosis["report_axis_weekdays"] = {"Wed": 0.5, "Fri": 0.5}
+    monkeypatch.setattr(prepare, "diagnose_archive", lambda *args, **kwargs: diagnosis)
+    spec = build_spec("d", archive_csv, tmp_path / "out")
+    assert spec.weekday_groups == {"Fri": ["Fri"]}
+
+
+def test_weekday_groups_must_be_disjoint_and_leave_a_reference_day(tmp_path, archive_csv):
+    with pytest.raises(PreparationError, match="overlap"):
+        build_spec("d", archive_csv, tmp_path / "out", temporal_resol="daily",
+                   weekday_groups={"A": ["Mon", "Tue"], "B": ["Tue"]})
+    with pytest.raises(PreparationError, match="reference category"):
+        build_spec("d", archive_csv, tmp_path / "out", temporal_resol="daily",
+                   weekday_groups={day: [day] for day in
+                                   ("Mon", "Tue", "Wed", "Thurs", "Fri", "Sat", "Sun")})
 
 
 def test_the_r_spec_is_json_serializable_with_no_python_objects(tmp_path, archive_csv):
@@ -193,6 +224,10 @@ def test_the_written_config_loads_and_points_at_the_triangle(tmp_path, archive_c
     assert config.name == "mine"
     assert config.prepared_dir == spec.output_dir
     assert config.prediction_layers == ("baseline_null", "red")
+    assert config.revision_profile == {
+        "weekday_groups": spec.weekday_groups,
+        "lag_terms": list(spec.lag_terms),
+    }
 
 
 def test_generated_config_paths_are_relative_so_the_directory_can_be_moved(

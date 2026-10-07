@@ -83,8 +83,8 @@ value_type <- match.arg(get_flag("value-type", "count"), c("count", "fraction"))
 # with no denominator and need no denom-col.
 denom_col <- get_flag("denom-col", "")
 lag_terms  <- as.integer(strsplit(get_flag("lag-terms", "7,14"), ",")[[1]])
-weekdays   <- jsonlite::fromJSON(get_flag("weekdays-json", "{}"), simplifyVector = TRUE)
-if (!is.list(weekdays)) weekdays <- as.list(weekdays)
+weekday_groups <- jsonlite::fromJSON(get_flag("weekdays-json", "{}"), simplifyVector = FALSE)
+if (is.null(weekday_groups)) weekday_groups <- list()
 requested_methods <- trimws(strsplit(
   get_flag("methods", "Naive DelphiRF,Similarity-weighted DelphiRF"), ","
 )[[1]])
@@ -146,6 +146,41 @@ all_data <- rbindlist(lapply(location_files, function(path) {
 }), fill = TRUE)
 setDT(all_data)
 setorder(all_data, geo_value, report_date, reference_date)
+
+# DelphiRF keeps a canonical indicator for every weekday in the prepared
+# triangle. AutoDelphiRF's pre-diagnosis chooses the contrasts used for
+# fitting. Days not represented by a group form the reference category.
+canonical_weekdays <- c("Mon", "Tue", "Wed", "Thurs", "Fri", "Sat", "Sun")
+add_weekday_groups <- function(frame, groups) {
+  if (!length(groups)) return(frame)
+  for (group_name in names(groups)) {
+    members <- as.character(groups[[group_name]])
+    for (axis in c("ref", "issue")) {
+      sources <- paste0(members, "_", axis)
+      missing <- setdiff(sources, names(frame))
+      if (length(missing)) {
+        stop("prepared triangle is missing canonical weekday column(s): ",
+             paste(missing, collapse = ", "))
+      }
+      frame[[paste0(group_name, "_", axis)]] <- as.integer(
+        rowSums(as.data.frame(frame)[, sources, drop = FALSE], na.rm = FALSE) > 0)
+    }
+  }
+  frame
+}
+all_data <- add_weekday_groups(all_data, weekday_groups)
+
+model_params <- function(train) {
+  base <- DelphiRF:::create_params_list(train, lag_terms, temporal_resol)
+  canonical <- c(paste0(canonical_weekdays, "_ref"),
+                 paste0(canonical_weekdays, "_issue"))
+  base <- setdiff(base, canonical)
+  grouped <- if (temporal_resol == "daily" && length(weekday_groups)) {
+    c(paste0(names(weekday_groups), "_ref"),
+      paste0(names(weekday_groups), "_issue"))
+  } else character(0)
+  unique(c(base, grouped))
+}
 target_column <- as.character(schedule$target_column[[1]])
 # DelphiRF's `smoothed_target` picks the response column: TRUE ->
 # log_value_target_7dav, FALSE -> log_value_target. Deriving it from the
@@ -303,8 +338,7 @@ fit_one <- function(train, test, method, fold, group, pool_id, observation_weigh
   # an ordinary unavailable forecast as a fatal row-count mismatch.
   alignment_params <- params_list
   if (is.null(alignment_params)) {
-    alignment_params <- DelphiRF:::create_params_list(
-      train, lag_terms, temporal_resol, onehot_weekdays = weekdays)
+    alignment_params <- model_params(train)
   }
   alignment_scale <- sqrt(max(train$value_7dav, na.rm = TRUE))
   alignment_train <- DelphiRF:::add_sqrtscale(train, alignment_scale)
@@ -318,7 +352,7 @@ fit_one <- function(train, test, method, fold, group, pool_id, observation_weigh
   result <- tryCatch(
     DelphiRF::revision_forecast(
       train_data = as.data.frame(train), test_data = as.data.frame(test),
-      params_list = params_list,
+      params_list = alignment_params,
       taus = experiment_taus, smoothed_target = smoothed_target, lagged_term_list = lag_terms,
       temporal_resol = temporal_resol, lambda = .1, gamma = .1, lp_solver = lp_solver,
       test_lag_group = group, geo = key, value_type = value_type,
@@ -327,7 +361,7 @@ fit_one <- function(train, test, method, fold, group, pool_id, observation_weigh
       training_end_date = as.character(schedule$test_date[[fold]]),
       training_days = schedule$training_days[[fold]], train_models = TRUE,
       make_predictions = TRUE,
-      onehot_weekdays = weekdays, model_backend = model_backend
+      model_backend = model_backend
     ), error = function(e) {
       message("  [", method, " fold ", fold, " group ", group, " geo ",
               pool_id, "] fit failed: ", conditionMessage(e))
@@ -445,9 +479,7 @@ for (fold in fold_ids) {
 
   if ("Global DelphiRF" %in% requested_methods) {
     fe <- add_fixed_effects(training, testing)
-    base_params <- DelphiRF:::create_params_list(
-      DelphiRF:::add_weights_related(fe$train), lag_terms, temporal_resol,
-      onehot_weekdays = weekdays)
+    base_params <- model_params(DelphiRF:::add_weights_related(fe$train))
     global_params <- independent_design(fe$train, base_params, fe$columns, target_column)
     z <- fit_one(fe$train, fe$test, "Global DelphiRF", fold, "all", "global",
                  params_list = global_params)
@@ -497,5 +529,7 @@ jsonlite::write_json(list(
   package_path = find.package("DelphiRF"),
   methods = requested_methods,
   model_backend = model_backend,
+  weekday_groups = weekday_groups,
+  effective_base_params = model_params(DelphiRF:::add_weights_related(as.data.frame(all_data))),
   taus = experiment_taus
 ), paste0(output_path, ".provenance.json"), auto_unbox = TRUE, pretty = TRUE)

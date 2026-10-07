@@ -169,7 +169,7 @@ def _spec_from_arguments(arguments: argparse.Namespace):
         lower=arguments.target_lag_lower_tolerance,
         upper=arguments.target_lag_upper_tolerance, start_date=arguments.start_date,
         end_date=arguments.end_date, triangle_format=arguments.triangle_format,
-        min_location_rows=arguments.min_location_rows, delphirf_dir=None)
+        min_location_rows=arguments.min_location_rows)
 
 
 def _report_diagnosis(diagnosis: dict) -> None:

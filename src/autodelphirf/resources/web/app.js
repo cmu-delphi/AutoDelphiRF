@@ -90,7 +90,8 @@ async function loadEnvironment() {
         body.insertAdjacentHTML('afterend', notice('warn',
           `The installed DelphiRF model package still needs updating. You can run
            the latest-value reference and revision-pattern matching now; DelphiRF methods
-           remain unavailable until that update.`));
+           remain unavailable until you reinstall DelphiRF as the README describes and
+           reload this page.`));
       }
     } else {
       body.innerHTML = `<span class="pill warn">Diagnosis only</span>
@@ -98,9 +99,13 @@ async function loadEnvironment() {
       body.insertAdjacentHTML('afterend', notice('warn',
         `You can still drop an archive and see the full diagnosis. Building a prepared
          triangle needs R and DelphiRF:<br>
-         <code>Rscript -e 'remotes::install_github("cmu-delphi/DelphiRF")'</code><br>
-         If you have a source checkout, restart with
-         <code>AUTODELPHIRF_DELPHIRF_DIR=/path/to/DelphiRF autodelphirf web</code>.`));
+         <code>Rscript -e 'remotes::install_github("cmu-delphi/DelphiRF@refactor-clean")'</code><br>
+         then reload this page.`));
+    }
+    if (report.build) {
+      const source = [report.build.branch, report.build.commit].filter(Boolean).join(' @ ');
+      body.insertAdjacentHTML('beforeend', `<div class="hint">AutoDelphiRF
+        ${escapeHtml(report.build.version)}${source ? ` (${escapeHtml(source)})` : ''}</div>`);
     }
   } catch (error) {
     body.innerHTML = `<span class="pill bad">Error</span>
@@ -731,10 +736,10 @@ async function startRun() {
                                   : 'DelphiRF preprocessing is not ready.'}</strong><br>
        ${escapeHtml(state.environment.detail)}<br>
        ${needsDelphiModel
-         ? 'Choose “Latest reported value” and/or “Revision-pattern matching” for now, or update the installed DelphiRF package.'
-         : 'Set <code>AUTODELPHIRF_DELPHIRF_DIR</code> to a compatible DelphiRF source checkout and restart the server.'}<br>
+         ? 'Choose “Latest reported value” and/or “Revision-pattern matching” for now, or reinstall DelphiRF as the README describes.'
+         : 'Install DelphiRF in R as the README describes.'}<br>
        <span class="hint">Your archive, target lag and schedule are unaffected &mdash; this
-       check runs at startup, so the server has to be restarted either way.</span>`);
+       check runs when the page loads, so reload the page after reinstalling DelphiRF.</span>`);
     scrollIntoView('card-run');
     return;
   }

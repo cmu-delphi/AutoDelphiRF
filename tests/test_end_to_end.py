@@ -8,9 +8,8 @@ Run it explicitly with:
 
     pytest tests/test_end_to_end.py
 
-and set AUTODELPHIRF_DELPHIRF_DIR to a DelphiRF source checkout if the installed
-DelphiRF predates the ``target_lag_*_tolerance`` / ``onehot_weekdays``
-arguments.
+DelphiRF must be installed in R's library as the README describes; a source
+checkout is never loaded.
 """
 from __future__ import annotations
 
@@ -33,13 +32,14 @@ def delphirf_available() -> bool:
     executable = os.environ.get("AUTODELPHIRF_RSCRIPT") or shutil.which("Rscript")
     if not executable:
         return False
-    source_dir = os.environ.get("AUTODELPHIRF_DELPHIRF_DIR")
-    if source_dir:
-        script = (f'suppressMessages(pkgload::load_all("{source_dir}", quiet=TRUE)); '
-                  'cat("onehot_weekdays" %in% names(formals(data_preprocessing)))')
-    else:
-        script = ('suppressMessages(library(DelphiRF)); '
-                  'cat("onehot_weekdays" %in% names(formals(DelphiRF::data_preprocessing)))')
+    required = ('c("ref_lag", "lagged_term_list", "value_type", "temporal_resol", '
+                '"smoothed", "target_lag_lower_tolerance", "target_lag_upper_tolerance")')
+    script = ('suppressMessages(library(DelphiRF)); '
+              f'cat(all({required} %in% '
+              'names(formals(DelphiRF::data_preprocessing))) && '
+              '"model_backend" %in% names(formals(DelphiRF::revision_forecast)) && '
+              '!"onehot_weekdays" %in% '
+              'names(formals(DelphiRF:::create_params_list)))')
     try:
         result = subprocess.run([executable, "-e", script], capture_output=True,
                                 text=True, timeout=180)
@@ -50,7 +50,7 @@ def delphirf_available() -> bool:
 
 requires_delphirf = pytest.mark.skipif(
     not delphirf_available(),
-    reason="needs R with a current DelphiRF (set AUTODELPHIRF_DELPHIRF_DIR for a source checkout)")
+    reason="needs R with a current installed DelphiRF")
 
 
 @requires_delphirf
@@ -95,7 +95,7 @@ def test_one_command_turns_a_raw_archive_into_a_report(tmp_path):
     # Both requested methods were actually scored.
     import pandas as pd
     predictions = pd.read_csv(results / "predictions.csv.gz")
-    assert set(predictions.method) >= {"baseline_null", "red"}
+    assert set(predictions.method) >= {"baseline_null", "delphirf"}
     assert predictions.absolute_error.notna().any()
 
 

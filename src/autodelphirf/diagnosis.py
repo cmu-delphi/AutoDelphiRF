@@ -9,7 +9,7 @@ import pandas as pd
 REQUIRED = {"geo_value", "reference_date", "report_date", "target_date", "lag",
             "target_lag", "log_value_7dav"}
 
-WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+WEEKDAYS = ("Mon", "Tue", "Wed", "Thurs", "Fri", "Sat", "Sun")
 # Share of genuine revisions a weekday needs before it is treated as a
 # scheduled release day rather than noise.
 ACTIVE_WEEKDAY_SHARE = 0.08
@@ -20,6 +20,37 @@ MIN_BASELINE_SHARE = 1e-9
 # noisy columns, so a fixed Mon/Weekends contrast is imposed instead. This is
 # a domain prior, not a derivation -- recorded as such in the diagnosis.
 UNIFORM_WEEKDAY_GROUPS = {"Mon": ["Mon"], "Weekends": ["Sat", "Sun"]}
+
+
+def weekday_groups_from_share(weekday_share: dict, temporal_resolution: str) -> dict:
+    """Choose the weekday contrasts used by model fitting.
+
+    DelphiRF preprocessing retains the seven canonical weekday indicators.
+    AutoDelphiRF chooses a smaller, identifiable set of contrasts from the
+    observed reporting pattern. Days outside the returned groups form the
+    reference category.
+    """
+    if temporal_resolution == "weekly":
+        return {}
+    if temporal_resolution != "daily":
+        raise ValueError("temporal_resolution must be 'daily' or 'weekly'")
+    normalized = {("Thurs" if day == "Thu" else day): float(value)
+                  for day, value in (weekday_share or {}).items()}
+    share = {day: normalized.get(day, 0.0) for day in WEEKDAYS}
+    active = [day for day in WEEKDAYS if share[day] >= ACTIVE_WEEKDAY_SHARE]
+    if len(active) >= 6:
+        groups = dict(UNIFORM_WEEKDAY_GROUPS)
+    else:
+        groups = {day: [day] for day in active}
+    covered = {day for members in groups.values() for day in members}
+    baseline_share = sum(share[day] for day in WEEKDAYS if day not in covered)
+    if groups and baseline_share <= MIN_BASELINE_SHARE:
+        # Every observed report day is represented, so the indicators sum to
+        # the intercept. Drop the least frequent group as the reference level;
+        # a single observed weekday has no estimable weekday contrast.
+        reference = min(groups, key=lambda name: sum(share[day] for day in groups[name]))
+        groups = {name: members for name, members in groups.items() if name != reference}
+    return groups
 
 
 def derive_revision_profile(prepared: pd.DataFrame) -> dict:
@@ -39,7 +70,9 @@ def derive_revision_profile(prepared: pd.DataFrame) -> dict:
     if genuine.empty:
         return {"status": "unavailable: no genuine revision events"}
 
-    names = pd.to_datetime(genuine.report_date).dt.day_name().str[:3]
+    names = pd.to_datetime(genuine.report_date).dt.day_name().map({
+        "Monday": "Mon", "Tuesday": "Tue", "Wednesday": "Wed",
+        "Thursday": "Thurs", "Friday": "Fri", "Saturday": "Sat", "Sunday": "Sun"})
     share = names.value_counts(normalize=True).reindex(WEEKDAYS).fillna(0.)
     active = [day for day in WEEKDAYS if share[day] >= ACTIVE_WEEKDAY_SHARE]
 
@@ -51,7 +84,7 @@ def derive_revision_profile(prepared: pd.DataFrame) -> dict:
 
     prior_applied = False
     if len(active) >= 6:
-        groups, prior_applied = dict(UNIFORM_WEEKDAY_GROUPS), True
+        groups, prior_applied = weekday_groups_from_share(share.to_dict(), "daily"), True
         cadence = "uniform-daily"
     elif not active:
         groups, cadence = {}, "no-dominant-weekday"
@@ -80,9 +113,9 @@ def derive_revision_profile(prepared: pd.DataFrame) -> dict:
 
 
 def observed_weekday_columns(prepared: pd.DataFrame) -> list[str]:
-    """Weekday one-hot groups actually present in the prepared triangle."""
-    return sorted({c[:-4] for c in prepared.columns if c.endswith("_ref")}
-                  - {"refd"})
+    """Canonical weekday indicators present in the prepared triangle."""
+    return [day for day in WEEKDAYS
+            if f"{day}_ref" in prepared.columns and f"{day}_issue" in prepared.columns]
 
 
 def diagnose_prepared_data(prepared: pd.DataFrame, schedule: pd.DataFrame,
@@ -119,9 +152,10 @@ def diagnose_prepared_data(prepared: pd.DataFrame, schedule: pd.DataFrame,
         summary["revision_profile_disagreements"] = disagreements or None
 
     observed = observed_weekday_columns(prepared)
-    expected = sorted((effective.get("weekday_groups") or {}).keys())
+    expected = list(WEEKDAYS) if observed else []
     summary["weekday_columns_in_triangle"] = observed
     summary["weekday_columns_match_profile"] = (observed == expected)
+    summary["weekday_groups_used_for_modeling"] = effective.get("weekday_groups") or {}
 
     quality = pd.DataFrame({"column": prepared.columns,
                             "missing_n": [int(prepared[c].isna().sum()) for c in prepared],

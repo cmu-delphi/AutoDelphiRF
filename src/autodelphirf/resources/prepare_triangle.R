@@ -22,43 +22,30 @@ if (length(args) != 1) stop("usage: prepare_triangle.R SPEC_JSON", call. = FALSE
 spec <- fromJSON(args[[1]], simplifyVector = TRUE)
 
 # --- DelphiRF -------------------------------------------------------------
-# AutoDelphiRF's native methods may use the explicitly recorded local checkout for
-# preprocessing while an older installed DelphiRF is being updated. The path
-# is preserved in preparation.json, so the source of the triangle is auditable.
-if (!is.null(spec$delphirf_dir) && nzchar(spec$delphirf_dir)) {
-  if (!requireNamespace("pkgload", quietly = TRUE)) {
-    stop("loading the local DelphiRF checkout needs the R package 'pkgload'.", call. = FALSE)
-  }
-  suppressPackageStartupMessages(pkgload::load_all(spec$delphirf_dir, quiet = TRUE))
-} else {
-  if (!requireNamespace("DelphiRF", quietly = TRUE)) {
-    stop("DelphiRF is not installed and no local source checkout was configured.", call. = FALSE)
-  }
-  suppressPackageStartupMessages(library(DelphiRF))
+# Always the DelphiRF installed in R's library, never a source checkout, so the
+# triangle is built by the same package version that trains the models.
+if (!requireNamespace("DelphiRF", quietly = TRUE)) {
+  stop("DelphiRF is not installed; install it as the AutoDelphiRF README describes, e.g. ",
+       "remotes::install_github('cmu-delphi/DelphiRF@refactor-clean').", call. = FALSE)
 }
+suppressPackageStartupMessages(library(DelphiRF))
 
-preprocess <- get("data_preprocessing")
+preprocess <- DelphiRF::data_preprocessing
 required_arguments <- c("ref_lag", "lagged_term_list", "value_type", "temporal_resol",
                         "smoothed", "target_lag_lower_tolerance",
-                        "target_lag_upper_tolerance", "onehot_weekdays")
+                        "target_lag_upper_tolerance")
 missing_arguments <- setdiff(required_arguments, names(formals(preprocess)))
 if (length(missing_arguments) > 0) {
   stop("the available DelphiRF::data_preprocessing() does not accept: ",
        paste(missing_arguments, collapse = ", "),
-       ". This is an older DelphiRF than RevRoute requires; update it with ",
-       "remotes::install_github('cmu-delphi/DelphiRF').", call. = FALSE)
+       ". This is an older DelphiRF than AutoDelphiRF requires; reinstall it as the ",
+       "AutoDelphiRF README describes.", call. = FALSE)
 }
 
 normalize_weekly <- NULL
 if (identical(spec$temporal_resol, "weekly")) {
-  normalize_weekly <- tryCatch(get("normalize_weekly_observations"),
+  normalize_weekly <- tryCatch(getFromNamespace("normalize_weekly_observations", "DelphiRF"),
                                error = function(e) NULL)
-  if (is.null(normalize_weekly)) {
-    normalize_weekly <- tryCatch(
-      if ("DelphiRF" %in% loadedNamespaces())
-        getFromNamespace("normalize_weekly_observations", "DelphiRF") else NULL,
-      error = function(e) NULL)
-  }
   if (is.null(normalize_weekly)) {
     stop("a weekly archive needs DelphiRF's normalize_weekly_observations(), which this ",
          "DelphiRF install does not provide. Install a current DelphiRF release.",
@@ -151,10 +138,6 @@ if (nrow(raw_all) == 0) {
 output_dir <- spec$output_dir
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
-weekdays_spec <- spec$onehot_weekdays
-if (is.null(weekdays_spec)) weekdays_spec <- list()
-weekdays_spec <- lapply(weekdays_spec, as.character)
-
 write_triangle <- function(frame, stem) {
   if (identical(spec$triangle_format, "csv")) {
     path <- file.path(output_dir, paste0(stem, ".csv.gz"))
@@ -196,7 +179,7 @@ for (i in seq_along(locations)) {
                smoothed = spec$smoothed,
                target_lag_lower_tolerance = spec$lower,
                target_lag_upper_tolerance = spec$upper,
-               target_as_of_date = NULL, onehot_weekdays = weekdays_spec),
+               target_as_of_date = NULL),
     error = function(e) {
       message("  ", location, ": data_preprocessing() failed -- ", conditionMessage(e))
       NULL

@@ -49,7 +49,8 @@ def train_delphirf(config, prepared: pd.DataFrame, schedule: pd.DataFrame,
     if "delphirf" in methods:
         pools = learn_task_pools(prepared, schedule, Path(output).with_name("revroute_pools.csv"))
     names = ",".join(DELPHIRF_METHODS[name] for name in methods)
-    weekdays = json.dumps(resolved.get("onehot_weekdays") or {})
+    weekday_groups = json.dumps(
+        resolved.get("weekday_groups", resolved.get("onehot_weekdays", {})) or {})
     command = [rscript_executable(), str(resource_path("train_delphirf.R")),
                str(config.prepared_dir), str(raw),
                str(Path(config.prepared_dir) / config.schedule_file), str(output),
@@ -59,7 +60,7 @@ def train_delphirf(config, prepared: pd.DataFrame, schedule: pd.DataFrame,
                "--value-col", resolved["value_cols"][0],
                "--value-type", resolved["value_type"],
                "--lag-terms", ",".join(map(str, resolved["lag_terms"])),
-               "--weekdays-json", weekdays, "--methods", names,
+               "--weekdays-json", weekday_groups, "--methods", names,
                "--taus", ".01,.025,.1,.25,.5,.75,.9,.975,.99"]
     if len(resolved["value_cols"]) > 1:
         command += ["--denom-col", resolved["value_cols"][1]]

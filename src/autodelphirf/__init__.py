@@ -1,7 +1,7 @@
 """AutoDelphiRF's command-line, Python, and web forecasting pipeline."""
 
 #: Distribution version. Kept in step with ``pyproject.toml``.
-__version__ = "0.1.0"
+__version__ = "0.1.1.dev0"
 
 from .calibration import (add_interval_columns, build_reliability_reference,
                           calibrate, calibration_stratum, forecast_quality_summary,

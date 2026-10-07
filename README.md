@@ -12,30 +12,39 @@ local web application.
 
 - Python 3.10 or newer
 - R and `Rscript`
-- The R package [DelphiRF](https://github.com/cmu-delphi/DelphiRF)
+- The R package [DelphiRF](https://github.com/cmu-delphi/DelphiRF/tree/refactor-clean),
+  installed from its `refactor-clean` branch
 - The R package `quantreg`
 
 Install the R dependencies:
 
 ```bash
-Rscript -e 'install.packages(c("remotes", "quantreg")); remotes::install_github("cmu-delphi/DelphiRF")'
+Rscript -e 'install.packages(c("remotes", "quantreg")); remotes::install_github("cmu-delphi/DelphiRF@refactor-clean")'
 ```
+
+This branch of AutoDelphiRF needs DelphiRF's `refactor-clean` API. The DelphiRF
+on `main` does not have it yet, so `remotes::install_github("cmu-delphi/DelphiRF")`
+installs a DelphiRF that AutoDelphiRF reports as too old.
 
 Pre-diagnosis runs entirely in Python. R and DelphiRF are required when the
 pipeline prepares data or trains a DelphiRF model.
+
+AutoDelphiRF always uses the DelphiRF installed in R's library, for both data
+preparation and model training; it never loads a DelphiRF source checkout. After
+reinstalling DelphiRF, reload the `autodelphirf web` page to pick it up.
 
 ## Install AutoDelphiRF
 
 Install directly from GitHub:
 
 ```bash
-python -m pip install "autodelphirf[parquet] @ git+https://github.com/cmu-delphi/AutoDelphiRF.git"
+python -m pip install "autodelphirf[parquet] @ git+https://github.com/cmu-delphi/AutoDelphiRF.git@use-delphirf-refactor-clean"
 ```
 
 Or install from a clone:
 
 ```bash
-git clone https://github.com/cmu-delphi/AutoDelphiRF.git
+git clone -b use-delphirf-refactor-clean https://github.com/cmu-delphi/AutoDelphiRF.git
 cd AutoDelphiRF
 python -m pip install -e ".[parquet]"
 ```

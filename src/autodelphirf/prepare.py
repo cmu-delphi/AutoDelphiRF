@@ -11,6 +11,7 @@ import tempfile
 
 import pandas as pd
 
+from .diagnosis import WEEKDAYS, weekday_groups_from_share
 from .ingest import DEFAULT_TRAINING_WINDOW_DAYS, diagnose_raw_archive
 from .resources import resource_path
 
@@ -21,14 +22,6 @@ VALUE_TYPES = ("count", "fraction")
 #: Emitted by ``data_preprocessing`` for a smoothed build vs. an unsmoothed
 #: one. The schedule names the one the run evaluates against.
 TARGET_COLUMNS = {True: "log_value_target_7dav", False: "log_value_target"}
-
-#: Weekday one-hot groups, by diagnosed reporting cadence. A weekly stream has
-#: no within-week reporting structure to encode, so it gets none; a daily
-#: stream gets suitable weekday groups for its reporting cadence.
-DEFAULT_WEEKDAY_GROUPS = {
-    "daily": {"Mon": ["Mon"], "Weekends": ["Sat", "Sun"]},
-    "weekly": {},
-}
 
 #: Days between retraining origins, by diagnosed reporting cadence. Every test
 #: origin is a retrain: the models are refitted on the history visible at that
@@ -60,6 +53,35 @@ class PreparationError(RuntimeError):
     """A prepared triangle could not be built."""
 
 
+def normalize_weekday_groups(groups: dict, temporal_resolution: str) -> dict:
+    """Validate model weekday groups against DelphiRF's canonical columns."""
+    if temporal_resolution == "weekly":
+        if groups:
+            raise PreparationError("weekday groups cannot be used with weekly data")
+        return {}
+    normalized = {}
+    used = set()
+    for name, members in groups.items():
+        if not isinstance(name, str) or not name or not name.replace("_", "").isalnum():
+            raise PreparationError(f"invalid weekday group name: {name!r}")
+        if isinstance(members, str):
+            members = [members]
+        clean = [("Thurs" if day == "Thu" else str(day)) for day in members]
+        if not clean or any(day not in WEEKDAYS for day in clean):
+            raise PreparationError(
+                f"weekday group {name!r} must contain weekdays from {list(WEEKDAYS)}")
+        overlap = used.intersection(clean)
+        if overlap:
+            raise PreparationError(
+                f"weekday groups overlap on: {', '.join(sorted(overlap))}")
+        normalized[name] = clean
+        used.update(clean)
+    if normalized and used == set(WEEKDAYS):
+        raise PreparationError(
+            "weekday groups must leave at least one weekday as the reference category")
+    return normalized
+
+
 @dataclass
 class PreparationSpec:
     """Everything ``prepare_triangle.R`` needs, and where each value came from.
@@ -80,7 +102,7 @@ class PreparationSpec:
     temporal_resol: str
     ref_lag: int
     lag_terms: tuple[int, ...]
-    onehot_weekdays: dict
+    weekday_groups: dict
     training_days: int
     testing_days: int
     lower: int
@@ -91,7 +113,6 @@ class PreparationSpec:
     experiment_end_date: str | None
     triangle_format: str
     min_location_rows: int
-    delphirf_dir: str | None
     overrides: tuple[str, ...] = ()
     diagnosis: dict = field(default_factory=dict)
 
@@ -104,14 +125,13 @@ class PreparationSpec:
             "constant_geo": self.constant_geo, "value_type": self.value_type,
             "smoothed": self.smoothed, "temporal_resol": self.temporal_resol,
             "ref_lag": int(self.ref_lag), "lag_terms": [int(t) for t in self.lag_terms],
-            "onehot_weekdays": self.onehot_weekdays, "training_days": int(self.training_days),
+            "weekday_groups": self.weekday_groups, "training_days": int(self.training_days),
             "testing_days": int(self.testing_days), "lower": int(self.lower),
             "upper": int(self.upper), "target_column": self.target_column,
             "start_date": self.start_date, "end_date": self.end_date,
             "experiment_end_date": self.experiment_end_date,
             "triangle_format": self.triangle_format,
             "min_location_rows": int(self.min_location_rows),
-            "delphirf_dir": self.delphirf_dir,
         }
 
 
@@ -217,8 +237,8 @@ def build_spec(name: str, raw_csv: Path, output_dir: Path, *, reference_col: str
                lower: int = 0, upper: int = 0, start_date: str | None = None,
                end_date: str | None = None, triangle_format: str = "parquet",
                min_location_rows: int = DEFAULT_MIN_LOCATION_ROWS,
-               weekday_groups: dict | None = None, confirm_target_lag: bool = False,
-               delphirf_dir: str | None = None) -> PreparationSpec:
+               weekday_groups: dict | None = None,
+               confirm_target_lag: bool = False) -> PreparationSpec:
     """Diagnose the archive and resolve every preprocessing argument.
 
     A keyword left at ``None`` is diagnosed from the archive; a keyword given
@@ -290,9 +310,11 @@ def build_spec(name: str, raw_csv: Path, output_dir: Path, *, reference_col: str
         overrides.append("training_days")
 
     if weekday_groups is None:
-        weekday_groups = DEFAULT_WEEKDAY_GROUPS[temporal_resol]
+        weekday_groups = weekday_groups_from_share(
+            diagnosis.get("report_axis_weekdays") or {}, temporal_resol)
     else:
         overrides.append("weekday_groups")
+    weekday_groups = normalize_weekday_groups(weekday_groups, temporal_resol)
 
     # Every test origin is a retraining origin, so ``testing_days`` IS the
     # retraining interval. Left unset it follows the diagnosed cadence.
@@ -321,12 +343,12 @@ def build_spec(name: str, raw_csv: Path, output_dir: Path, *, reference_col: str
         reference_col=reference_col, report_col=report_col, value_cols=tuple(value_cols),
         geo_col=geo_col, constant_geo="single_location", value_type=value_type,
         smoothed=bool(smoothed), temporal_resol=temporal_resol, ref_lag=resolved_lag,
-        lag_terms=tuple(int(t) for t in lag_terms), onehot_weekdays=dict(weekday_groups),
+        lag_terms=tuple(int(t) for t in lag_terms), weekday_groups=dict(weekday_groups),
         training_days=int(training_days), testing_days=int(testing_days),
         lower=int(lower), upper=int(upper), target_column=TARGET_COLUMNS[bool(smoothed)],
         start_date=start_date, end_date=end_date,
         experiment_end_date=experiment_end_date, triangle_format=triangle_format,
-        min_location_rows=int(min_location_rows), delphirf_dir=delphirf_dir,
+        min_location_rows=int(min_location_rows),
         overrides=tuple(dict.fromkeys(overrides)),
         diagnosis={**diagnosis, "user_confirmed_target_lag": bool(confirm_target_lag),
                    "final_target_lag": resolved_lag})
@@ -340,7 +362,7 @@ def rscript_executable() -> str:
             "Rscript was not found on PATH. AutoDelphiRF calls DelphiRF (an R package) to build a "
             "prepared triangle from a raw archive:\n"
             "  1. install R          https://cran.r-project.org\n"
-            "  2. install DelphiRF   Rscript -e 'remotes::install_github(\"cmu-delphi/DelphiRF\")'\n"
+            "  2. install DelphiRF   Rscript -e 'remotes::install_github(\"cmu-delphi/DelphiRF@refactor-clean\")'\n"
             "Set AUTODELPHIRF_RSCRIPT to use a specific Rscript. If you already have a prepared "
             "triangle, skip this stage and run `autodelphirf run --config <dataset>.json` instead.")
     return executable
@@ -420,6 +442,10 @@ def write_dataset_config(spec: PreparationSpec, config_path: Path,
         "model_methods": list(prediction_layers),
         "prediction_layers": list(prediction_layers),
         "method_params": {},
+        "revision_profile": {
+            "weekday_groups": spec.weekday_groups,
+            "lag_terms": list(spec.lag_terms),
+        },
         "comparator_file": None,
         "comparator_methods": {},
         "reliability_reference_file": None,

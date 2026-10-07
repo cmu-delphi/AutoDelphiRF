@@ -39,6 +39,13 @@ def test_r_backend_calls_the_installed_delphirf_package():
     assert "pkgload::load_all" not in source
 
 
+def test_preprocessing_never_loads_a_delphirf_source_checkout():
+    source = resource_path("prepare_triangle.R").read_text()
+    assert "library(DelphiRF)" in source
+    assert "pkgload" not in source
+    assert "delphirf_dir" not in source
+
+
 def test_test_window_can_vary_by_schedule_row():
     dates = pd.date_range("2024-01-01", periods=10)
     prepared = pd.DataFrame({
@@ -76,7 +83,7 @@ def test_delphirf_training_builds_an_installed_package_command(tmp_path, monkeyp
     metadata = {"raw_archive": str(raw), "resolved_preprocessing": {
         "reference_col": "reference_date", "report_col": "report_date",
         "value_cols": ["value"], "value_type": "count", "lag_terms": [1, 7],
-        "onehot_weekdays": {"Mon": ["Mon"]}}}
+        "weekday_groups": {"Mon": ["Mon"]}}}
     (prepared_dir / "preparation.json").write_text(json.dumps(metadata))
     (prepared_dir / "test_dates.csv").write_text("test_date\n")
     captured = {}
@@ -94,5 +101,14 @@ def test_delphirf_training_builds_an_installed_package_command(tmp_path, monkeyp
         tmp_path / "predictions.csv.gz")
     command = captured["command"]
     assert "train_delphirf.R" in command[1]
+    assert command[command.index("--weekdays-json") + 1] == '{"Mon": ["Mon"]}'
     assert not any("DelphiRF" in part and Path(part).is_dir() for part in command)
     assert provenance["rr_delphirf_code_version"] == "rrdelphirf0"
+
+
+def test_r_backend_builds_model_groups_from_canonical_weekday_columns():
+    source = resource_path("train_delphirf.R").read_text()
+    assert 'canonical_weekdays <- c("Mon", "Tue", "Wed", "Thurs", "Fri", "Sat", "Sun")' in source
+    assert "add_weekday_groups(all_data, weekday_groups)" in source
+    assert "setdiff(base, canonical)" in source
+    assert "params_list = alignment_params" in source

@@ -295,11 +295,15 @@ def environment_report() -> dict:
 #: Every one is optional -- which exist depends on which layers ran -- so a
 #: missing file means "that layer was not requested", never an error.
 RESULT_TABLES = {
-    "headline": "v1_pairwise_point.csv",
-    "by_origin": "report/tables/comparison_by_origin.csv",
-    "availability": "report/tables/model_availability.csv",
-    "revroute_pools": "revroute_pools.csv",
-    "revroute_pool_profile": "report/tables/rr_delphirf_cluster_profile.csv",
+    # Validation tables are copied beside the run in some pipeline versions
+    # and exist only under report/tables in others. Read either layout so a
+    # completed run remains viewable across that harmless artifact change.
+    "headline": ("v1_pairwise_point.csv", "report/tables/v1_pairwise_point.csv"),
+    "by_origin": ("report/tables/comparison_by_origin.csv",),
+    "availability": ("report/tables/model_availability.csv",),
+    "revroute_pools": ("revroute_pool_summary.csv",),
+    "_revroute_assignments": ("revroute_pools.csv",),
+    "revroute_pool_profile": ("report/tables/rr_delphirf_cluster_profile.csv",),
 }
 
 #: Rows of any one table sent to the page. A run with hundreds of retraining
@@ -318,11 +322,18 @@ def results_summary(output_dir) -> dict:
     """
     root = Path(output_dir)
     tables, truncated = {}, []
-    for key, relative in RESULT_TABLES.items():
-        path = root / relative
-        if not path.is_file():
+    for key, alternatives in RESULT_TABLES.items():
+        path = next((root / relative for relative in alternatives
+                     if (root / relative).is_file()), None)
+        if path is None:
             continue
-        frame = pd.read_csv(path)
+        try:
+            frame = pd.read_csv(path)
+        except pd.errors.EmptyDataError:
+            # The report writes an empty CSV for optional analyses that do not
+            # apply to the selected methods. That means "no rows to show",
+            # not that the completed run or its other tables are unreadable.
+            continue
         if key == "headline" and "subset" in frame:
             # The per-subset breakdown is in the report; the page wants the
             # one line per comparison that answers "did it help overall".
@@ -331,9 +342,33 @@ def results_summary(output_dir) -> dict:
             truncated.append(key)
             frame = frame.head(MAX_RESULT_ROWS)
         tables[key] = json.loads(frame.to_json(orient="records", date_format="iso"))
+    # The saved pool assignment is the authoritative detail table. Derive a
+    # compact composition table for the page instead of confusing it with the
+    # unrelated revision-state-regime table produced by another analysis.
+    assignments = tables.pop("_revroute_assignments", [])
+    if assignments:
+        assignment_frame = pd.DataFrame(assignments)
+        needed = {"fold", "cutoff", "pool", "geo_value"}
+        if needed.issubset(assignment_frame.columns):
+            profile = (assignment_frame.groupby(["fold", "cutoff", "pool"], observed=True)
+                       .agg(tasks=("pool", "size"), locations=("geo_value", "nunique"))
+                       .reset_index())
+            tables["revroute_pool_profile"] = json.loads(
+                profile.to_json(orient="records", date_format="iso"))
+            shape = (profile.groupby(["fold", "cutoff"], observed=True)
+                     .agg(largest_pool=("tasks", "max"),
+                          singleton_pools=("tasks", lambda values: int((values == 1).sum())))
+                     .reset_index())
+            shape_lookup = {(row["fold"], row["cutoff"]): row
+                            for row in json.loads(shape.to_json(orient="records",
+                                                                date_format="iso"))}
+            for summary in tables.get("revroute_pools", []):
+                extra = shape_lookup.get((summary.get("fold"), summary.get("cutoff")), {})
+                summary.update({key: extra.get(key) for key in
+                                ("largest_pool", "singleton_pools")})
     origins = tables.get("by_origin") or []
     return {"output_dir": str(root), "tables": tables, "truncated": truncated,
-            "n_origins": len({row["cutoff"] for row in origins}),
+            "n_origins": len({row.get("cutoff") for row in origins if row.get("cutoff")}),
             "report_available": (root / "report" / "report.html").is_file()}
 
 
@@ -805,7 +840,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self._json({**results_summary(job.output_dir),
                         "origins_scheduled": job.origins_scheduled})
-        except OSError as error:
+        except Exception as error:                    # noqa: BLE001 - returned to the page
+            # Never terminate the HTTP connection without a response. Browser
+            # fetch reports that only as "Load failed", which hides the file
+            # and parser error needed to diagnose a genuinely damaged table.
+            traceback.print_exc()
             self._json({"error": f"the run's output could not be read: {error}"}, 500)
 
     # -- static & report ---------------------------------------------------

@@ -295,7 +295,7 @@ def test_results_read_back_the_tables_a_run_wrote(tmp_path):
         "early,rr_delphirf3 - baseline_null,-9.0,0.77\n")
     (tmp_path / "report" / "tables" / "comparison_by_origin.csv").write_text(
         "cutoff,method,n,mean_ae\n2020-01-01,rr_delphirf3,4,1.5\n2020-02-01,rr_delphirf3,4,1.1\n")
-    (tmp_path / "revroute_pools.csv").write_text(
+    (tmp_path / "revroute_pool_summary.csv").write_text(
         "fold,cutoff,k_selected,tasks\n1,2020-01-01,3,9\n2,2020-02-01,4,9\n")
     summary = results_summary(tmp_path)
     # Only the pooled line: the per-subset breakdown belongs to the report.
@@ -304,6 +304,48 @@ def test_results_read_back_the_tables_a_run_wrote(tmp_path):
     assert summary["n_origins"] == 2
     # RevRoute relearns its pools every retraining, so there is one row per origin.
     assert len(summary["tables"]["revroute_pools"]) == 2
+
+
+def test_results_derive_pool_composition_from_saved_assignments(tmp_path):
+    (tmp_path / "revroute_pool_summary.csv").write_text(
+        "fold,cutoff,represented_tasks,pool_count\n1,2020-01-01,3,2\n")
+    (tmp_path / "revroute_pools.csv").write_text(
+        "fold,cutoff,geo_value,lag,pool\n"
+        "1,2020-01-01,a,1,0\n1,2020-01-01,b,1,0\n"
+        "1,2020-01-01,a,2,1\n")
+    summary = results_summary(tmp_path)
+    pools = summary["tables"]["revroute_pools"]
+    assert pools[0]["largest_pool"] == 2
+    assert pools[0]["singleton_pools"] == 1
+    assert summary["tables"]["revroute_pool_profile"] == [
+        {"fold": 1, "cutoff": "2020-01-01", "pool": 0, "tasks": 2, "locations": 2},
+        {"fold": 1, "cutoff": "2020-01-01", "pool": 1, "tasks": 1, "locations": 1},
+    ]
+
+
+def test_empty_optional_result_table_does_not_hide_the_other_results(tmp_path):
+    """An inapplicable report table is written as an empty CSV, not a failed run."""
+    tables = tmp_path / "report" / "tables"
+    tables.mkdir(parents=True)
+    (tables / "comparison_by_origin.csv").write_text(
+        "cutoff,method,n,mean_ae\n2020-01-01,delphirf,4,1.5\n")
+    (tables / "rr_delphirf_cluster_profile.csv").write_text("\n")
+    summary = results_summary(tmp_path)
+    assert summary["n_origins"] == 1
+    assert len(summary["tables"]["by_origin"]) == 1
+    assert "revroute_pool_profile" not in summary["tables"]
+
+
+def test_headline_can_be_read_from_the_report_tables_directory(tmp_path):
+    """Newer reports need not duplicate validation tables at the run root."""
+    tables = tmp_path / "report" / "tables"
+    tables.mkdir(parents=True)
+    (tables / "v1_pairwise_point.csv").write_text(
+        "subset,comparison,mean_delta,win_probability\n"
+        "overall,delphirf - baseline_null,-1.5,0.7\n")
+    summary = results_summary(tmp_path)
+    assert summary["tables"]["headline"][0]["comparison"] == (
+        "delphirf - baseline_null")
 
 
 def test_a_huge_pool_profile_is_truncated_rather_than_sent_whole(tmp_path):

@@ -1082,10 +1082,10 @@ function renderPooling(pools, profile) {
       .join('; ');
     return `<tr>
       <td>${escapeHtml(String(pool.cutoff).slice(0, 10))}</td>
-      <td class="num">${pool.tasks}</td>
-      <td class="num">${pool.k_selected}</td>
-      <td class="num">${pool.largest_pool}</td>
-      <td class="num">${pool.singleton_pools}</td>
+      <td class="num">${pool.represented_tasks ?? pool.tasks ?? '\u2014'}</td>
+      <td class="num">${pool.pool_count ?? pool.k_selected ?? '\u2014'}</td>
+      <td class="num">${pool.largest_pool ?? '\u2014'}</td>
+      <td class="num">${pool.singleton_pools ?? '\u2014'}</td>
       <td class="pool-detail">${escapeHtml(detail)}</td>
     </tr>`;
   }).join('');

@@ -128,6 +128,8 @@ def _revision_magnitude_gaps(archive: pd.DataFrame) -> dict:
     genuine reports for the same (location, reference-date) pair. Kept
     distinct from reference-axis feature lags."""
     genuine = archive[archive.genuine_event]  # already sorted; see note above
+    if genuine.empty:
+        return {"n": 0}
     gap_days = genuine.groupby(["geo_value", "reference_date"], observed=True)["report_date"].diff().dt.days
     gap_days = gap_days.dropna()
     if not len(gap_days):

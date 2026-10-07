@@ -340,8 +340,10 @@ def resolve_target_lag(diagnosed: dict, user_target_lag: int | None,
                 "target_lag explicitly.")
         return int(suggested), f"diagnosed ({diagnosed.get('status')})"
     user_target_lag = int(user_target_lag)
-    if suggested is None or user_target_lag == suggested:
-        return user_target_lag, "user choice (diagnosis agrees or is unavailable)"
+    if suggested is None:
+        return user_target_lag, "user choice (diagnosis unavailable)"
+    if user_target_lag == suggested:
+        return user_target_lag, "user choice (matches diagnosis)"
     if not confirmed:
         raise ValueError(
             f"dataset '{dataset}' declares target_lag={user_target_lag} but the "

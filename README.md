@@ -38,13 +38,13 @@ reinstalling DelphiRF, reload the `autodelphirf web` page to pick it up.
 Install directly from GitHub:
 
 ```bash
-python -m pip install "autodelphirf[parquet] @ git+https://github.com/cmu-delphi/AutoDelphiRF.git@use-delphirf-refactor-clean"
+python -m pip install "autodelphirf[parquet] @ git+https://github.com/cmu-delphi/AutoDelphiRF.git@dev"
 ```
 
 Or install from a clone:
 
 ```bash
-git clone -b use-delphirf-refactor-clean https://github.com/cmu-delphi/AutoDelphiRF.git
+git clone -b dev https://github.com/cmu-delphi/AutoDelphiRF.git
 cd AutoDelphiRF
 python -m pip install -e ".[parquet]"
 ```

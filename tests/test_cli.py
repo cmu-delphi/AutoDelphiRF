@@ -42,7 +42,7 @@ def test_version_is_reported(capsys):
     assert __version__ in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("command", ["diagnose", "prepare", "run", "init"])
+@pytest.mark.parametrize("command", ["diagnose", "prepare", "run", "assess", "init"])
 def test_every_subcommand_has_help(command, capsys):
     with pytest.raises(SystemExit) as exit_info:
         cli.main([command, "--help"])
@@ -125,6 +125,28 @@ def test_a_missing_archive_exits_two_with_the_path(tmp_path, capsys):
 def test_a_missing_config_exits_two(tmp_path, capsys):
     assert cli.main(["run", "--config", str(tmp_path / "absent.json")]) == 2
     assert capsys.readouterr().err.startswith("error:")
+
+
+def test_assess_reports_missing_frozen_inputs(tmp_path, capsys):
+    results = tmp_path / "results"
+    results.mkdir()
+    assert cli.main(["assess", "--results", str(results)]) == 2
+    assert "predictions.csv.gz" in capsys.readouterr().err
+
+
+def test_assess_cli_passes_both_directories_and_prints_the_report(tmp_path, capsys, monkeypatch):
+    results = tmp_path / "results"
+    output = tmp_path / "fresh-assessment"
+    called = {}
+
+    def fake_assess(results_dir, output_dir):
+        called["arguments"] = (results_dir, output_dir)
+        return output_dir
+
+    monkeypatch.setattr("autodelphirf.assessment.assess_results", fake_assess)
+    assert cli.main(["assess", "--results", str(results), "--out", str(output)]) == 0
+    assert called["arguments"] == (results, output)
+    assert str(output / "report" / "report.html") in capsys.readouterr().out
 
 
 def test_a_config_pointing_at_no_triangle_explains_what_was_expected(tmp_path, capsys):

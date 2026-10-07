@@ -241,6 +241,22 @@ Then run the saved configuration:
 autodelphirf run --config autodelphirf_work/mydata.json
 ```
 
+## Rerun post-forecast assessment
+
+A completed run freezes its effective configuration in
+`results/resolved_config.json`. Rerun calibration, reliability, validation, and
+report generation from the saved predictions without invoking R or fitting a
+model:
+
+```bash
+autodelphirf assess --results autodelphirf_work/results
+```
+
+By default each assessment is written to a new UTC-stamped directory under
+`results/assessments/`. Use `--out` to choose another new directory. An
+assessment refuses to overwrite a nonempty directory and records SHA-256
+hashes of its prediction/configuration inputs in `assessment_manifest.json`.
+
 Validate the prepared input without model fitting:
 
 ```bash
@@ -302,6 +318,8 @@ autodelphirf_work/
     │   └── tables/
     ├── predictions.csv.gz
     ├── predictions_wide.csv.gz
+    ├── resolved_config.json
+    ├── assessment_inputs.json
     ├── run_manifest.json
     ├── target_lag_resolution.json
     ├── runtime_by_method.csv

@@ -2,6 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import os
 
 from .resources import load_resource
 
@@ -87,3 +88,49 @@ def load_dataset_config(path: Path) -> DatasetConfig:
         revision_profile=(dict(raw["revision_profile"]) if raw.get("revision_profile") else None),
         reliability_reference_file=resolve(raw.get("reliability_reference_file")),
         uncertainty_layer=bool(raw.get("uncertainty_layer", True)))
+
+
+def write_resolved_config(config: DatasetConfig, path: Path) -> Path:
+    """Write the effective, post-resolution configuration for later assessment.
+
+    Unlike the user-authored dataset JSON, this snapshot includes defaults and
+    the value transform derived from the prepared triangle. Paths are relative
+    to the snapshot where possible so a complete run directory can be moved.
+    """
+    path = Path(path).resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    def relative(value):
+        if value is None:
+            return None
+        target = Path(value).resolve()
+        try:
+            return os.path.relpath(target, path.parent)
+        except ValueError:
+            return str(target)
+
+    payload = {
+        "_generated_by": "autodelphirf run",
+        "name": config.name,
+        "prepared_dir": relative(config.prepared_dir),
+        "output_dir": relative(config.output_dir),
+        "schedule_file": config.schedule_file,
+        "value_transform": config.value_transform,
+        "initial_lag": config.initial_lag,
+        "include_genuine_events_only": config.include_genuine_events_only,
+        "model_methods": list(config.prediction_layers),
+        "prediction_layers": list(config.prediction_layers),
+        "comparator_file": relative(config.comparator_file),
+        "comparator_columns": config.comparator_columns,
+        "comparator_method_column": config.comparator_method_column,
+        "comparator_prediction_column": config.comparator_prediction_column,
+        "comparator_methods": config.comparator_methods,
+        "comparator_quantile_template": config.comparator_quantile_template,
+        "input_columns": config.input_columns,
+        "method_params": config.method_params,
+        "revision_profile": config.revision_profile,
+        "reliability_reference_file": relative(config.reliability_reference_file),
+        "uncertainty_layer": config.uncertainty_layer,
+    }
+    path.write_text(json.dumps(payload, indent=2) + "\n")
+    return path

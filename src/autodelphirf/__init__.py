@@ -6,7 +6,7 @@ __version__ = "0.1.1.dev0"
 from .calibration import (add_interval_columns, build_reliability_reference,
                           calibrate, calibration_stratum, forecast_quality_summary,
                           prospective_calibration, reliability_history)
-from .config import DatasetConfig, load_dataset_config
+from .config import DatasetConfig, load_dataset_config, write_resolved_config
 from .ingest import diagnose_raw_archive, resolve_target_lag
 from .io import load_prepared_triangles, triangle_files
 from .prepare import PreparationError, PreparationSpec, build_spec, prepare_dataset
@@ -28,7 +28,7 @@ from .weighting import (FEATURE, attach_revision_progress, build_curve_routing,
 
 __all__ = [
     "__version__",
-    "DatasetConfig", "load_dataset_config",
+    "DatasetConfig", "load_dataset_config", "write_resolved_config",
     "diagnose_raw_archive", "resolve_target_lag",
     "load_prepared_triangles", "triangle_files",
     "PreparationError", "PreparationSpec", "build_spec", "prepare_dataset",

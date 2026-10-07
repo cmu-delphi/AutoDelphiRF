@@ -1,6 +1,6 @@
 """The ``autodelphirf`` command line.
 
-Five subcommands, in the order a new user meets them:
+Six subcommands, in the order a new user meets them:
 
   ``autodelphirf diagnose``  read a raw archive and print what AutoDelphiRF would do
                          with it. Pure Python, no R, nothing written.
@@ -9,6 +9,8 @@ Five subcommands, in the order a new user meets them:
   ``autodelphirf run``       train, test, evaluate, and produce the final report.
                          Given ``--archive`` it prepares first; given ``--config``
                          it runs an already-prepared dataset.
+  ``autodelphirf assess``    rerun post-forecast assessment from saved predictions;
+                         never fits a model.
   ``autodelphirf init``      write a starter dataset JSON to fill in by hand.
   ``autodelphirf web``       do all of the above in a browser: drag a file in and
                          answer the questions on a page.
@@ -253,6 +255,13 @@ def command_run(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def command_assess(arguments: argparse.Namespace) -> int:
+    from .assessment import assess_results
+    output = assess_results(arguments.results, arguments.out)
+    print(f"Assessment complete. Report: {output / 'report' / 'report.html'}")
+    return 0
+
+
 def command_web(arguments: argparse.Namespace) -> int:
     # Imported here so `autodelphirf --help` does not pay for the server module.
     from .web import serve
@@ -324,6 +333,16 @@ def build_parser() -> argparse.ArgumentParser:
                      help="validate the input and stop before fitting anything")
     run.set_defaults(handler=command_run)
 
+    assess = subparsers.add_parser(
+        "assess", help="rerun assessment and reporting without fitting models",
+        description="Read frozen predictions from a completed result directory and write a "
+                    "new post-forecast assessment. This never invokes R or refits a model.")
+    assess.add_argument("--results", type=Path, required=True, metavar="DIR",
+                        help="completed result directory containing predictions and resolved_config.json")
+    assess.add_argument("--out", type=Path, metavar="DIR",
+                        help="new assessment directory (default: RESULTS/assessments/<UTC timestamp>)")
+    assess.set_defaults(handler=command_assess)
+
     web = subparsers.add_parser(
         "web", help="open the browser UI: drag a file in, answer the questions",
         description="Start a local web UI on this machine. Drop a raw archive onto the page, "
@@ -368,7 +387,7 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
     try:
         return arguments.handler(arguments)
-    except (PreparationError, FileNotFoundError, ValueError) as error:
+    except (PreparationError, FileNotFoundError, FileExistsError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
 

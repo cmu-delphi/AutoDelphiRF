@@ -21,7 +21,7 @@ from .calibration import add_interval_columns, prospective_calibration, reliabil
 from .inference import bootstrap, primary_comparison_pairs
 from .validation import run_validation
 
-from .config import DatasetConfig
+from .config import DatasetConfig, write_resolved_config
 from .comparator_schema import validate_comparator_file
 from .diagnosis import (diagnose_prepared_data, diagnose_target_lag,
                         raw_archive_for_diagnosis, resolve_target_lag)
@@ -528,6 +528,15 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
                                 **{name: DELPHIRF_METHODS[name]
                                    for name in requested_delphirf}},
             comparator_quantile_template="q{tau:g}")
+    # Freeze every effective default and bundle any external assessment input.
+    # This is the restart boundary used by ``autodelphirf assess``; it is
+    # intentionally written before post-forecast work begins.
+    from .assessment import freeze_reliability_reference
+    config, reliability_input = freeze_reliability_reference(config, output)
+    write_resolved_config(config, output / "resolved_config.json")
+    input_manifest = {"reliability_reference": reliability_input}
+    (output / "assessment_inputs.json").write_text(
+        json.dumps(input_manifest, indent=2, default=str) + "\n")
     stage = perf_counter()
     cases = build_cases(prepared, schedule, config.include_genuine_events_only)
     if cases.empty:

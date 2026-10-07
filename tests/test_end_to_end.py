@@ -88,6 +88,8 @@ def test_one_command_turns_a_raw_archive_into_a_report(tmp_path):
     assert (results / "predictions.csv.gz").is_file()
     assert (results / "diagnostics" / "summary.json").is_file()
     assert (results / "run_manifest.json").is_file()
+    assert (results / "resolved_config.json").is_file()
+    assert (results / "assessment_inputs.json").is_file()
     report = results / "report" / "report.html"
     assert report.is_file() and report.stat().st_size > 1000
     assert list((results / "report" / "tables").glob("*.csv"))
@@ -97,6 +99,16 @@ def test_one_command_turns_a_raw_archive_into_a_report(tmp_path):
     predictions = pd.read_csv(results / "predictions.csv.gz")
     assert set(predictions.method) >= {"baseline_null", "delphirf"}
     assert predictions.absolute_error.notna().any()
+
+    # A fresh process can restart at the saved prediction boundary without R/model fitting.
+    reassessment = work / "independent-assessment"
+    assert cli.main(["assess", "--results", str(results),
+                     "--out", str(reassessment)]) == 0
+    assessment_manifest = json.loads((reassessment / "assessment_manifest.json").read_text())
+    assert assessment_manifest["model_fitting_performed"] is False
+    assert assessment_manifest["rows"]["wide"] == len(
+        pd.read_csv(results / "predictions_wide.csv.gz"))
+    assert (reassessment / "report" / "report.html").is_file()
 
 
 @requires_delphirf

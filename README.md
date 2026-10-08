@@ -8,6 +8,17 @@ run post-forecast assessments, and produce a local HTML report.
 You can use AutoDelphiRF from the terminal or run the complete workflow in its
 local web application.
 
+> [!IMPORTANT]
+> **Development status**
+>
+> AutoDelphiRF is under active development, and the associated manuscript is
+> currently in preparation. The **`dev` branch is currently the recommended
+> branch for use and testing**. Interfaces, functionality, and documentation
+> may change prior to the first stable release.
+>
+> Feedback and bug reports are welcome. Please open a GitHub issue if you
+> encounter any problems.
+
 ## Requirements
 
 - Python 3.10 or newer

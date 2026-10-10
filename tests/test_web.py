@@ -16,9 +16,9 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from autodelphirf import web
-from autodelphirf.prepare import PreparationError
-from autodelphirf.web import (ALLOWED_SUFFIXES, DEFAULT_LAYERS, AutoDelphiRFServer, Session,
+from autodelphirf.app import web
+from autodelphirf.pre_diagnosis.preparation import PreparationError
+from autodelphirf.app.web import (ALLOWED_SUFFIXES, DEFAULT_LAYERS, AutoDelphiRFServer, Session,
                                  archive_suffix, guess_columns, optional_int,
                                  results_summary, safe_stem)
 
@@ -236,7 +236,7 @@ def test_the_preview_is_what_the_run_would_build(diagnosed, monkeypatch):
     the same archive bounds, so the page cannot advertise one number and the
     R bridge lay out another.
     """
-    from autodelphirf import prepare
+    from autodelphirf.pre_diagnosis import preparation as prepare
     preview = diagnosed.schedule_preview({"retrain_days": 21, "first_origin_date": None})
     direct = prepare.retraining_calendar(diagnosed.diagnosis["report_date_min"],
                                          diagnosed.diagnosis["report_date_max"], 21)
@@ -473,7 +473,7 @@ def test_localhost_host_headers_are_accepted(server):
 
 
 def test_the_layer_list_only_offers_registered_layers(server):
-    from autodelphirf.registry import PREDICTION_LAYERS
+    from autodelphirf.core.registry import PREDICTION_LAYERS
 
     status, body = request(server, "/api/layers")
     assert status == 200

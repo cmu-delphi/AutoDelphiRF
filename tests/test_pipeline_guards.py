@@ -16,11 +16,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from autodelphirf.diagnosis import diagnose_prepared_data, diagnose_target_lag
-from autodelphirf.ingest import diagnose_raw_archive
-from autodelphirf.pipeline import (INTEGER_COLUMNS, apply_input_schema, build_cases,
+from autodelphirf.pre_diagnosis.diagnosis import diagnose_prepared_data, diagnose_target_lag
+from autodelphirf.pre_diagnosis.archive import diagnose_raw_archive
+from autodelphirf.workflow.run import (INTEGER_COLUMNS, apply_input_schema, build_cases,
                                       normalize_lag_dtypes)
-from autodelphirf.resources import load_resource
+from autodelphirf.core.resources import load_resource
 
 CANONICAL = load_resource("prepared_triangle_schema.json")["columns"]
 

@@ -49,7 +49,7 @@ Homepage = "https://github.com/cmu-delphi/AutoDelphiRF"
 "DelphiRF (required for preprocessing)" = "https://github.com/cmu-delphi/DelphiRF"
 
 [project.scripts]
-autodelphirf = "autodelphirf.cli:main"
+autodelphirf = "autodelphirf.app.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

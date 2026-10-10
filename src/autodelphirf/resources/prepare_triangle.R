@@ -80,7 +80,10 @@ raw_all$lag <- as.integer(raw_all[[report_col]] - raw_all[[reference_col]])
 
 if (!is.null(spec$geo_col) && nzchar(spec$geo_col)) {
   raw_all$geo_value <- as.character(raw_all[[spec$geo_col]])
-} else if (!("geo_value" %in% names(raw_all))) {
+} else {
+  # --no-geo is an explicit declaration that this is one series. Force the
+  # synthetic label even if an unrelated column happens to be named
+  # geo_value, so the choice can never be silently reinterpreted.
   raw_all$geo_value <- spec$constant_geo
 }
 

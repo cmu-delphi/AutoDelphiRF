@@ -3,11 +3,11 @@ import json
 import numpy as np
 import pandas as pd
 
-from autodelphirf.config import load_dataset_config
-from autodelphirf.diagnosis import diagnose_prepared_data
-from autodelphirf.pipeline import apply_input_schema, build_cases, standardize_predictions
+from autodelphirf.core.config import load_dataset_config
+from autodelphirf.pre_diagnosis.diagnosis import diagnose_prepared_data
+from autodelphirf.workflow.run import apply_input_schema, build_cases, standardize_predictions
 # ROUTED_TAUS lives in the package's red.py module.
-from autodelphirf.red import ROUTED_TAUS
+from autodelphirf.comparators.red import ROUTED_TAUS
 
 
 def test_config_paths_are_relative_to_config(tmp_path):
@@ -67,7 +67,7 @@ def test_build_cases_respects_genuine_event_filter():
 
 
 def test_comparator_validation_catches_missing_method(tmp_path):
-    from autodelphirf.comparator_schema import check_comparator_file
+    from autodelphirf.comparators.schema import check_comparator_file
     comparator_path = tmp_path / "comparator.csv"
     pd.DataFrame({"geo_value": ["a"], "reference_date": ["2020-01-01"], "report_date": ["2020-01-08"],
                  "lag": [7], "method": ["Naive DelphiRF"], "prediction": [1.0]}).to_csv(comparator_path, index=False)
@@ -77,7 +77,7 @@ def test_comparator_validation_catches_missing_method(tmp_path):
 
 
 def test_comparator_validation_catches_duplicate_rows(tmp_path):
-    from autodelphirf.comparator_schema import check_comparator_file
+    from autodelphirf.comparators.schema import check_comparator_file
     comparator_path = tmp_path / "comparator.csv"
     pd.DataFrame({"geo_value": ["a", "a"], "reference_date": ["2020-01-01"] * 2,
                  "report_date": ["2020-01-08"] * 2, "lag": [7, 7],
@@ -87,7 +87,7 @@ def test_comparator_validation_catches_duplicate_rows(tmp_path):
 
 
 def test_comparator_validation_passes_on_valid_file(tmp_path):
-    from autodelphirf.comparator_schema import check_comparator_file
+    from autodelphirf.comparators.schema import check_comparator_file
     comparator_path = tmp_path / "comparator.csv"
     pd.DataFrame({"geo_value": ["a", "b"], "reference_date": ["2020-01-01"] * 2,
                  "report_date": ["2020-01-08"] * 2, "lag": [7, 7],

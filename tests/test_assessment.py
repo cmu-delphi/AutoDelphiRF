@@ -5,8 +5,8 @@ import json
 import pandas as pd
 import pytest
 
-from autodelphirf.assessment import assess_results, freeze_reliability_reference, sha256
-from autodelphirf.config import load_dataset_config, write_resolved_config
+from autodelphirf.post_assessment.run import assess_results, freeze_reliability_reference, sha256
+from autodelphirf.core.config import load_dataset_config, write_resolved_config
 
 
 def config_payload(tmp_path, results):
@@ -124,8 +124,8 @@ def test_assessment_restarts_from_predictions_without_model_fitting(tmp_path, mo
         output.mkdir(parents=True)
         (output / "report.html").write_text("ok")
 
-    monkeypatch.setattr("autodelphirf.assessment.run_reliability_and_calibration", fake_assessment)
-    monkeypatch.setattr("autodelphirf.assessment.build_report", fake_report)
+    monkeypatch.setattr("autodelphirf.post_assessment.run.run_reliability_and_calibration", fake_assessment)
+    monkeypatch.setattr("autodelphirf.post_assessment.run.build_report", fake_report)
     output = assess_results(results, tmp_path / "assessment")
     assert called["rows"] == (1, 1)
     assert all(str(dtype).startswith("datetime64") for dtype in called["date_types"])
@@ -150,10 +150,10 @@ def test_assessment_manifest_includes_the_verified_reliability_reference(tmp_pat
     results, _, record = write_restart_bundle(tmp_path, reliability_reference=source)
     empty = pd.DataFrame()
     monkeypatch.setattr(
-        "autodelphirf.assessment.run_reliability_and_calibration",
+        "autodelphirf.post_assessment.run.run_reliability_and_calibration",
         lambda *args, **kwargs: {"calibration": empty, "interval_calibration": empty,
                                 "reliability": empty, "bootstrap": empty})
-    monkeypatch.setattr("autodelphirf.assessment.build_report", lambda *args, **kwargs: None)
+    monkeypatch.setattr("autodelphirf.post_assessment.run.build_report", lambda *args, **kwargs: None)
 
     output = assess_results(results, tmp_path / "assessment")
     manifest = json.loads((output / "assessment_manifest.json").read_text())

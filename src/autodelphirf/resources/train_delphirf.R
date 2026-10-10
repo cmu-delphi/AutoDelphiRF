@@ -71,6 +71,7 @@ dir.create(model_save_dir, recursive = TRUE, showWarnings = FALSE)
 ref_col    <- get_flag("ref-col", "reference_date")
 report_col <- get_flag("report-col", "report_date")
 geo_col    <- get_flag("geo-col", "geo_value")
+constant_geo <- get_flag("constant-geo", "")
 value_col  <- get_flag("value-col", "value")
 # Per-dataset, not per-script: "count" vs "fraction" is a property of the
 # dataset's own reporting triangle (see full_package_pooling_preprocess.R's
@@ -201,6 +202,7 @@ if (!(target_column %in% names(all_data))) {
 profile_rows <- NULL
 if ("Similarity-weighted DelphiRF" %in% requested_methods) {
   raw_input <- fread(raw_path)
+  if (nzchar(constant_geo)) raw_input[[geo_col]] <- constant_geo
   if (!(geo_col %in% names(raw_input))) stop("--geo-col '", geo_col, "' is not a column of ", raw_path)
   profile_value <- as.numeric(raw_input[[value_col]])
   if (nzchar(denom_col)) {
@@ -307,6 +309,8 @@ independent_design <- function(train, base_params, columns, response) {
   intersect(ordered, kept)
 }
 
+fit_failures <- list()
+
 fit_one <- function(train, test, method, fold, group, pool_id, observation_weights = NULL,
                     params_list = NULL) {
   if (nrow(train) < 10L || !nrow(test)) return(NULL)
@@ -363,6 +367,11 @@ fit_one <- function(train, test, method, fold, group, pool_id, observation_weigh
       make_predictions = TRUE,
       model_backend = model_backend
     ), error = function(e) {
+      fit_failures[[length(fit_failures) + 1L]] <<- data.frame(
+        method = method, fold = as.integer(fold), group = as.character(group),
+        pool_id = as.character(pool_id), expected_test_rows = nrow(test),
+        error = conditionMessage(e), stringsAsFactors = FALSE
+      )
       message("  [", method, " fold ", fold, " group ", group, " geo ",
               pool_id, "] fit failed: ", conditionMessage(e))
       NULL
@@ -520,6 +529,15 @@ if (grepl("\\.gz$", output_path)) {
   fwrite(result, output_path)
 }
 message("Wrote ", nrow(result), " comparator rows to ", output_path)
+failure_table <- if (length(fit_failures)) rbindlist(fit_failures, fill = TRUE) else
+  data.table(method = character(), fold = integer(), group = character(),
+             pool_id = character(), expected_test_rows = integer(), error = character())
+failure_path <- paste0(output_path, ".fit_failures.csv")
+fwrite(failure_table, failure_path)
+if (nrow(failure_table)) {
+  warning("DelphiRF completed with ", nrow(failure_table),
+          " failed fit(s); details: ", failure_path, call. = FALSE)
+}
 jsonlite::write_json(list(
   backend = "installed DelphiRF",
   similarity_planner = "autodelphirf package-owned prospective_pooling_plan",
@@ -529,6 +547,10 @@ jsonlite::write_json(list(
   package_path = find.package("DelphiRF"),
   methods = requested_methods,
   model_backend = model_backend,
+  fit_status = if (nrow(failure_table)) "partial_failure" else "complete",
+  fit_failure_count = nrow(failure_table),
+  fit_failures_file = failure_path,
+  fit_failures = as.data.frame(failure_table),
   weekday_groups = weekday_groups,
   effective_base_params = model_params(DelphiRF:::add_weights_related(as.data.frame(all_data))),
   taus = experiment_taus

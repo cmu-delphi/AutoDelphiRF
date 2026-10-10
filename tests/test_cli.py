@@ -12,8 +12,8 @@ import json
 import pandas as pd
 import pytest
 
-from autodelphirf import cli
-from autodelphirf.registry import PREDICTION_LAYERS
+from autodelphirf.app import cli
+from autodelphirf.core.registry import PREDICTION_LAYERS
 
 from conftest import archive_frame
 
@@ -143,7 +143,7 @@ def test_assess_cli_passes_both_directories_and_prints_the_report(tmp_path, caps
         called["arguments"] = (results_dir, output_dir)
         return output_dir
 
-    monkeypatch.setattr("autodelphirf.assessment.assess_results", fake_assess)
+    monkeypatch.setattr("autodelphirf.post_assessment.run.assess_results", fake_assess)
     assert cli.main(["assess", "--results", str(results), "--out", str(output)]) == 0
     assert called["arguments"] == (results, output)
     assert str(output / "report" / "report.html") in capsys.readouterr().out
@@ -198,14 +198,26 @@ def test_diagnose_handles_a_single_location_archive(tmp_path, capsys):
     archive_frame(days=120, max_lag=30, locations=("only",)).drop(
         columns=["geo_value"]).to_csv(path, index=False)
     assert cli.main(["diagnose", "--archive", str(path), "--no-geo"]) == 0
-    assert "locations           1" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "locations           1" in output
+    assert "one location named 'single_location'" in output
+    assert "pool across lags" in output
+    assert "cross-location pooling is not possible" in output
 
 
-def test_a_fraction_signal_needs_two_value_columns(tmp_path, archive_csv, capsys):
-    """The arity rule is enforced where the spec is built, i.e. in prepare."""
+def test_a_fraction_signal_accepts_one_precomputed_rate_column(
+        tmp_path, archive_csv, monkeypatch):
+    """A one-column rate archive reaches preparation without a denominator."""
+    captured = {}
+
+    def fake_bridge(spec, on_output=None):
+        captured["spec"] = spec
+        spec.output_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr("autodelphirf.pre_diagnosis.preparation.run_r_bridge", fake_bridge)
     assert cli.main(["prepare", "--archive", str(archive_csv), "--name", "d",
-                     "--value-type", "fraction", "--out", str(tmp_path / "w")]) == 2
-    assert "exactly two value columns" in capsys.readouterr().err
+                     "--value-type", "fraction", "--out", str(tmp_path / "w")]) == 0
+    assert captured["spec"].value_cols == ("value",)
 
 
 def test_malformed_lag_terms_are_reported(tmp_path, archive_csv, capsys):
@@ -260,7 +272,7 @@ def test_prepare_reaches_the_r_bridge_with_the_diagnosed_settings(tmp_path, arch
         captured["on_output"] = on_output
         spec.output_dir.mkdir(parents=True, exist_ok=True)
 
-    monkeypatch.setattr("autodelphirf.prepare.run_r_bridge", fake_bridge)
+    monkeypatch.setattr("autodelphirf.pre_diagnosis.preparation.run_r_bridge", fake_bridge)
     out = tmp_path / "work"
     assert cli.main(["prepare", "--archive", str(archive_csv), "--name", "mine",
                      "--out", str(out), "--layers", "baseline_null,red"]) == 0
@@ -283,7 +295,7 @@ def test_prepare_reaches_the_r_bridge_with_the_diagnosed_settings(tmp_path, arch
 
 def test_a_missing_r_install_is_reported_as_guidance(tmp_path, archive_csv, monkeypatch, capsys):
     monkeypatch.delenv("AUTODELPHIRF_RSCRIPT", raising=False)
-    monkeypatch.setattr("autodelphirf.prepare.shutil.which", lambda _: None)
+    monkeypatch.setattr("autodelphirf.pre_diagnosis.preparation.shutil.which", lambda _: None)
     assert cli.main(["prepare", "--archive", str(archive_csv), "--name", "d",
                      "--out", str(tmp_path / "w")]) == 2
     error = capsys.readouterr().err

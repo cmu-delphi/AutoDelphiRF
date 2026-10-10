@@ -14,8 +14,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from autodelphirf import prepare
-from autodelphirf.prepare import (PreparationError, build_spec, diagnose_archive,
+from autodelphirf.pre_diagnosis import preparation as prepare
+from autodelphirf.pre_diagnosis.preparation import (PreparationError, build_spec, diagnose_archive,
                                      read_archive, write_dataset_config)
 
 from conftest import archive_frame
@@ -55,10 +55,16 @@ def test_missing_columns_are_named_with_what_is_actually_present(tmp_path):
 
 # --- column-mapping validation -------------------------------------------
 
-def test_fraction_signal_requires_two_value_columns(tmp_path, archive_csv):
-    with pytest.raises(PreparationError, match="exactly two value columns"):
+def test_fraction_signal_accepts_one_precomputed_rate_column(tmp_path, archive_csv):
+    spec = build_spec("d", archive_csv, tmp_path / "out", value_type="fraction",
+                      value_cols=("value",))
+    assert spec.value_cols == ("value",)
+
+
+def test_fraction_signal_rejects_more_than_two_value_columns(tmp_path, archive_csv):
+    with pytest.raises(PreparationError, match="one precomputed rate column or two columns"):
         build_spec("d", archive_csv, tmp_path / "out", value_type="fraction",
-                   value_cols=("value",))
+                   value_cols=("value", "numerator", "denominator"))
 
 
 def test_count_signal_rejects_two_value_columns(tmp_path, archive_csv):
@@ -105,6 +111,8 @@ def test_single_location_archive_is_diagnosed_not_rejected(tmp_path):
                                  value_type="count")
     assert diagnosis["n_locations"] == 1
     assert any("single-location" in note for note in diagnosis["notes"])
+    assert any("pool across lags" in note for note in diagnosis["notes"])
+    assert any("cross-location pooling is not possible" in note for note in diagnosis["notes"])
 
 
 def test_fraction_signals_are_diagnosed_on_the_ratio_not_the_numerator(tmp_path):
@@ -215,7 +223,7 @@ def test_the_r_spec_is_json_serializable_with_no_python_objects(tmp_path, archiv
 # --- the generated dataset config ----------------------------------------
 
 def test_the_written_config_loads_and_points_at_the_triangle(tmp_path, archive_csv):
-    from autodelphirf.config import load_dataset_config
+    from autodelphirf.core.config import load_dataset_config
 
     spec = build_spec("mine", archive_csv, tmp_path / "work" / "mine")
     config_path = write_dataset_config(spec, tmp_path / "work" / "mine.json",
@@ -234,7 +242,7 @@ def test_generated_config_paths_are_relative_so_the_directory_can_be_moved(
         tmp_path, archive_csv):
     import shutil
 
-    from autodelphirf.config import load_dataset_config
+    from autodelphirf.core.config import load_dataset_config
 
     work = tmp_path / "work"
     spec = build_spec("mine", archive_csv, work / "mine")
@@ -300,7 +308,7 @@ def test_the_spec_file_is_cleaned_up_even_when_r_fails(tmp_path, archive_csv, mo
 
 def test_the_r_bridge_script_ships_and_calls_delphirf(tmp_path, archive_csv):
     """The bridge must call DelphiRF, not reimplement its feature engineering."""
-    from autodelphirf.resources import resource_path
+    from autodelphirf.core.resources import resource_path
 
     source = resource_path("prepare_triangle.R").read_text()
     assert "data_preprocessing" in source

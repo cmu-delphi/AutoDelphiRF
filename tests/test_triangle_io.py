@@ -11,7 +11,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from autodelphirf.io import (NON_TRIANGLE_STEMS, TRIANGLE_SUFFIXES,
+from autodelphirf.core.io import (NON_TRIANGLE_STEMS, TRIANGLE_SUFFIXES,
                                 load_prepared_triangles, triangle_files)
 
 

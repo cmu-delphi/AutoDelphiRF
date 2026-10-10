@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from autodelphirf.config import DatasetConfig, load_dataset_config
+from autodelphirf.core.config import DatasetConfig, load_dataset_config
 
 MINIMAL = {"name": "d", "prepared_dir": "input", "output_dir": "out",
            "prediction_layers": ["red"]}
@@ -164,7 +164,7 @@ def test_uncertainty_layer_can_be_switched_off(tmp_path):
 
 def test_the_shipped_template_is_itself_loadable(tmp_path):
     """`autodelphirf init` writes this file; it must load once paths are filled in."""
-    from autodelphirf.resources import resource_path
+    from autodelphirf.core.resources import resource_path
 
     template = json.loads(resource_path("dataset_template.json").read_text())
     template["prepared_dir"] = "input"

@@ -1,17 +1,18 @@
 from pathlib import Path
 from types import SimpleNamespace
 import json
+import warnings
 
 import numpy as np
 import pandas as pd
 
-from autodelphirf.engine import replay
-from autodelphirf.model_training import (DELPHIRF_METHODS, RR_DELPHIRF_CODE_VERSION,
+from autodelphirf.revroute.prediction import replay
+from autodelphirf.revroute.training import (DELPHIRF_METHODS, RR_DELPHIRF_CODE_VERSION,
                                          train_delphirf)
-from autodelphirf.pipeline import build_cases
-from autodelphirf.inference import primary_comparison_pairs
-from autodelphirf.registry import DEFAULT_LAYERS, PREDICTION_LAYERS
-from autodelphirf.resources import resource_path
+from autodelphirf.workflow.run import build_cases
+from autodelphirf.post_assessment.inference import primary_comparison_pairs
+from autodelphirf.core.registry import DEFAULT_LAYERS, PREDICTION_LAYERS
+from autodelphirf.core.resources import resource_path
 
 
 def test_default_is_revroute_pooling_plus_real_delphirf():
@@ -66,7 +67,7 @@ def test_test_window_can_vary_by_schedule_row():
 
 def test_replay_uses_each_folds_training_days(monkeypatch):
     seen = []
-    monkeypatch.setattr("autodelphirf.engine.rolling_completed_training",
+    monkeypatch.setattr("autodelphirf.revroute.prediction.rolling_completed_training",
                         lambda prepared, cutoff, days: seen.append(days) or prepared)
     cases = pd.DataFrame({"fold": [1, 2], "cutoff": pd.to_datetime(["2024-01-01", "2024-02-01"]),
                           "geo_value": ["x", "x"], "lag": [1, 1], "Null": [0., 0.]})
@@ -87,14 +88,14 @@ def test_delphirf_training_builds_an_installed_package_command(tmp_path, monkeyp
     (prepared_dir / "preparation.json").write_text(json.dumps(metadata))
     (prepared_dir / "test_dates.csv").write_text("test_date\n")
     captured = {}
-    monkeypatch.setattr("autodelphirf.model_training.rscript_executable", lambda: "Rscript")
-    monkeypatch.setattr("autodelphirf.model_training.subprocess.run",
+    monkeypatch.setattr("autodelphirf.revroute.training.rscript_executable", lambda: "Rscript")
+    monkeypatch.setattr("autodelphirf.revroute.training.subprocess.run",
                         lambda command, check=False: captured.setdefault("command", command) or SimpleNamespace(returncode=0))
     # Make the fake result object explicit despite dict truthiness.
     def fake_run(command, check=False):
         captured["command"] = command
         return SimpleNamespace(returncode=0)
-    monkeypatch.setattr("autodelphirf.model_training.subprocess.run", fake_run)
+    monkeypatch.setattr("autodelphirf.revroute.training.subprocess.run", fake_run)
     config = SimpleNamespace(prepared_dir=prepared_dir, schedule_file="test_dates.csv")
     _, _, provenance = train_delphirf(
         config, pd.DataFrame(), pd.DataFrame(), ("naive_delphirf",),
@@ -104,6 +105,64 @@ def test_delphirf_training_builds_an_installed_package_command(tmp_path, monkeyp
     assert command[command.index("--weekdays-json") + 1] == '{"Mon": ["Mon"]}'
     assert not any("DelphiRF" in part and Path(part).is_dir() for part in command)
     assert provenance["rr_delphirf_code_version"] == "rrdelphirf0"
+
+
+def test_delphirf_training_warns_when_r_reports_partial_fit_failures(tmp_path, monkeypatch):
+    prepared_dir = tmp_path / "prepared"
+    prepared_dir.mkdir()
+    raw = tmp_path / "raw.csv"
+    raw.write_text("reference_date,report_date,value,geo_value\n")
+    metadata = {"raw_archive": str(raw), "resolved_preprocessing": {
+        "reference_col": "reference_date", "report_col": "report_date",
+        "value_cols": ["value"], "value_type": "count", "lag_terms": [1, 7]}}
+    (prepared_dir / "preparation.json").write_text(json.dumps(metadata))
+    (prepared_dir / "test_dates.csv").write_text("test_date\n")
+    output = tmp_path / "predictions.csv.gz"
+    Path(str(output) + ".provenance.json").write_text(json.dumps({
+        "fit_status": "partial_failure", "fit_failure_count": 2,
+        "fit_failures_file": str(output) + ".fit_failures.csv"}))
+
+    monkeypatch.setattr("autodelphirf.revroute.training.rscript_executable", lambda: "Rscript")
+    monkeypatch.setattr("autodelphirf.revroute.training.subprocess.run",
+                        lambda command, check=False: SimpleNamespace(returncode=0))
+    config = SimpleNamespace(prepared_dir=prepared_dir, schedule_file="test_dates.csv")
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _, _, provenance = train_delphirf(
+            config, pd.DataFrame(), pd.DataFrame(), ("naive_delphirf",), output)
+
+    assert provenance["fit_failure_count"] == 2
+    assert len(caught) == 1
+    assert "predictions are incomplete" in str(caught[0].message)
+
+
+def test_single_location_training_passes_a_string_geo_and_constant_label(tmp_path, monkeypatch):
+    prepared_dir = tmp_path / "prepared"
+    prepared_dir.mkdir()
+    raw = tmp_path / "raw.csv"
+    raw.write_text("reference_date,report_date,value\n")
+    metadata = {"raw_archive": str(raw), "resolved_preprocessing": {
+        "reference_col": "reference_date", "report_col": "report_date",
+        "value_cols": ["value"], "value_type": "count", "lag_terms": [1, 7],
+        "geo_col": None, "constant_geo": "single_location"}}
+    (prepared_dir / "preparation.json").write_text(json.dumps(metadata))
+    (prepared_dir / "test_dates.csv").write_text("test_date\n")
+    captured = {}
+
+    def fake_run(command, check=False):
+        captured["command"] = command
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("autodelphirf.revroute.training.rscript_executable", lambda: "Rscript")
+    monkeypatch.setattr("autodelphirf.revroute.training.subprocess.run", fake_run)
+    config = SimpleNamespace(prepared_dir=prepared_dir, schedule_file="test_dates.csv")
+    train_delphirf(config, pd.DataFrame(), pd.DataFrame(), ("naive_delphirf",),
+                   tmp_path / "predictions.csv.gz")
+    command = captured["command"]
+    assert all(isinstance(argument, str) for argument in command)
+    assert command[command.index("--geo-col") + 1] == "geo_value"
+    assert command[command.index("--constant-geo") + 1] == "single_location"
 
 
 def test_r_backend_builds_model_groups_from_canonical_weekday_columns():

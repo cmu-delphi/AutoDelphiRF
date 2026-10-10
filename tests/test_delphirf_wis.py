@@ -2,9 +2,9 @@ import numpy as np
 import pandas as pd
 from types import SimpleNamespace
 
-from autodelphirf.metrics import wis
-from autodelphirf.pipeline import _method_rows, standardize_predictions
-from autodelphirf.red import ROUTED_TAUS
+from autodelphirf.post_assessment.scoring import wis
+from autodelphirf.workflow.run import _method_rows, standardize_predictions
+from autodelphirf.comparators.red import ROUTED_TAUS
 
 
 def test_wis_matches_delphirf_twice_mean_pinball_definition():

@@ -14,8 +14,8 @@ import subprocess
 
 import pytest
 
-from autodelphirf import web
-from autodelphirf.resources import resource_path
+from autodelphirf.app import web
+from autodelphirf.core.resources import resource_path
 
 
 @pytest.fixture(scope="module")

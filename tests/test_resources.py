@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from autodelphirf import resources
+from autodelphirf.core import resources
 
 
 # --- packaged resources ---------------------------------------------------
@@ -42,7 +42,7 @@ def test_load_resource_parses_json():
 
 def test_defaults_module_reads_its_constants_from_package_data():
     """defaults.py imports at module scope; a broken lookup breaks every import."""
-    from autodelphirf import defaults
+    from autodelphirf.core import defaults
 
     assert defaults.CONFIG_PATH == resources.resource_path("revroute_v8_defaults.json")
     assert defaults.VERSION
@@ -112,7 +112,7 @@ def test_explicit_file_outranks_config_dir(tmp_path, monkeypatch):
 
 def test_pipeline_runs_without_any_target_lag_params_file(tmp_path, monkeypatch):
     """No declared target lag means 'no choice', not a crash on Path(None)."""
-    from autodelphirf.pipeline import load_target_lag_params
+    from autodelphirf.workflow.run import load_target_lag_params
 
     monkeypatch.delenv("AUTODELPHIRF_TARGET_LAG_PARAMS", raising=False)
     monkeypatch.delenv("AUTODELPHIRF_CONFIG_DIR", raising=False)
@@ -121,7 +121,7 @@ def test_pipeline_runs_without_any_target_lag_params_file(tmp_path, monkeypatch)
 
 
 def test_target_lag_params_are_read_when_present(tmp_path, monkeypatch):
-    from autodelphirf.pipeline import load_target_lag_params
+    from autodelphirf.workflow.run import load_target_lag_params
 
     params = tmp_path / "params.json"
     params.write_text(json.dumps({
@@ -136,7 +136,7 @@ def test_target_lag_params_are_read_when_present(tmp_path, monkeypatch):
 
 
 def test_dataset_absent_from_the_params_file_still_inherits_default_rules(tmp_path, monkeypatch):
-    from autodelphirf.pipeline import load_target_lag_params
+    from autodelphirf.workflow.run import load_target_lag_params
 
     params = tmp_path / "params.json"
     params.write_text(json.dumps({"defaults": {"rule": {"cadence_days": 14}}, "datasets": {}}))
@@ -146,7 +146,7 @@ def test_dataset_absent_from_the_params_file_still_inherits_default_rules(tmp_pa
 
 def test_raw_archive_diagnosis_degrades_cleanly_with_no_manifest():
     """An absent manifest is the normal case for a user's own dataset."""
-    from autodelphirf.diagnosis import raw_archive_for_diagnosis
+    from autodelphirf.pre_diagnosis.diagnosis import raw_archive_for_diagnosis
 
     archive, note = raw_archive_for_diagnosis("mine", None)
     assert archive is None

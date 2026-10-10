@@ -1,19 +1,21 @@
 # AutoDelphiRF
 
-AutoDelphiRF is an end-to-end pipeline for data that are revised after first
-publication. It can inspect a revision archive, prepare the modeling data,
-train and test forecasting models retrospectively, evaluate their predictions,
-run post-forecast assessments, and produce a local HTML report.
+AutoDelphiRF forecasts how recently reported values will be revised. It takes a
+revision archive, diagnoses its revision behavior, runs retrospective forecasts,
+and produces predictions and an evaluation report.
 
-You can use AutoDelphiRF from the terminal or run the complete workflow in its
-local web application.
+```text
+revision archive → diagnosis → forecasting → evaluation report
+```
+
+The local web application is the easiest way to try AutoDelphiRF. A command-line
+interface is also available for scripted analyses.
 
 ## Requirements
 
 - Python 3.10 or newer
 - R and `Rscript`
-- The R package [DelphiRF](https://github.com/cmu-delphi/DelphiRF/tree/refactor-clean),
-  installed from its `refactor-clean` branch
+- The R package [DelphiRF](https://github.com/cmu-delphi/DelphiRF/tree/refactor-clean)
 - The R package `quantreg`
 
 Install the R dependencies:
@@ -22,26 +24,13 @@ Install the R dependencies:
 Rscript -e 'install.packages(c("remotes", "quantreg")); remotes::install_github("cmu-delphi/DelphiRF@refactor-clean")'
 ```
 
-This branch of AutoDelphiRF needs DelphiRF's `refactor-clean` API. The DelphiRF
-on `main` does not have it yet, so `remotes::install_github("cmu-delphi/DelphiRF")`
-installs a DelphiRF that AutoDelphiRF reports as too old.
-
-Pre-diagnosis runs entirely in Python. R and DelphiRF are required when the
-pipeline prepares data or trains a DelphiRF model.
-
-AutoDelphiRF always uses the DelphiRF installed in R's library, for both data
-preparation and model training; it never loads a DelphiRF source checkout. After
-reinstalling DelphiRF, reload the `autodelphirf web` page to pick it up.
-
-## Install AutoDelphiRF
-
-Install directly from GitHub:
+Install AutoDelphiRF from GitHub:
 
 ```bash
 python -m pip install "autodelphirf[parquet] @ git+https://github.com/cmu-delphi/AutoDelphiRF.git@dev"
 ```
 
-Or install from a clone:
+Or install an editable copy for development:
 
 ```bash
 git clone -b dev https://github.com/cmu-delphi/AutoDelphiRF.git
@@ -49,20 +38,38 @@ cd AutoDelphiRF
 python -m pip install -e ".[parquet]"
 ```
 
-The `parquet` extra installs `pyarrow`, which is needed for the default
-prepared-data format. Use `--triangle-format csv` if you do not want Parquet.
+## Start with the web application
 
-Confirm the installation:
+Run:
 
 ```bash
-autodelphirf --version
-autodelphirf --help
+autodelphirf web
 ```
+
+AutoDelphiRF opens a local page at <http://127.0.0.1:8765>. The guided workflow
+helps you:
+
+1. Select a revision-archive CSV file.
+2. Identify its date, location, and value columns.
+3. Review the automatic diagnosis.
+4. Confirm the target lag and forecasting settings.
+5. Run the analysis.
+6. Open the generated evaluation report.
+
+The application and your data remain on your computer. To use another port or
+working directory:
+
+```bash
+autodelphirf web --port 9000 --out ~/autodelphirf_work
+```
+
+Use `autodelphirf web --no-browser` to start the server without opening a browser
+automatically.
 
 ## Input data
 
-AutoDelphiRF accepts CSV, gzipped CSV, and Parquet files. The input is a long
-revision archive with one row for every published value:
+AutoDelphiRF reads CSV and gzipped CSV revision archives. Each row is one version
+of a value as it was known on a particular report date:
 
 | geo_value | reference_date | report_date | value |
 |---|---|---|---:|
@@ -71,44 +78,32 @@ revision archive with one row for every published value:
 | ak | 2024-03-04 | 2024-03-20 | 147 |
 | ak | 2024-03-05 | 2024-03-06 | 95 |
 
-- `reference_date`: the date the measurement describes.
-- `report_date`: the date that version of the value was published.
-- `value`: the value available on that report date.
-- `geo_value`: the location or series identifier.
+- `reference_date` is the date the measurement describes.
+- `report_date` is the date that version was published.
+- `value` is the value available on the report date.
+- `geo_value` identifies the location or time series.
 
-Column names can be changed with command-line options. A single-location file
-without a location column can use `--no-geo`.
+The web application can map differently named columns. AutoDelphiRF supports
+counts, precomputed rates or percentages, and fractions supplied as numerator
+and denominator columns. A file without a geography column can be explicitly
+treated as a single-location dataset; it can pool information across lags but
+not across locations.
 
-### Counts and one-column fractions
+## Basic command-line usage
 
-For a count or a fraction stored in one value column:
-
-```bash
-autodelphirf run \
-  --archive my_archive.csv \
-  --name mydata \
-  --value-col value \
-  --value-type count \
-  --out autodelphirf_work
-```
-
-Use `--value-type fraction` if the one column represents a fraction.
-
-### Fractions with numerator and denominator
-
-Pass `--value-col` twice, numerator first and denominator second:
+For a CSV using the default column names above, run:
 
 ```bash
 autodelphirf run \
   --archive my_archive.csv \
-  --name mydata \
-  --value-type fraction \
-  --value-col numerator \
-  --value-col denominator \
-  --out autodelphirf_work
+  --name mydata
 ```
 
-### Custom column names
+AutoDelphiRF diagnoses the target lag, reporting cadence, feature lags, training
+window, and retraining calendar when they are not specified. Results are written
+to `autodelphirf_work` by default.
+
+For custom column names:
 
 ```bash
 autodelphirf run \
@@ -118,190 +113,34 @@ autodelphirf run \
   --reference-col event_date \
   --report-col issue_date \
   --value-col count \
-  --out autodelphirf_work
+  --value-type count
 ```
 
-## Pre-diagnosis only
+For a single-location CSV without a geography column, use `--no-geo` explicitly:
 
-Use `diagnose` to inspect the data before preparing or training anything:
+```bash
+autodelphirf run \
+  --archive single_series.csv \
+  --name single_series \
+  --no-geo
+```
+
+AutoDelphiRF reports that it is treating the archive as one synthetic location.
+Cross-location pooling is then unavailable, while pooling across lags remains
+available.
+
+To inspect an archive without preparing data or fitting models:
 
 ```bash
 autodelphirf diagnose --archive my_archive.csv
 ```
 
-This reports the archive size, location count, date ranges, reference-date and
-report-date cadence, revision rate, suggested feature lags, recommended target
-lag, and training-window length. It writes no files and does not require R.
+Diagnosis runs in Python, writes no files, and does not require R. Run
+`autodelphirf run --help` or `autodelphirf diagnose --help` for all options.
 
-Use the same column options that you would use for a full run:
+## Results
 
-```bash
-autodelphirf diagnose \
-  --archive my_archive.csv \
-  --geo-col location_id \
-  --reference-col event_date \
-  --report-col issue_date \
-  --value-col count
-```
-
-For machine-readable output:
-
-```bash
-autodelphirf diagnose --archive my_archive.csv --json
-```
-
-## Run the complete terminal pipeline
-
-The following command performs pre-diagnosis, preprocessing, retrospective
-training and testing, evaluation, post-forecast assessment, and report
-generation:
-
-```bash
-autodelphirf run \
-  --archive my_archive.csv \
-  --name mydata \
-  --out autodelphirf_work
-```
-
-The default model selection is `baseline_null,delphirf`. Select additional
-available models with `--methods`:
-
-```bash
-autodelphirf run \
-  --archive my_archive.csv \
-  --name mydata \
-  --methods baseline_null,delphirf,naive_delphirf,global_delphirf \
-  --out autodelphirf_work
-```
-
-Run `autodelphirf run --help` to see the model identifiers and all available
-options.
-
-### Choose the retraining schedule
-
-```bash
-autodelphirf run \
-  --archive my_archive.csv \
-  --name mydata \
-  --first-origin-date 2024-01-01 \
-  --retrain-days 30 \
-  --out autodelphirf_work
-```
-
-You can also provide an explicit start and end date:
-
-```bash
-autodelphirf run \
-  --archive my_archive.csv \
-  --name mydata \
-  --start-date 2024-01-01 \
-  --end-date 2025-01-01 \
-  --retrain-days 30 \
-  --out autodelphirf_work
-```
-
-### Choose the target lag
-
-AutoDelphiRF recommends an operational target lag from the archive. To provide one:
-
-```bash
-autodelphirf run \
-  --archive my_archive.csv \
-  --name mydata \
-  --target-lag 28 \
-  --out autodelphirf_work
-```
-
-If the selected value is shorter than the diagnosed recommendation, add
-`--confirm-target-lag` to explicitly retain it:
-
-```bash
-autodelphirf run \
-  --archive my_archive.csv \
-  --name mydata \
-  --target-lag 28 \
-  --confirm-target-lag \
-  --out autodelphirf_work
-```
-
-## Prepare first and run later
-
-Build the prepared dataset and configuration without fitting models:
-
-```bash
-autodelphirf prepare \
-  --archive my_archive.csv \
-  --name mydata \
-  --out autodelphirf_work
-```
-
-Then run the saved configuration:
-
-```bash
-autodelphirf run --config autodelphirf_work/mydata.json
-```
-
-## Rerun post-forecast assessment
-
-A completed run freezes its effective configuration in
-`results/resolved_config.json`. Rerun calibration, reliability, validation, and
-report generation from the saved predictions without invoking R or fitting a
-model:
-
-```bash
-autodelphirf assess --results autodelphirf_work/results
-```
-
-By default each assessment is written to a new UTC-stamped directory under
-`results/assessments/`. Use `--out` to choose another new directory. An
-assessment refuses to overwrite a nonempty directory and records SHA-256
-hashes of its prediction/configuration inputs in `assessment_manifest.json`.
-
-Validate the prepared input without model fitting:
-
-```bash
-autodelphirf run \
-  --config autodelphirf_work/mydata.json \
-  --diagnosis-only
-```
-
-## Use the web application
-
-Start the local web application:
-
-```bash
-autodelphirf web
-```
-
-AutoDelphiRF opens `http://127.0.0.1:8765` in the default browser. The web
-workflow lets you:
-
-1. Select a revision archive.
-2. Identify the date, location, and value columns.
-3. Review the pre-diagnosis.
-4. Confirm the target lag.
-5. Choose models and retraining settings.
-6. Start, stop, or resume the run.
-7. Review the results and generated report.
-
-Use another port or output directory if needed:
-
-```bash
-autodelphirf web --port 9000 --out ~/autodelphirf_work
-```
-
-Start the server without opening a browser automatically:
-
-```bash
-autodelphirf web --no-browser
-```
-
-The web application runs locally. Files selected in the page are handled by
-the AutoDelphiRF process on the same computer.
-
-## Output files
-
-A complete run writes results under the selected working directory:
+A complete run writes its main outputs under the working directory:
 
 ```text
 autodelphirf_work/
@@ -312,63 +151,27 @@ autodelphirf_work/
 │   ├── test_dates.csv
 │   └── prepared data files
 └── results/
-    ├── report/
-    │   ├── report.html
-    │   ├── figures/
-    │   └── tables/
+    ├── report/report.html
     ├── predictions.csv.gz
-    ├── predictions_wide.csv.gz
     ├── resolved_config.json
-    ├── assessment_inputs.json
-    ├── run_manifest.json
-    ├── target_lag_resolution.json
-    ├── runtime_by_method.csv
-    └── runtime_by_origin.csv
+    └── run_manifest.json
 ```
 
-The HTML report is normally located at:
+Open `results/report/report.html` to review forecast accuracy, uncertainty,
+calibration, pooling, and runtime. The complete row-level forecasts are in
+`results/predictions.csv.gz`.
 
-```text
-autodelphirf_work/results/report/report.html
-```
+## Development
 
-Predictions and evaluation values are written on the original data scale.
-
-## Generate a small example archive
+Install development dependencies and run the tests:
 
 ```bash
-python examples/make_example_archive.py --out example_archive.csv
-autodelphirf diagnose --archive example_archive.csv
-```
-
-To run the full example:
-
-```bash
-autodelphirf run \
-  --archive example_archive.csv \
-  --name example \
-  --out autodelphirf_work
-```
-
-## Environment variables
-
-| Variable | Purpose |
-|---|---|
-| `AUTODELPHIRF_RSCRIPT` | Path to the `Rscript` executable to use. |
-| `AUTODELPHIRF_CONFIG_DIR` | Directory containing optional user configuration files. |
-| `AUTODELPHIRF_TARGET_LAG_PARAMS` | Path to an optional target-lag configuration file. |
-| `AUTODELPHIRF_RAW_ARCHIVE_MANIFEST` | Path to an optional raw-archive manifest. |
-
-## Development installation
-
-```bash
-git clone https://github.com/cmu-delphi/AutoDelphiRF.git
-cd AutoDelphiRF
 python -m pip install -e ".[dev]"
-python -m pytest -m "not slow"
+python -m pytest
 ```
 
-The slow tests require R and a compatible DelphiRF installation.
+The repository's slower integration tests require R and a compatible DelphiRF
+installation.
 
 ## License
 

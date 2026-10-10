@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from autodelphirf.validation import (alert_stratification, flat_line_comparison,
+from autodelphirf.post_assessment.validation import (alert_stratification, flat_line_comparison,
                                         operational_alert_summary, pairwise_loss_comparison,
                                         reliability_coverage, risk_discrimination)
 
@@ -161,7 +161,7 @@ def test_operational_alert_summary_confusion_arithmetic():
 
 def test_validation_never_refits_or_retunes():
     """No estimator, solver or threshold-tuning symbol may appear in the layer."""
-    from autodelphirf import validation
+    from autodelphirf.post_assessment import validation
     source = pathlib.Path(validation.__file__).read_text()
     for forbidden in ("QuantileRegressor", "fit_rr_delphirf", "predict_rr_delphirf",
                       "linkage(", "revision_forecast", ".fit("):
@@ -176,7 +176,7 @@ def test_validation_never_refits_or_retunes():
 
 def test_opposed_objective_diagnostic_records_the_sign():
     """A negative q_err-vs-regret association is the expected structure."""
-    from autodelphirf.validation import opposed_objective_diagnostic
+    from autodelphirf.post_assessment.validation import opposed_objective_diagnostic
     rng = np.random.default_rng(5)
     n = 300
     difficulty = rng.random(n)
@@ -194,7 +194,7 @@ def test_opposed_objective_diagnostic_records_the_sign():
 
 
 def test_v4_keeps_the_two_joint_displays_apart():
-    from autodelphirf.validation import three_axis_heatmaps
+    from autodelphirf.post_assessment.validation import three_axis_heatmaps
     rng = np.random.default_rng(7)
     n = 400
     frame = pd.DataFrame({
@@ -213,7 +213,7 @@ def test_v4_keeps_the_two_joint_displays_apart():
 
 
 def test_process_monitor_nondegeneracy_calls_a_flat_score_a_failure():
-    from autodelphirf.validation import process_monitor_nondegeneracy
+    from autodelphirf.post_assessment.validation import process_monitor_nondegeneracy
     flat = pd.DataFrame({"method": "m", "lag": 1, "process_shift_score": np.zeros(50),
                          "process_state": "stable"})
     assert bool(process_monitor_nondegeneracy(flat).monitor_degenerate.iloc[0])
@@ -230,7 +230,7 @@ def test_process_monitor_nondegeneracy_calls_a_flat_score_a_failure():
 
 def test_qerr_is_a_realized_order_statistic_not_an_interpolated_quantile():
     """q_eta^err = E_(k_eta(n)) with k_eta(n) = min{n, ceil((n+1) eta)}."""
-    from autodelphirf.calibration import upper_order_statistic
+    from autodelphirf.post_assessment.reliability import upper_order_statistic
     values = np.array([1., 2., 3., 4., 5., 6., 7., 8., 9., 10.])
     # n=10, eta=0.9 -> k = min(10, ceil(11*0.9)=10) = 10 -> the maximum.
     assert upper_order_statistic(values, .9) == 10.
@@ -247,7 +247,7 @@ def test_qerr_is_a_realized_order_statistic_not_an_interpolated_quantile():
 
 def test_wilson_interval_stays_in_unit_range_at_the_boundaries():
     """Wilson rather than Wald: k=0 and k=n occur routinely at small support."""
-    from autodelphirf.calibration import wilson_interval
+    from autodelphirf.post_assessment.reliability import wilson_interval
     for k, n in ((0, 12), (12, 12), (3, 40), (1, 2)):
         low, high = wilson_interval(k, n)
         assert 0. <= low <= high <= 1., (k, n, low, high)
@@ -259,7 +259,7 @@ def test_wilson_interval_stays_in_unit_range_at_the_boundaries():
 
 def test_profile_reports_descriptive_f_harm_with_counts_and_no_probability():
     """R_rel = (q_eta^err, f_harm, M_harm) and f_harm is NOT a probability."""
-    from autodelphirf.calibration import forecast_quality_summary
+    from autodelphirf.post_assessment.reliability import forecast_quality_summary
     rng = np.random.default_rng(3)
     history = pd.DataFrame({"rr_ae": rng.gamma(2., 1., 200),
                             "null_ae": rng.gamma(2., 1., 200)})
@@ -277,7 +277,7 @@ def test_profile_reports_descriptive_f_harm_with_counts_and_no_probability():
 
 def test_severity_uses_its_own_positive_harm_support():
     """M_harm = Delta^+_(k_eta(m)) over C_harm, with m reported."""
-    from autodelphirf.calibration import harm_severity_summary
+    from autodelphirf.post_assessment.reliability import harm_severity_summary
     # 30 harmful cases of increasing severity plus 200 helpful ones.
     harmful = np.arange(1., 31.)
     history = pd.DataFrame({"rr_ae": np.concatenate([harmful + 10., np.full(200, 1.)]),
@@ -298,7 +298,7 @@ def test_severity_uses_its_own_positive_harm_support():
 
 def test_c_harm_expands_further_than_c_err_when_harm_is_sparse():
     """The two selections differ exactly when harmful cases are too few."""
-    from autodelphirf.calibration import resolve_strata
+    from autodelphirf.post_assessment.reliability import resolve_strata
     # Location "a" lag 5 has plenty of rows but almost no harmful ones; the
     # wider pool does have harmful cases.
     rows = []

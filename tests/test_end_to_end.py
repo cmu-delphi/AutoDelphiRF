@@ -20,7 +20,7 @@ import subprocess
 
 import pytest
 
-from autodelphirf import cli
+from autodelphirf.app import cli
 
 from conftest import archive_frame
 
@@ -80,7 +80,7 @@ def test_one_command_turns_a_raw_archive_into_a_report(tmp_path):
     assert provenance["diagnosis"]["n_locations"] == 2
 
     # The generated config round-trips.
-    from autodelphirf.config import load_dataset_config
+    from autodelphirf.core.config import load_dataset_config
     config = load_dataset_config(work / "example.json")
     assert config.prepared_dir == prepared
 
@@ -142,8 +142,8 @@ def test_a_csv_triangle_runs_the_same_as_a_parquet_one(tmp_path):
     assert list(prepared.glob("*.csv.gz"))
     assert not list(prepared.glob("*.parquet"))
 
-    from autodelphirf.config import load_dataset_config
-    from autodelphirf.io import load_prepared_triangles
+    from autodelphirf.core.config import load_dataset_config
+    from autodelphirf.core.io import load_prepared_triangles
     config = load_dataset_config(work / "d.json")
     frame = load_prepared_triangles(config.prepared_dir)
     assert len(frame) > 0

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 
+import pandas as pd
 import pytest
 
 from autodelphirf.core import resources
@@ -151,3 +152,26 @@ def test_raw_archive_diagnosis_degrades_cleanly_with_no_manifest():
     archive, note = raw_archive_for_diagnosis("mine", None)
     assert archive is None
     assert "no raw-archive manifest configured" in note
+
+
+def test_raw_archive_diagnosis_loader_keeps_reports_after_day_240(tmp_path):
+    """Late reports define the comparator even though candidates stop at day 365."""
+    from autodelphirf.pre_diagnosis.diagnosis import raw_archive_for_diagnosis
+
+    raw = tmp_path / "raw.csv"
+    pd.DataFrame({
+        "geo": ["aa", "aa"],
+        "reference": ["2024-01-01", "2024-01-01"],
+        "report": ["2024-01-08", "2024-10-27"],
+        "value": [90.0, 100.0],
+    }).to_csv(raw, index=False)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"datasets": {"mine": {
+        "raw_csv": "raw.csv", "reference_col": "reference",
+        "report_col": "report", "value_col": "value"}}}))
+
+    archive, note = raw_archive_for_diagnosis("mine", manifest)
+
+    assert len(archive) == 2
+    assert archive.report_date.max() - archive.reference_date.min() == pd.Timedelta(days=300)
+    assert note == "full raw archive raw.csv"

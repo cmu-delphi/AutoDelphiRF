@@ -345,7 +345,7 @@ function renderLagQuestion(report, userTargetLag) {
   body.innerHTML = `AutoDelphiRF forecasts the target value reported at a prespecified
     target lag. From your archive's historical revisions, the recommendation is
     <strong>${recommended} days</strong> &mdash; the first candidate target lag at which the
-    relative error is within 10% for at least 90% of location and reference-date
+    relative error is within 5% for at least 90% of location and reference-date
     combinations. The chart below still
     shows median relative error as supplementary diagnostic information.`;
 
@@ -572,14 +572,14 @@ function drawCompletionCurve(report) {
     <text x="${width - pad.right}" y="${pad.top + 12}" text-anchor="end"
           font-size="11" fill="var(--text-muted)">10th–90th percentile</text>` : '';
 
-  // The 10% tolerance the rule is defined against, as a reference line.
-  const tolerance = 0.10;
+  // The 5% tolerance the rule is defined against, as a reference line.
+  const tolerance = 0.05;
   const toleranceLine = tolerance <= maxError ? `
     <line x1="${pad.left}" x2="${width - pad.right}" y1="${y(tolerance).toFixed(1)}"
           y2="${y(tolerance).toFixed(1)}" stroke="var(--text-secondary)" stroke-width="2"
           stroke-dasharray="5 4"/>
     <text x="${width - pad.right}" y="${(y(tolerance) - 7).toFixed(1)}" text-anchor="end"
-          font-size="11.5" font-weight="600" fill="var(--text-secondary)">10% tolerance</text>` : '';
+          font-size="11.5" font-weight="600" fill="var(--text-secondary)">5% tolerance</text>` : '';
 
   const markers = points.map((point) => `
     <circle cx="${x(point.lag).toFixed(1)}" cy="${y(point.error).toFixed(1)}" r="4"

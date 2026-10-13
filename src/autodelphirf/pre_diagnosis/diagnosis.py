@@ -183,7 +183,7 @@ diagnose = diagnose_prepared_data
 # as-of value. ``min_followup_days`` and ``max_first_lag`` remain available for
 # a caller who wants a population held fixed across lags, but they DISCARD
 # provided data, so they are off unless asked for.
-TARGET_LAG_RULE = {"completion_rate": 0.90, "relative_error": 0.10,
+TARGET_LAG_RULE = {"completion_rate": 0.90, "relative_error": 0.05,
                    "min_followup_days": 0, "cadence_days": 7, "max_lag": None,
                    "max_first_lag": None}
 
@@ -354,14 +354,17 @@ def resolve_target_lag(diagnosed: dict, user_target_lag: int | None,
     return user_target_lag, f"user choice, confirmed over diagnosed {suggested}"
 
 
-def raw_archive_for_diagnosis(dataset: str, manifest_path, max_lag: int = 240):
-    """Load a dataset's RAW archive as ``(geo_value, reference_date, lag, value)``.
+def raw_archive_for_diagnosis(dataset: str, manifest_path):
+    """Load a dataset's complete RAW archive for the primary pre-diagnosis.
 
     The target-lag rule needs follow-up past any candidate target lag, and a
     prepared triangle is truncated at the target lag it was built with, so
     diagnosing L from it is circular and fails the follow-up requirement on
     every dataset whose triangle stops before 60 days. The raw archive carries
-    the full revision history, which is what the rule was defined on.
+    the full revision history, which is what the rule was defined on. Do not
+    truncate late reports here: the primary diagnosis uses them to define each
+    episode's latest observed reference value while its candidate grid separately
+    bounds automatic target-lag suggestions.
 
     Returns ``(frame, note)``; ``frame`` is ``None`` when the archive or its
     manifest entry is unavailable, and ``note`` says why.
@@ -396,6 +399,5 @@ def raw_archive_for_diagnosis(dataset: str, manifest_path, max_lag: int = 240):
                           / pd.to_numeric(raw[denominator], errors="coerce").replace(0, np.nan))
     else:
         frame["value"] = pd.to_numeric(raw[value], errors="coerce")
-    frame["lag"] = (frame.report_date - frame.reference_date).dt.days
-    frame = frame[frame.lag.between(0, max_lag)].dropna(subset=["value"])
-    return frame, f"raw archive {path.name} (lags 0-{max_lag})"
+    frame = frame.dropna(subset=["value"])
+    return frame, f"full raw archive {path.name}"

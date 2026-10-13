@@ -142,7 +142,7 @@ def test_custom_target_lag_continues_to_method_settings(script):
 
 
 def test_target_lag_wording_matches_the_selection_rule(html, script):
-    assert "within 10% for at least 90% of location and reference-date" in script
+    assert "within 5% for at least 90% of location and reference-date" in script
     assert "at least 90% of location and" in html
     assert "median relative error as supplementary diagnostic" in script
 
@@ -392,8 +392,8 @@ def test_the_chart_ships_a_table_view_of_the_same_numbers(script, html):
 
 
 def test_the_chart_marks_the_threshold_the_rule_is_defined_against(script):
-    assert "10% tolerance" in script
-    assert "const tolerance = 0.10" in script
+    assert "5% tolerance" in script
+    assert "const tolerance = 0.05" in script
 
 
 def test_the_chart_has_a_hover_layer(script):

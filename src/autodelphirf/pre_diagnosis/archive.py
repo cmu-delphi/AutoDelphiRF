@@ -7,7 +7,7 @@ import pandas as pd
 
 EPS = 1e-8
 DEFAULT_CANDIDATE_LAGS = (0, 7, 14, 21, 28, 35, 42, 56, 70, 84, 98, 120, 150, 180, 240, 300, 365)
-DEFAULT_COMPLETION_THRESHOLD = 0.10
+DEFAULT_COMPLETION_THRESHOLD = 0.05
 DEFAULT_COMPLETION_RATE = 0.90
 DEFAULT_LATE_OBSERVATION_FLOOR_DAYS = 60
 # Fixed design constant, not suggested from data (see module docstring).

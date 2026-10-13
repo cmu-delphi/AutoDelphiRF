@@ -24,6 +24,7 @@ from ..core.config import DatasetConfig, write_resolved_config
 from ..comparators.schema import validate_comparator_file
 from ..pre_diagnosis.diagnosis import (diagnose_prepared_data, diagnose_target_lag,
                                       raw_archive_for_diagnosis, resolve_target_lag)
+from ..pre_diagnosis.archive import diagnose_raw_archive
 from ..core.registry import LAYER_COLUMNS, PREDICTION_LAYERS, point_layer
 from ..revroute.training import DELPHIRF_METHODS, train_delphirf
 from ..core.resources import user_config_path
@@ -577,7 +578,7 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
         diagnosed = {
             "selected_target_lag": int(recorded["recommended_target_lag"]),
             "status": "raw archive diagnosis recorded during preprocessing",
-            "rule": {"completion_rate": 0.90, "relative_error": 0.10},
+            "rule": {"completion_rate": 0.90, "relative_error": 0.05},
             "completion": recorded.get("target_lag_completion_curve", {}),
             "source": "preparation.json (full raw archive)",
         }
@@ -585,8 +586,21 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
     else:
         archive, source = raw_archive_for_diagnosis(config.name, raw_archive_manifest_path())
         if archive is not None:
-            diagnosed = diagnose_target_lag(archive.rename(columns={"value": "value_7dav"}),
-                                            value_column="value_7dav", **rule)
+            # Use the same full-history diagnosis as fresh preprocessing. Late
+            # reports define the comparator; the primary candidate grid (ending
+            # at 365 days) bounds only the automatically suggested target lag.
+            raw_diagnosis = diagnose_raw_archive(
+                archive,
+                completion_rate=rule.get("completion_rate", 0.90),
+                completion_threshold=rule.get("relative_error", 0.05),
+            )
+            diagnosed = {
+                "selected_target_lag": int(raw_diagnosis.recommended_target_lag),
+                "status": "primary diagnosis reconstructed from the full raw archive",
+                "rule": {"completion_rate": rule.get("completion_rate", 0.90),
+                         "relative_error": rule.get("relative_error", 0.05)},
+                "completion": raw_diagnosis.target_lag_completion_curve,
+            }
         else:
             diagnosed = diagnose_target_lag(
                 prepared, value_column=config.input_columns.get("raw_value", "value_7dav"), **rule)

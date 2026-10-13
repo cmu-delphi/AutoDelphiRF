@@ -174,11 +174,12 @@ def test_target_lag_requires_ninety_percent_of_tasks_within_tolerance():
     result = diagnose_target_lag(pd.DataFrame(rows), value_column="value_7dav")
     by_lag = {item["lag"]: item for item in result["completion"]}
 
-    # At lag 7 the median error is 10%, but just 60% of tasks are within
-    # 10%. The former median rule selected lag 7; the 90%-of-tasks rule must not.
+    # At lag 7 the median error is 10%, and at lag 14 every task is still 10%
+    # away from the latest value. With the 5% tolerance neither lag qualifies.
     assert by_lag[7]["median_relative_error"] == pytest.approx(0.1)
-    assert by_lag[7]["within_tolerance_rate"] == pytest.approx(0.6)
-    assert result["selected_target_lag"] == 14
+    assert by_lag[7]["within_tolerance_rate"] == pytest.approx(0.0)
+    assert by_lag[14]["within_tolerance_rate"] == pytest.approx(0.0)
+    assert result["selected_target_lag"] == 21
     assert result["within_tolerance_rate"] == pytest.approx(1.0)
 
 
@@ -203,7 +204,7 @@ def test_raw_archive_target_lag_uses_the_same_ninety_percent_rule():
     assert report.target_lag_completion_curve[14] == pytest.approx(0.1)
     assert report.target_lag_completion_band[7] == pytest.approx({"q10": 0.1, "q90": 0.5})
     assert report.target_lag_completion_band[14] == pytest.approx({"q10": 0.1, "q90": 0.1})
-    assert report.recommended_target_lag == 14
+    assert report.recommended_target_lag == 21
 
 
 # --- input schema ---------------------------------------------------------

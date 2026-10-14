@@ -300,12 +300,11 @@ def attach_revision_progress(cases: pd.DataFrame, prepared: pd.DataFrame) -> pd.
     return out
 
 
-def final_v7_weights(route: CurveRouting, location: str, lag: int, revision_state: float) -> tuple[np.ndarray, dict]:
-    """The primary v8 routing distance: D^2 = curve^2 + revision^2 + stage^2.
+def compute_weights(route: CurveRouting, location: str, lag: int, revision_state: float) -> tuple[np.ndarray, dict]:
+    """Compute RED routing weights from curve, revision, and stage distance.
 
-    This is the exact function the v8 pipeline calls (frozen v7 routing
-    geometry). It implements case-wide disabling of the
-    revision-state coordinate when V_q is missing; per-donor ineligibility
+    This implements case-wide disabling of the revision-state coordinate
+    when V_q is missing; per-donor ineligibility
     (never zero distance) when V_j is missing; the cold-start fallback
     D^2_cold = revision^2 + (|l-l_j|/(L-l_min))^2; the degenerate-support
     fallback when a non-cold target still has no comparable donor template;
@@ -376,9 +375,3 @@ def final_v7_weights(route: CurveRouting, location: str, lag: int, revision_stat
                      "max_normalized_donor_weight": float(normalised.max()) if keep.any() else np.nan,
                      "mean_curve_distance": np.nan if curve is None else curve_mean,
                      "mean_stage_distance": np.nan if stage is None else stage_mean}
-
-
-# Preferred, concern-neutral alias. ``final_v7_weights`` is kept as the
-# primary name because it is still referenced by history/tests; both names
-# resolve to the identical function object.
-compute_weights = final_v7_weights

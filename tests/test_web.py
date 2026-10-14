@@ -249,7 +249,7 @@ def test_the_preview_is_what_the_run_would_build(diagnosed, monkeypatch):
 
 def test_the_replay_log_drives_the_progress_bar():
     job = web.Job(state="running", started=time.time(), replay_started=time.time())
-    job.append("revroute v8 replay: fold 3/17 (schedule fold 4)")
+    job.append("Evaluated retraining date 3 of 17")
     snapshot = job.snapshot()
     assert (snapshot["origins_done"], snapshot["origins_total"]) == (3, 17)
 
@@ -257,7 +257,7 @@ def test_the_replay_log_drives_the_progress_bar():
 def test_no_time_estimate_is_offered_from_a_single_origin():
     """One origin is not a rate; a first guess from it would be wild."""
     job = web.Job(state="running", started=time.time(), replay_started=time.time())
-    job.append("revroute v8 replay: fold 1/40 (schedule fold 1)")
+    job.append("Evaluated retraining date 1 of 40")
     assert job.snapshot()["remaining_seconds"] is None
 
 
@@ -265,7 +265,7 @@ def test_the_estimate_ignores_the_time_spent_building_the_triangle():
     """Preprocessing runs before the replay; counting it inflates every estimate."""
     now = time.time()
     job = web.Job(state="running", started=now - 600, replay_started=now - 10)
-    job.append("revroute v8 replay: fold 5/10 (schedule fold 5)")
+    job.append("Evaluated retraining date 5 of 10")
     # 10s for 5 origins, 5 left -> about 10s, not 600s-scaled.
     assert job.snapshot()["remaining_seconds"] == pytest.approx(10, abs=3)
 

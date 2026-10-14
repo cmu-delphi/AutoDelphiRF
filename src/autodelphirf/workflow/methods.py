@@ -6,7 +6,7 @@ import pandas as pd
 
 from ..models.delphirf_backend import train_delphirf
 from ..models.registry import DELPHIRF_METHODS
-from ..models.revroute_delphirf import (PRIMARY_METHODS, RR_DELPHIRF_CODE_VERSION,
+from ..models.revroute_delphirf import (PRIMARY_METHODS, PRIMARY_METHOD_ID,
                                         prepare_revroute_delphirf)
 
 
@@ -22,7 +22,7 @@ def train_requested_delphirf(config, prepared: pd.DataFrame, schedule: pd.DataFr
         config, prepared, schedule,
         {method: DELPHIRF_METHODS[method] for method in methods}, output, pools=pools)
     if any(method in PRIMARY_METHODS for method in methods):
-        provenance["rr_delphirf_code_version"] = RR_DELPHIRF_CODE_VERSION
+        provenance["primary_method_id"] = PRIMARY_METHOD_ID
     return path, seconds, provenance
 
 

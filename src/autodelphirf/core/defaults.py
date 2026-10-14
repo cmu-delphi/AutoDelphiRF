@@ -9,19 +9,19 @@ from .resources import load_resource, resource_path
 # Shipped as package data (``autodelphirf/resources/``) rather than read
 # out of a surrounding working directory, so the constants travel with the
 # installed package. See ``resources.py``.
-CONFIG_PATH = resource_path("revroute_v8_defaults.json")
-V8_DEFAULTS = load_resource("revroute_v8_defaults.json")
+CONFIG_PATH = resource_path("pipeline_defaults.json")
+DEFAULTS = load_resource("pipeline_defaults.json")
 
-VERSION = V8_DEFAULTS["version"]
-ROUTING_DEFAULTS = V8_DEFAULTS["routing"]
-RESIDUAL_DEFAULTS = V8_DEFAULTS["residual"]
-RR_DELPHIRF_DEFAULTS = V8_DEFAULTS["rr_delphirf"]
-PROCESS_DEFAULTS = V8_DEFAULTS["process_monitor"]
+VERSION = DEFAULTS["version"]
+ROUTING_DEFAULTS = DEFAULTS["routing"]
+RESIDUAL_DEFAULTS = DEFAULTS["residual"]
+RR_DELPHIRF_DEFAULTS = DEFAULTS["rr_delphirf"]
+PROCESS_DEFAULTS = DEFAULTS["process_monitor"]
 # Present in the defaults file today but not yet consumed by any module:
 # reserved for the Section 4 calibration/reliability layer once it is
 # ported into this package (see CONSOLIDATION_NOTES.md).
-CALIBRATION_DEFAULTS = V8_DEFAULTS.get("calibration_reliability", {})
-EVALUATION_DEFAULTS = V8_DEFAULTS.get("evaluation", {})
+CALIBRATION_DEFAULTS = DEFAULTS.get("calibration_reliability", {})
+EVALUATION_DEFAULTS = DEFAULTS.get("evaluation", {})
 
 
 # The one place the working-scale -> original-scale inverse is defined, so

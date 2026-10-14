@@ -9,7 +9,7 @@ import pandas as pd
 from autodelphirf.comparators.red_prediction import replay
 from autodelphirf.workflow.methods import (DELPHIRF_METHODS,
                                            train_requested_delphirf as train_delphirf)
-from autodelphirf.models.revroute_delphirf import RR_DELPHIRF_CODE_VERSION
+from autodelphirf.models.revroute_delphirf import PRIMARY_METHOD_ID
 from autodelphirf.workflow.run import build_cases
 from autodelphirf.post_assessment.inference import primary_comparison_pairs
 from autodelphirf.core.registry import DEFAULT_LAYERS, PREDICTION_LAYERS
@@ -18,7 +18,7 @@ from autodelphirf.core.resources import resource_path
 
 def test_red_implementation_lives_only_with_comparators():
     from autodelphirf.comparators.red_prediction import replay as comparator_replay
-    from autodelphirf.comparators.red_routing import final_v7_weights as comparator_weights
+    from autodelphirf.comparators.red_routing import compute_weights as comparator_weights
 
     assert comparator_replay.__module__ == "autodelphirf.comparators.red_prediction"
     assert comparator_weights.__module__ == "autodelphirf.comparators.red_routing"
@@ -61,7 +61,7 @@ def test_primary_dispatch_builds_revroute_pools_without_comparator_adapter(tmp_p
         SimpleNamespace(), pd.DataFrame(), pd.DataFrame(), ("delphirf",),
         tmp_path / "predictions.csv.gz")
     assert captured == {"labels": {"delphirf": "RevRoute DelphiRF"}, "pools": pools}
-    assert provenance["rr_delphirf_code_version"] == "rrdelphirf0"
+    assert provenance["primary_method_id"] == "revroute_delphirf"
 
 
 def test_revroute_backend_does_not_enter_delphirf_lag_band_loop():
@@ -75,7 +75,7 @@ def test_revroute_backend_does_not_enter_delphirf_lag_band_loop():
 
 
 def test_default_is_revroute_pooling_plus_real_delphirf():
-    assert RR_DELPHIRF_CODE_VERSION == "rrdelphirf0"
+    assert PRIMARY_METHOD_ID == "revroute_delphirf"
     assert DEFAULT_LAYERS == ("baseline_null", "delphirf")
     assert set(DELPHIRF_METHODS) == {
         "delphirf", "naive_delphirf", "similarity_weighted_delphirf", "global_delphirf"}
@@ -163,7 +163,7 @@ def test_delphirf_training_builds_an_installed_package_command(tmp_path, monkeyp
     assert "train_delphirf.R" in command[1]
     assert command[command.index("--weekdays-json") + 1] == '{"Mon": ["Mon"]}'
     assert not any("DelphiRF" in part and Path(part).is_dir() for part in command)
-    assert "rr_delphirf_code_version" not in provenance
+    assert "primary_method_id" not in provenance
 
 
 def test_delphirf_training_warns_when_r_reports_partial_fit_failures(tmp_path, monkeypatch):

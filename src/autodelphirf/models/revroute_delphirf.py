@@ -8,9 +8,8 @@ from ..revroute.pooling.plan import learn_task_pools
 
 PRIMARY_METHODS = {"delphirf": "RevRoute DelphiRF"}
 
-#: Saved implementation label for RevRoute pooling followed by real DelphiRF.
-#: Increment this only when a new named method version is deliberately frozen.
-RR_DELPHIRF_CODE_VERSION = "rrdelphirf0"
+#: Stable identifier for RevRoute pooling followed by DelphiRF training.
+PRIMARY_METHOD_ID = "revroute_delphirf"
 
 
 def prepare_revroute_delphirf(prepared: pd.DataFrame, schedule: pd.DataFrame,
@@ -19,5 +18,5 @@ def prepare_revroute_delphirf(prepared: pd.DataFrame, schedule: pd.DataFrame,
     return learn_task_pools(prepared, schedule, Path(output).with_name("revroute_pools.csv"))
 
 
-__all__ = ["PRIMARY_METHODS", "RR_DELPHIRF_CODE_VERSION",
+__all__ = ["PRIMARY_METHODS", "PRIMARY_METHOD_ID",
            "prepare_revroute_delphirf"]

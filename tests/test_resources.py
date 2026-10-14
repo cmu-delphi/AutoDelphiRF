@@ -12,7 +12,7 @@ from autodelphirf.core import resources
 # --- packaged resources ---------------------------------------------------
 
 @pytest.mark.parametrize("name", ["prepared_triangle_schema.json",
-                                  "revroute_v8_defaults.json",
+                                  "pipeline_defaults.json",
                                   "dataset_template.json",
                                   "prepare_triangle.R"])
 def test_every_declared_resource_ships_with_the_package(name):
@@ -24,7 +24,7 @@ def test_every_declared_resource_ships_with_the_package(name):
 
 def test_resource_path_is_inside_the_package_not_a_sibling_directory():
     """The whole point of the change: no reaching out of the install."""
-    path = resources.resource_path("revroute_v8_defaults.json")
+    path = resources.resource_path("pipeline_defaults.json")
     package_root = resources.RESOURCE_DIR.parent
     assert package_root in path.parents
     assert path.parent.name == "resources"
@@ -45,7 +45,7 @@ def test_defaults_module_reads_its_constants_from_package_data():
     """defaults.py imports at module scope; a broken lookup breaks every import."""
     from autodelphirf.core import defaults
 
-    assert defaults.CONFIG_PATH == resources.resource_path("revroute_v8_defaults.json")
+    assert defaults.CONFIG_PATH == resources.resource_path("pipeline_defaults.json")
     assert defaults.VERSION
     assert defaults.ROUTING_DEFAULTS
 

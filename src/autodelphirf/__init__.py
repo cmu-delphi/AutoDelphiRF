@@ -25,10 +25,10 @@ from .core.context import attach_issued_context
 from .revroute.pooling.plan import learn_task_pools
 from .workflow.methods import train_requested_delphirf as train_delphirf
 from .models.registry import DELPHIRF_METHODS, MODEL_METHODS
-from .models.revroute_delphirf import RR_DELPHIRF_CODE_VERSION
+from .models.revroute_delphirf import PRIMARY_METHOD_ID
 from .comparators.red_routing import (FEATURE, attach_revision_progress,
                                       build_curve_routing, compute_weights,
-                                      final_v7_weights, robust_mad_scale)
+                                      robust_mad_scale)
 from .core.history import rolling_completed_training
 
 __all__ = [
@@ -41,11 +41,11 @@ __all__ = [
     "PREDICTION_LAYERS", "register_prediction_layer",
     "VERSION", "ROUTING_DEFAULTS", "RESIDUAL_DEFAULTS", "PROCESS_DEFAULTS",
     "RR_DELPHIRF_DEFAULTS", "learn_task_pools", "DELPHIRF_METHODS",
-    "MODEL_METHODS", "RR_DELPHIRF_CODE_VERSION", "train_delphirf",
+    "MODEL_METHODS", "PRIMARY_METHOD_ID", "train_delphirf",
     "CALIBRATION_DEFAULTS", "EVALUATION_DEFAULTS",
     "replay", "wis", "ROUTED_TAUS", "weighted_quantiles", "weighted_median",
     "attach_issued_context", "attach_revision_progress",
-    "build_curve_routing", "compute_weights", "final_v7_weights",
+    "build_curve_routing", "compute_weights",
     "robust_mad_scale", "rolling_completed_training", "FEATURE",
     "calibration_stratum", "calibrate", "prospective_calibration",
     "add_interval_columns", "forecast_quality_summary",

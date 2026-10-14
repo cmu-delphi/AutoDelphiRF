@@ -12,7 +12,7 @@ import pandas as pd
 
 from ..core.defaults import ROUTING_DEFAULTS
 from .red import ROUTED_TAUS, _weighted_quantiles_presorted
-from .red_routing import FEATURE, build_curve_routing, final_v7_weights
+from .red_routing import FEATURE, build_curve_routing, compute_weights
 from ..core.history import rolling_completed_training
 
 
@@ -50,7 +50,7 @@ def replay(cases: pd.DataFrame, prepared: pd.DataFrame, training_days: int | dic
             for row_number, (_, case) in enumerate(test.iterrows()):
                 if should_stop and row_number % 100 == 0:
                     should_stop()
-                weights, audit = final_v7_weights(
+                weights, audit = compute_weights(
                     route, str(case.geo_value), int(case.lag), case.get(FEATURE, np.nan))
                 remaining = _weighted_quantiles_presorted(
                     route.sorted_responses, weights, route.response_sort_order, ROUTED_TAUS)

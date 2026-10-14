@@ -116,7 +116,7 @@ LAYER_LABELS = {
 #: rather than plumbed through a callback because ``run_pipeline`` reports on
 #: stdout, which this server is already capturing line by line.
 FOLD_PROGRESS = re.compile(
-    r"(?:Evaluated retraining date|(?:revroute v8 )?replay: fold) (\d+)(?: of |/)(\d+)")
+    r"Evaluated retraining date (\d+) of (\d+)")
 
 #: Layers that fit forests and cost substantially more than RED alone. Shown
 #: as a warning beside the checkbox rather than hidden.

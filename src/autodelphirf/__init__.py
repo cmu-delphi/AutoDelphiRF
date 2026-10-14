@@ -16,18 +16,20 @@ from .core.resources import load_resource, resource_path, user_config_path
 from .core.defaults import (CALIBRATION_DEFAULTS, EVALUATION_DEFAULTS, PROCESS_DEFAULTS,
                             RESIDUAL_DEFAULTS, ROUTING_DEFAULTS, RR_DELPHIRF_DEFAULTS,
                             VERSION)
-from .revroute.prediction import replay
+from .comparators.red_prediction import replay
 from .post_assessment.inference import bootstrap, primary_comparison_pairs
 from .post_assessment.scoring import wis
 from .comparators.red import ROUTED_TAUS, weighted_median, weighted_quantiles
 from .core.registry import PREDICTION_LAYERS, register_prediction_layer
 from .core.context import attach_issued_context
 from .revroute.pooling.plan import learn_task_pools
-from .revroute.training import (DELPHIRF_METHODS, MODEL_METHODS,
-                                RR_DELPHIRF_CODE_VERSION, train_delphirf)
-from .revroute.routing import (FEATURE, attach_revision_progress, build_curve_routing,
-                               compute_weights, final_v7_weights, robust_mad_scale,
-                               rolling_completed_training)
+from .workflow.methods import train_requested_delphirf as train_delphirf
+from .models.registry import DELPHIRF_METHODS, MODEL_METHODS
+from .models.revroute_delphirf import RR_DELPHIRF_CODE_VERSION
+from .comparators.red_routing import (FEATURE, attach_revision_progress,
+                                      build_curve_routing, compute_weights,
+                                      final_v7_weights, robust_mad_scale)
+from .core.history import rolling_completed_training
 
 __all__ = [
     "__version__",

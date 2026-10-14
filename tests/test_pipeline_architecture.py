@@ -6,13 +6,72 @@ import warnings
 import numpy as np
 import pandas as pd
 
-from autodelphirf.revroute.prediction import replay
-from autodelphirf.revroute.training import (DELPHIRF_METHODS, RR_DELPHIRF_CODE_VERSION,
-                                         train_delphirf)
+from autodelphirf.comparators.red_prediction import replay
+from autodelphirf.workflow.methods import (DELPHIRF_METHODS,
+                                           train_requested_delphirf as train_delphirf)
+from autodelphirf.models.revroute_delphirf import RR_DELPHIRF_CODE_VERSION
 from autodelphirf.workflow.run import build_cases
 from autodelphirf.post_assessment.inference import primary_comparison_pairs
 from autodelphirf.core.registry import DEFAULT_LAYERS, PREDICTION_LAYERS
 from autodelphirf.core.resources import resource_path
+
+
+def test_red_implementation_lives_only_with_comparators():
+    from autodelphirf.comparators.red_prediction import replay as comparator_replay
+    from autodelphirf.comparators.red_routing import final_v7_weights as comparator_weights
+
+    assert comparator_replay.__module__ == "autodelphirf.comparators.red_prediction"
+    assert comparator_weights.__module__ == "autodelphirf.comparators.red_routing"
+    revroute = Path(__file__).parents[1] / "src" / "autodelphirf" / "revroute"
+    assert not (revroute / "prediction.py").exists()
+    assert not (revroute / "routing.py").exists()
+
+
+def test_revroute_package_contains_only_pooling_strategy():
+    revroute = Path(__file__).parents[1] / "src" / "autodelphirf" / "revroute"
+    modules = {path.name for path in revroute.glob("*.py")}
+    assert modules == {"__init__.py"}
+    assert (revroute / "pooling").is_dir()
+
+
+def test_workflow_dispatches_primary_and_comparator_owned_methods():
+    from autodelphirf.models.revroute_delphirf import PRIMARY_METHODS
+    from autodelphirf.comparators.delphirf import COMPARATOR_DELPHIRF_METHODS
+
+    assert PRIMARY_METHODS == {"delphirf": "RevRoute DelphiRF"}
+    assert set(COMPARATOR_DELPHIRF_METHODS) == {
+        "naive_delphirf", "similarity_weighted_delphirf", "global_delphirf"}
+    assert DELPHIRF_METHODS == {**PRIMARY_METHODS, **COMPARATOR_DELPHIRF_METHODS}
+
+
+def test_primary_dispatch_builds_revroute_pools_without_comparator_adapter(tmp_path, monkeypatch):
+    import autodelphirf.workflow.methods as dispatcher
+
+    pools = tmp_path / "revroute_pools.csv"
+    captured = {}
+    monkeypatch.setattr(dispatcher, "prepare_revroute_delphirf",
+                        lambda prepared, schedule, output: pools)
+
+    def fake_backend(config, prepared, schedule, labels, output, pools=None):
+        captured.update(labels=labels, pools=pools)
+        return Path(output), 1.0, {}
+
+    monkeypatch.setattr(dispatcher, "train_delphirf", fake_backend)
+    _, _, provenance = dispatcher.train_requested_delphirf(
+        SimpleNamespace(), pd.DataFrame(), pd.DataFrame(), ("delphirf",),
+        tmp_path / "predictions.csv.gz")
+    assert captured == {"labels": {"delphirf": "RevRoute DelphiRF"}, "pools": pools}
+    assert provenance["rr_delphirf_code_version"] == "rrdelphirf0"
+
+
+def test_revroute_backend_does_not_enter_delphirf_lag_band_loop():
+    source = resource_path("train_delphirf.R").read_text()
+    primary = source.index('if ("RevRoute DelphiRF" %in% requested_methods)')
+    lag_bands = source.index("for (group in lag_groups)")
+    assert primary < lag_bands
+    primary_block = source[primary:lag_bands]
+    assert "fit_one(pool_train, pool_test" in primary_block
+    assert "train_group" not in primary_block
 
 
 def test_default_is_revroute_pooling_plus_real_delphirf():
@@ -67,7 +126,7 @@ def test_test_window_can_vary_by_schedule_row():
 
 def test_replay_uses_each_folds_training_days(monkeypatch):
     seen = []
-    monkeypatch.setattr("autodelphirf.revroute.prediction.rolling_completed_training",
+    monkeypatch.setattr("autodelphirf.comparators.red_prediction.rolling_completed_training",
                         lambda prepared, cutoff, days: seen.append(days) or prepared)
     cases = pd.DataFrame({"fold": [1, 2], "cutoff": pd.to_datetime(["2024-01-01", "2024-02-01"]),
                           "geo_value": ["x", "x"], "lag": [1, 1], "Null": [0., 0.]})
@@ -88,14 +147,14 @@ def test_delphirf_training_builds_an_installed_package_command(tmp_path, monkeyp
     (prepared_dir / "preparation.json").write_text(json.dumps(metadata))
     (prepared_dir / "test_dates.csv").write_text("test_date\n")
     captured = {}
-    monkeypatch.setattr("autodelphirf.revroute.training.rscript_executable", lambda: "Rscript")
-    monkeypatch.setattr("autodelphirf.revroute.training.subprocess.run",
+    monkeypatch.setattr("autodelphirf.models.delphirf_backend.rscript_executable", lambda: "Rscript")
+    monkeypatch.setattr("autodelphirf.models.delphirf_backend.subprocess.run",
                         lambda command, check=False: captured.setdefault("command", command) or SimpleNamespace(returncode=0))
     # Make the fake result object explicit despite dict truthiness.
     def fake_run(command, check=False):
         captured["command"] = command
         return SimpleNamespace(returncode=0)
-    monkeypatch.setattr("autodelphirf.revroute.training.subprocess.run", fake_run)
+    monkeypatch.setattr("autodelphirf.models.delphirf_backend.subprocess.run", fake_run)
     config = SimpleNamespace(prepared_dir=prepared_dir, schedule_file="test_dates.csv")
     _, _, provenance = train_delphirf(
         config, pd.DataFrame(), pd.DataFrame(), ("naive_delphirf",),
@@ -104,7 +163,7 @@ def test_delphirf_training_builds_an_installed_package_command(tmp_path, monkeyp
     assert "train_delphirf.R" in command[1]
     assert command[command.index("--weekdays-json") + 1] == '{"Mon": ["Mon"]}'
     assert not any("DelphiRF" in part and Path(part).is_dir() for part in command)
-    assert provenance["rr_delphirf_code_version"] == "rrdelphirf0"
+    assert "rr_delphirf_code_version" not in provenance
 
 
 def test_delphirf_training_warns_when_r_reports_partial_fit_failures(tmp_path, monkeypatch):
@@ -122,8 +181,8 @@ def test_delphirf_training_warns_when_r_reports_partial_fit_failures(tmp_path, m
         "fit_status": "partial_failure", "fit_failure_count": 2,
         "fit_failures_file": str(output) + ".fit_failures.csv"}))
 
-    monkeypatch.setattr("autodelphirf.revroute.training.rscript_executable", lambda: "Rscript")
-    monkeypatch.setattr("autodelphirf.revroute.training.subprocess.run",
+    monkeypatch.setattr("autodelphirf.models.delphirf_backend.rscript_executable", lambda: "Rscript")
+    monkeypatch.setattr("autodelphirf.models.delphirf_backend.subprocess.run",
                         lambda command, check=False: SimpleNamespace(returncode=0))
     config = SimpleNamespace(prepared_dir=prepared_dir, schedule_file="test_dates.csv")
 
@@ -154,8 +213,8 @@ def test_single_location_training_passes_a_string_geo_and_constant_label(tmp_pat
         captured["command"] = command
         return SimpleNamespace(returncode=0)
 
-    monkeypatch.setattr("autodelphirf.revroute.training.rscript_executable", lambda: "Rscript")
-    monkeypatch.setattr("autodelphirf.revroute.training.subprocess.run", fake_run)
+    monkeypatch.setattr("autodelphirf.models.delphirf_backend.rscript_executable", lambda: "Rscript")
+    monkeypatch.setattr("autodelphirf.models.delphirf_backend.subprocess.run", fake_run)
     config = SimpleNamespace(prepared_dir=prepared_dir, schedule_file="test_dates.csv")
     train_delphirf(config, pd.DataFrame(), pd.DataFrame(), ("naive_delphirf",),
                    tmp_path / "predictions.csv.gz")

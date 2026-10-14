@@ -11,8 +11,8 @@ from dataclasses import replace
 from ..core.io import load_prepared_triangles
 from ..post_assessment.scoring import wis
 from ..core.defaults import to_raw_scale
-from ..revroute.prediction import replay
-from ..revroute.routing import attach_revision_progress
+from ..comparators.red_prediction import replay
+from ..comparators.red_routing import attach_revision_progress
 from ..core.context import attach_issued_context
 from .process_monitor import build_monitor_index, process_state_monitor
 from ..core.defaults import PROCESS_DEFAULTS, EVALUATION_DEFAULTS
@@ -26,7 +26,7 @@ from ..pre_diagnosis.diagnosis import (diagnose_prepared_data, diagnose_target_l
                                       raw_archive_for_diagnosis, resolve_target_lag)
 from ..pre_diagnosis.archive import diagnose_raw_archive
 from ..core.registry import LAYER_COLUMNS, PREDICTION_LAYERS, point_layer
-from ..revroute.training import DELPHIRF_METHODS, train_delphirf
+from .methods import DELPHIRF_METHODS, train_requested_delphirf
 from ..core.resources import user_config_path
 from ..post_assessment.reporting import LEVELS, build_report
 
@@ -520,7 +520,7 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
         # below is the public artifact and always carries raw-scale prediction
         # and q* columns after the inverse transform in _method_rows().
         trained = output / "_working_scale_delphirf_predictions.csv.gz"
-        _, delphirf_seconds, delphirf_provenance = train_delphirf(
+        _, delphirf_seconds, delphirf_provenance = train_requested_delphirf(
             config, prepared, schedule, requested_delphirf, trained)
         config = replace(
             config, comparator_file=trained,

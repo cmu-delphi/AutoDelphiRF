@@ -30,8 +30,8 @@ def _exact_median(values: np.ndarray) -> float:
 
     ``np.median`` spends ~0.44 s per 20k calls regardless of array length --
     essentially all overhead (asanyarray, axis/keepdims handling, the
-    ``_median_nancheck`` path) -- and ``_profile`` calls it four times per
-    episode-lag suffix, 2.42M times and ~88 s on a chng fold. A direct sort
+    ``_median_nancheck`` path) -- and the profile calculation calls it four
+    times per episode-lag suffix, 2.42M times and ~88 s on a chng fold. A direct sort
     with exact middle indexing measured 7-14x faster at lengths 5-60 and
     agrees to 0.0e+00 on finite input.
 
@@ -53,8 +53,8 @@ def _exact_median(values: np.ndarray) -> float:
 def _profile_statistics(delta, gaps, zero_count=None):
     """The five process-profile coordinates from precomputed increments.
 
-    Split out of ``_profile`` so ``_summarize_episode`` can pass suffix SLICES
-    of one episode-wide ``diff`` instead of re-differencing per suffix:
+    ``_summarize_episode`` passes suffix slices of one episode-wide ``diff``
+    instead of re-differencing per suffix:
     ``diff(x[k:])`` is exactly ``diff(x)[k:]``. ``zero_count`` likewise lets
     the caller supply the number of zero increments in this suffix from a
     reverse cumulative sum; omitted, it is computed here as before.
@@ -71,26 +71,6 @@ def _profile_statistics(delta, gaps, zero_count=None):
              else float(np.mean(delta == 0)))
     return np.array([_exact_median(gaps), share, med,
                      _exact_median(np.abs(delta)), _exact_median(np.abs(delta - med))], float)
-
-
-def _profile(lags, values, report_days):
-    order = np.argsort(lags)
-    values, report_days = np.asarray(values)[order], np.asarray(report_days)[order]
-    return _profile_statistics(np.diff(values), np.diff(report_days))
-
-
-def _increments(lags, values, start, target_lag):
-    """Spline or linear future increments from the current lag through L."""
-    from scipy.interpolate import CubicSpline
-    order = np.argsort(lags)
-    lags, values = np.asarray(lags, float)[order], np.asarray(values, float)[order]
-    grid = np.arange(int(start), int(target_lag) + 1, dtype=float)
-    if len(lags) == 2:
-        fitted = np.interp(grid, lags, values)
-    else:
-        fitted = CubicSpline(lags, values, bc_type="natural")(grid)
-    return np.diff(fitted)
-
 
 @dataclass(frozen=True)
 class EpisodeSummary:

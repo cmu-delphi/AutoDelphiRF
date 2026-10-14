@@ -1,6 +1,6 @@
-"""Rolling replay for the optional Python RED model.
+"""Rolling replay for the optional Python RED comparator.
 
-DelphiRF models are trained in :mod:`autodelphirf.revroute.training`; RevRoute
+Model methods are dispatched by :mod:`autodelphirf.workflow.methods`; RevRoute
 pooling is learned in :mod:`autodelphirf.revroute.pooling`. This engine deliberately
 contains neither a DelphiRF reimplementation nor residual hybrid estimators.
 """
@@ -11,9 +11,9 @@ import numpy as np
 import pandas as pd
 
 from ..core.defaults import ROUTING_DEFAULTS
-from ..comparators.red import ROUTED_TAUS, _weighted_quantiles_presorted
-from .routing import (FEATURE, build_curve_routing, final_v7_weights,
-                      rolling_completed_training)
+from .red import ROUTED_TAUS, _weighted_quantiles_presorted
+from .red_routing import FEATURE, build_curve_routing, final_v7_weights
+from ..core.history import rolling_completed_training
 
 
 def replay(cases: pd.DataFrame, prepared: pd.DataFrame, training_days: int | dict, *,

@@ -11,7 +11,7 @@ from pathlib import Path
 import pandas as pd
 
 from .clustering import sparse_task_pooling
-from ..routing import rolling_completed_training
+from ...core.history import rolling_completed_training
 
 
 def learn_task_pools(prepared: pd.DataFrame, schedule: pd.DataFrame, output: Path) -> Path:

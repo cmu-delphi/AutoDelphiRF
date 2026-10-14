@@ -1,4 +1,4 @@
-"""Stage 4: rolling model training through explicit estimator backends."""
+"""Shared bridge to the installed DelphiRF estimator backend."""
 from __future__ import annotations
 
 import json
@@ -11,12 +11,6 @@ import pandas as pd
 
 from ..pre_diagnosis.preparation import PreparationError, rscript_executable
 from ..core.resources import resource_path
-from ..comparators.registry import DEFAULT_MODEL_METHODS, DELPHIRF_METHODS, MODEL_METHODS
-from .pooling.plan import learn_task_pools
-
-#: Saved implementation label for RevRoute pooling followed by real DelphiRF.
-#: Increment this only when a new named method version is deliberately frozen.
-RR_DELPHIRF_CODE_VERSION = "rrdelphirf0"
 
 
 def _preparation_metadata(prepared_dir: Path) -> dict:
@@ -29,20 +23,17 @@ def _preparation_metadata(prepared_dir: Path) -> dict:
 
 
 def train_delphirf(config, prepared: pd.DataFrame, schedule: pd.DataFrame,
-                    methods: tuple[str, ...], output: Path) -> tuple[Path, float, dict]:
-    """Fit requested methods with the installed R DelphiRF package."""
-    unknown = set(methods).difference(DELPHIRF_METHODS)
-    if unknown:
-        raise ValueError(f"not DelphiRF methods: {sorted(unknown)}")
+                    method_labels: dict[str, str], output: Path,
+                    pools: Path | None = None) -> tuple[Path, float, dict]:
+    """Fit already-resolved method strategies with the installed DelphiRF package."""
+    if not method_labels:
+        raise ValueError("at least one DelphiRF method is required")
     metadata = _preparation_metadata(config.prepared_dir)
     resolved = metadata["resolved_preprocessing"]
     raw = Path(metadata["raw_archive"]).resolve()
     if not raw.is_file():
         raise PreparationError(f"recorded raw archive no longer exists: {raw}")
-    pools = None
-    if "delphirf" in methods:
-        pools = learn_task_pools(prepared, schedule, Path(output).with_name("revroute_pools.csv"))
-    names = ",".join(DELPHIRF_METHODS[name] for name in methods)
+    names = ",".join(method_labels.values())
     weekday_groups = json.dumps(
         resolved.get("weekday_groups", resolved.get("onehot_weekdays", {})) or {})
     # Older preparation.json files predate the explicit geo_col field and used
@@ -72,7 +63,6 @@ def train_delphirf(config, prepared: pd.DataFrame, schedule: pd.DataFrame,
     seconds = perf_counter() - began
     provenance_path = Path(str(output) + ".provenance.json")
     provenance = json.loads(provenance_path.read_text()) if provenance_path.is_file() else {}
-    provenance["rr_delphirf_code_version"] = RR_DELPHIRF_CODE_VERSION
     failure_count = int(provenance.get("fit_failure_count", 0))
     if failure_count:
         failure_file = provenance.get("fit_failures_file", str(output) + ".fit_failures.csv")
@@ -85,5 +75,4 @@ def train_delphirf(config, prepared: pd.DataFrame, schedule: pd.DataFrame,
     return Path(output), seconds, provenance
 
 
-__all__ = ["DEFAULT_MODEL_METHODS", "DELPHIRF_METHODS", "MODEL_METHODS",
-           "RR_DELPHIRF_CODE_VERSION", "train_delphirf"]
+__all__ = ["train_delphirf"]

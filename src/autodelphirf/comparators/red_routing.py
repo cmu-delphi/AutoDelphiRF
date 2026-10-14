@@ -1,4 +1,4 @@
-"""Prospective RevRoute weights for completed historical observations."""
+"""Similarity routing used exclusively by the optional Python RED comparator."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -286,20 +286,6 @@ def _stage_by_donor(route: CurveRouting, location: str, lag: int) -> np.ndarray:
         result = np.abs(float(position[index]) - route.donor_template_positions)
     route.stage_cache[key] = result
     return result
-
-
-def rolling_completed_training(prepared: pd.DataFrame, cutoff: pd.Timestamp, training_days: int) -> pd.DataFrame:
-    """Select completed historical reference dates available at an origin.
-
-    ``training_days`` (W) is a trailing window on each row's target
-    availability date, not its reference date. Report-state features must
-    also have been released before the cutoff.
-    """
-    window_start = cutoff - pd.Timedelta(days=training_days)
-    eligible = (prepared.target_date > window_start) & (prepared.target_date <= cutoff)
-    if "report_date" in prepared:
-        eligible &= prepared.report_date < cutoff
-    return prepared[eligible].copy()
 
 
 def attach_revision_progress(cases: pd.DataFrame, prepared: pd.DataFrame) -> pd.DataFrame:

@@ -11,7 +11,7 @@ was derived from.
 
 The server runs the real pipeline in this process: it calls
 ``prepare.diagnose_archive``, then ``prepare.prepare_dataset`` (which shells
-out to DelphiRF), then ``pipeline.run_pipeline``. Nothing is uploaded
+out to DelphiRF), then ``workflow.run_pipeline``. Nothing is uploaded
 anywhere; the archive is copied into a working directory on this machine and
 the generated report is served from there.
 

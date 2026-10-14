@@ -11,7 +11,7 @@ Six subcommands, in the order a new user meets them:
                          it runs an already-prepared dataset.
   ``autodelphirf assess``    rerun post-forecast assessment from saved predictions;
                          never fits a model.
-  ``autodelphirf init``      write a starter dataset JSON to fill in by hand.
+  ``autodelphirf init``      write a starter raw or prepared dataset JSON.
   ``autodelphirf web``       do all of the above in a browser: drag a file in and
                          answer the questions on a page.
 
@@ -58,6 +58,85 @@ def _layers(value: str) -> tuple[str, ...]:
     return names
 
 
+def _load_raw_config(arguments: argparse.Namespace) -> argparse.Namespace:
+    """Populate raw-archive arguments from a self-contained JSON config."""
+    path = Path(arguments.raw_config).resolve()
+    raw = json.loads(path.read_text())
+    if not isinstance(raw, dict):
+        raise ValueError("raw dataset config must contain a JSON object")
+    allowed = {"name", "archive", "work_dir", "columns", "value_type",
+               "preprocessing", "retraining", "model_methods"}
+    unknown = {key for key in raw if not key.startswith("_")}.difference(allowed)
+    if unknown:
+        raise ValueError(f"unknown raw dataset config fields: {sorted(unknown)}")
+    missing = {key for key in ("name", "archive") if not raw.get(key)}
+    if missing:
+        raise ValueError(f"raw dataset config missing: {sorted(missing)}")
+
+    def resolve(value):
+        target = Path(value)
+        return target if target.is_absolute() else (path.parent / target).resolve()
+
+    columns = raw.get("columns") or {}
+    if not isinstance(columns, dict):
+        raise ValueError("raw dataset config 'columns' must be an object")
+    allowed_columns = {"reference_date", "report_date", "geo_value", "values"}
+    unknown_columns = set(columns).difference(allowed_columns)
+    if unknown_columns:
+        raise ValueError(f"unknown raw column fields: {sorted(unknown_columns)}")
+    values = columns.get("values", ["value"])
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, list) or not values or not all(isinstance(x, str) for x in values):
+        raise ValueError("raw dataset config columns.values must be a nonempty string list")
+
+    preprocessing = raw.get("preprocessing") or {}
+    retraining = raw.get("retraining") or {}
+    if not isinstance(preprocessing, dict) or not isinstance(retraining, dict):
+        raise ValueError("raw dataset config preprocessing and retraining must be objects")
+    preprocessing_fields = {
+        "target_lag", "confirm_target_lag", "temporal_resolution", "lag_terms",
+        "training_days", "smoothed", "target_lag_lower_tolerance",
+        "target_lag_upper_tolerance", "min_location_rows", "triangle_format"}
+    retraining_fields = {"first_origin_date", "retrain_days", "start_date", "end_date"}
+    if set(preprocessing).difference(preprocessing_fields):
+        raise ValueError(f"unknown preprocessing fields: "
+                         f"{sorted(set(preprocessing).difference(preprocessing_fields))}")
+    if set(retraining).difference(retraining_fields):
+        raise ValueError(f"unknown retraining fields: "
+                         f"{sorted(set(retraining).difference(retraining_fields))}")
+
+    geo = columns.get("geo_value", "geo_value")
+    methods = raw.get("model_methods", list(DEFAULT_LAYERS))
+    if not isinstance(methods, list) or not all(isinstance(x, str) for x in methods):
+        raise ValueError("raw dataset config model_methods must be a string list")
+    arguments.archive = resolve(raw["archive"])
+    arguments.name = str(raw["name"])
+    arguments.out = resolve(raw.get("work_dir", "autodelphirf_work"))
+    arguments.reference_col = columns.get("reference_date", "reference_date")
+    arguments.report_col = columns.get("report_date", "report_date")
+    arguments.geo_col = geo or "geo_value"
+    arguments.no_geo = geo is None
+    arguments.value_cols = values
+    arguments.value_type = raw.get("value_type", "count")
+    arguments.target_lag = preprocessing.get("target_lag")
+    arguments.confirm_target_lag = bool(preprocessing.get("confirm_target_lag", False))
+    arguments.temporal_resolution = preprocessing.get("temporal_resolution")
+    arguments.lag_terms = preprocessing.get("lag_terms")
+    arguments.training_days = preprocessing.get("training_days")
+    arguments.smoothed = preprocessing.get("smoothed")
+    arguments.target_lag_lower_tolerance = preprocessing.get("target_lag_lower_tolerance", 0)
+    arguments.target_lag_upper_tolerance = preprocessing.get("target_lag_upper_tolerance", 0)
+    arguments.min_location_rows = preprocessing.get("min_location_rows", DEFAULT_MIN_LOCATION_ROWS)
+    arguments.triangle_format = preprocessing.get("triangle_format", "parquet")
+    arguments.first_origin_date = retraining.get("first_origin_date")
+    arguments.testing_days = retraining.get("retrain_days")
+    arguments.start_date = retraining.get("start_date")
+    arguments.end_date = retraining.get("end_date")
+    arguments.layers = _layers(",".join(methods))
+    return arguments
+
+
 def preparation_options(include_archive: bool = True) -> argparse.ArgumentParser:
     """The options that describe a raw archive and how to preprocess it.
 
@@ -70,8 +149,11 @@ def preparation_options(include_archive: bool = True) -> argparse.ArgumentParser
     source = parser.add_argument_group(
         "input archive", "One row per (location, reference date, report date, value).")
     if include_archive:
-        source.add_argument("--archive", type=Path, metavar="CSV",
-                            help="raw revision archive: .csv, .csv.gz, or .parquet")
+        raw_source = source.add_mutually_exclusive_group()
+        raw_source.add_argument("--archive", type=Path, metavar="CSV",
+                                help="raw revision archive: .csv, .csv.gz, or .parquet")
+        raw_source.add_argument("--raw-config", type=Path, metavar="JSON",
+                                help="complete raw-archive configuration JSON")
     source.add_argument("--name", help="dataset name, used for output paths")
     source.add_argument("--out", type=Path, default=Path("autodelphirf_work"), metavar="DIR",
                         help="working directory for the triangle, config, and results "
@@ -155,7 +237,9 @@ def _spec_from_arguments(arguments: argparse.Namespace):
     lag_terms = None
     if arguments.lag_terms:
         try:
-            lag_terms = tuple(int(part) for part in arguments.lag_terms.split(","))
+            parts = (arguments.lag_terms.split(",") if isinstance(arguments.lag_terms, str)
+                     else arguments.lag_terms)
+            lag_terms = tuple(int(part) for part in parts)
         except ValueError as error:
             raise PreparationError(
                 f"--lag-terms must be comma-separated integers, got {arguments.lag_terms!r}"
@@ -197,6 +281,8 @@ def _report_diagnosis(diagnosis: dict) -> None:
 
 
 def command_diagnose(arguments: argparse.Namespace) -> int:
+    if arguments.raw_config is not None:
+        arguments = _load_raw_config(arguments)
     _require(arguments, "archive")
     value_cols = tuple(arguments.value_cols or ("value",))
     diagnosis = diagnose_archive(
@@ -215,6 +301,8 @@ def command_diagnose(arguments: argparse.Namespace) -> int:
 
 
 def command_prepare(arguments: argparse.Namespace) -> int:
+    if arguments.raw_config is not None:
+        arguments = _load_raw_config(arguments)
     spec = _spec_from_arguments(arguments)
     print(f"Diagnosis of {spec.raw_csv}:\n")
     _report_diagnosis(spec.diagnosis)
@@ -233,6 +321,8 @@ def command_run(arguments: argparse.Namespace) -> int:
     # should not pay for pipeline's sklearn/matplotlib import chain.
     from ..workflow.run import run_pipeline
 
+    if arguments.raw_config is not None:
+        arguments = _load_raw_config(arguments)
     if arguments.archive is not None:
         spec = _spec_from_arguments(arguments)
         print(f"Diagnosis of {spec.raw_csv}:\n")
@@ -277,14 +367,22 @@ def command_init(arguments: argparse.Namespace) -> int:
     if destination.exists() and not arguments.force:
         print(f"{destination} already exists; pass --force to overwrite.", file=sys.stderr)
         return 1
-    template = json.loads(resource_path("dataset_template.json").read_text())
+    resource = ("raw_dataset_template.json" if arguments.kind == "raw"
+                else "prepared_dataset_template.json")
+    template = json.loads(resource_path(resource).read_text())
     template["name"] = arguments.name
-    for key in ("prepared_dir", "output_dir"):
+    keys = (("archive",) if arguments.kind == "raw"
+            else ("prepared_dir", "output_dir"))
+    for key in keys:
         template[key] = template[key].replace("your_dataset_name", arguments.name)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(template, indent=2) + "\n")
-    print(f"Wrote {destination}. Fill in prepared_dir/output_dir, then:\n"
-          f"  autodelphirf run --config {destination} --diagnosis-only")
+    if arguments.kind == "raw":
+        print(f"Wrote {destination}. Fill in the raw archive and column mapping, then:\n"
+              f"  autodelphirf diagnose --raw-config {destination}")
+    else:
+        print(f"Wrote {destination}. Fill in prepared_dir/output_dir, then:\n"
+              f"  autodelphirf run --config {destination} --diagnosis-only")
     return 0
 
 
@@ -327,6 +425,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="dataset config of an already-prepared dataset")
     source.add_argument("--archive", type=Path, metavar="CSV",
                         help="raw revision archive to prepare and then run")
+    source.add_argument("--raw-config", type=Path, metavar="JSON",
+                        help="complete raw-archive configuration JSON to prepare and run")
     run.add_argument("--methods", "--layers", dest="layers", type=_layers, default=DEFAULT_LAYERS,
                      help="prediction layers, when preparing from --archive "
                           f"(default: {','.join(DEFAULT_LAYERS)})")
@@ -365,10 +465,13 @@ def build_parser() -> argparse.ArgumentParser:
     web.set_defaults(handler=command_web)
 
     initialize = subparsers.add_parser(
-        "init", help="write a starter dataset JSON",
-        description="Write a dataset JSON template to fill in by hand, for a prepared triangle "
-                    "you built yourself.")
+        "init", help="write a starter raw or prepared dataset JSON",
+        description="Write a configuration template to fill in by hand. Raw configurations "
+                    "can drive diagnosis, preparation, and a complete run; prepared "
+                    "configurations register a triangle built elsewhere.")
     initialize.add_argument("--name", required=True, help="dataset name")
+    initialize.add_argument("--kind", choices=("raw", "prepared"), default="prepared",
+                            help="configuration contract to write (default: prepared)")
     initialize.add_argument("--output", type=Path, help="where to write it (default: <name>.json)")
     initialize.add_argument("--force", action="store_true", help="overwrite an existing file")
     initialize.set_defaults(handler=command_init)
@@ -385,8 +488,22 @@ def main(argv: list[str] | None = None) -> int:
     like a usage error.
     """
     parser = build_parser()
-    arguments = parser.parse_args(argv)
+    supplied = list(sys.argv[1:] if argv is None else argv)
+    arguments = parser.parse_args(supplied)
     try:
+        if getattr(arguments, "raw_config", None) is not None:
+            raw_options = {
+                "--archive", "--name", "--out", "--reference-col", "--report-col",
+                "--value-col", "--geo-col", "--no-geo", "--value-type", "--target-lag",
+                "--confirm-target-lag", "--temporal-resolution", "--lag-terms",
+                "--training-days", "--smoothed", "--no-smoothed", "--first-origin-date",
+                "--retrain-days", "--start-date", "--end-date",
+                "--target-lag-lower-tolerance", "--target-lag-upper-tolerance",
+                "--min-location-rows", "--triangle-format", "--methods", "--layers"}
+            mixed = sorted({token.split("=", 1)[0] for token in supplied}.intersection(raw_options))
+            if mixed:
+                raise ValueError(
+                    f"--raw-config is a complete input and cannot be combined with: {mixed}")
         return arguments.handler(arguments)
     except (PreparationError, FileNotFoundError, FileExistsError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)

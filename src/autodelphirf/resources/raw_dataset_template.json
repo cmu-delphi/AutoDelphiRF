@@ -1,0 +1,37 @@
+{
+  "_comment": "Raw-archive configuration. Paths are resolved relative to this file. Use this file with autodelphirf diagnose, prepare, or run via --raw-config.",
+  "name": "your_dataset_name",
+  "archive": "../../data/raw/your_dataset_name.csv",
+  "work_dir": "../../output/system",
+  "columns": {
+    "reference_date": "reference_date",
+    "report_date": "report_date",
+    "geo_value": "geo_value",
+    "values": [
+      "value"
+    ]
+  },
+  "value_type": "count",
+  "preprocessing": {
+    "target_lag": null,
+    "confirm_target_lag": false,
+    "temporal_resolution": null,
+    "lag_terms": null,
+    "training_days": null,
+    "smoothed": null,
+    "target_lag_lower_tolerance": 0,
+    "target_lag_upper_tolerance": 0,
+    "min_location_rows": 100,
+    "triangle_format": "parquet"
+  },
+  "retraining": {
+    "first_origin_date": null,
+    "retrain_days": null,
+    "start_date": null,
+    "end_date": null
+  },
+  "model_methods": [
+    "baseline_null",
+    "delphirf"
+  ]
+}

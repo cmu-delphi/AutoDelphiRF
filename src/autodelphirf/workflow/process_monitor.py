@@ -42,11 +42,11 @@ def _historical_scale(values: np.ndarray) -> float:
     Constancy is judged RELATIVE to the magnitude of the states themselves.
     A strict ``> 0`` test is not enough: a rolling-window summary of a feature
     that is genuinely constant still differs between windows at floating-point
-    size, and dividing by a 1e-17 spread produced scores of order 1e15 on real
-    nhsn28 data -- trading the old saturation defect for an explosion. Scaling
-    the tolerance by the states' own level keeps genuinely small-magnitude
-    features (signed revision magnitudes of order 1e-5) available while
-    recognising a constant one.
+    size, and dividing by a 1e-17 spread produces scores of order 1e15 on real
+    nhsn28 data. Scaling the tolerance by the states' own level prevents that
+    numerical explosion while keeping genuinely small-magnitude features
+    (signed revision magnitudes of order 1e-5) available and recognising a
+    constant one.
     """
     values = values[np.isfinite(values)]
     if values.size < 2:
@@ -85,24 +85,21 @@ def process_state_monitor(prepared: pd.DataFrame, cutoff: pd.Timestamp, location
         d_sr     = |Z_sr - mu_sr| / sigma_sr
         D_s      = max_r d_sr,   r* = argmax_r d_sr.
 
-    Two deliberate departures from the previous implementation, both required
-    by the spec:
+    Two invariants preserve the monitor's sensitivity and ranking:
 
-    * It no longer compares a recent window median with a reference window
-      median. "The previous recent-median-versus-reference-median construction
-      is not used as the default because discrete or stable reporting features
-      can produce identical medians and hence a degenerate all-zero shift
-      score even when their distributions differ."
-    * The score is UNCAPPED. "The scientific score is explicitly uncapped: no
-      saturation such as min(c, D_s^shift) is permitted before storage or
-      validation." The old cap at the re-diagnose boundary put 21-43% of cases
-      exactly at the maximum across six datasets, which destroyed all ordering
-      in precisely the tail the monitor exists to rank.
+    * Each process state is compared with its own earlier states rather than
+      comparing a recent-window median with a reference-window median. Discrete
+      or stable reporting features can otherwise produce identical medians and
+      a degenerate all-zero shift score even when their distributions differ.
+    * The score is uncapped: no saturation such as ``min(c, D_s^shift)`` is
+      applied before storage or validation. A cap at the re-diagnosis boundary
+      places 21-43% of cases exactly at the maximum across six datasets and
+      destroys ordering in precisely the tail the monitor exists to rank.
 
-    ``watch_threshold``/``rediagnose_threshold`` now label the returned state
+    ``watch_threshold`` and ``rediagnose_threshold`` label the returned state
     for display only; they never truncate the stored score. ``epsilon_scale``
-    is retained for signature compatibility and is unused: a feature with no
-    historical variation is reported unavailable instead.
+    is accepted but unused: a feature with no historical variation is reported
+    unavailable instead.
     """
     if "report_date" not in prepared:
         return "insufficient-history", np.nan

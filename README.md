@@ -135,6 +135,21 @@ To inspect an archive without preparing data or fitting models:
 autodelphirf diagnose --archive my_archive.csv
 ```
 
+The same raw archive, column mappings, preprocessing choices, retraining
+calendar, and model methods can be stored in one JSON file. Create a starter
+file and use it with any raw-data command:
+
+```bash
+autodelphirf init --kind raw --name mydata --output mydata-raw.json
+autodelphirf diagnose --raw-config mydata-raw.json
+autodelphirf prepare --raw-config mydata-raw.json
+autodelphirf run --raw-config mydata-raw.json
+```
+
+Paths inside the raw configuration are resolved relative to the JSON file.
+`autodelphirf init --kind prepared` remains available for the less common case
+of registering an existing prepared triangle.
+
 Diagnosis runs in Python, writes no files, and does not require R. Run
 `autodelphirf run --help` or `autodelphirf diagnose --help` for all options.
 

@@ -61,10 +61,9 @@ dir.create(dirname(output_path), recursive = TRUE, showWarnings = FALSE)
 # via create_dir_not_exist(), which calls dir.create() WITHOUT recursive=TRUE.
 # So model_save_dir itself must already exist, or saveRDS() fails with
 # "cannot open the connection" and every fit is silently dropped. Create one
-# run-scoped cache dir up front (mirrors run_nhsn28_pooling_candidates.R's
-# dir.create(model_dir, recursive = TRUE)). Model filenames already encode
-# training_end_date + geo key + lag group + tau + hyperparams, and our geo key
-# encodes method/fold/group/pool, so a single shared dir cannot collide.
+# run-scoped cache directory up front. Model filenames already encode the
+# training end date, geo key, lag group, quantile, and hyperparameters; the geo
+# key also encodes method, fold, group, and pool, so models cannot collide.
 model_save_dir <- tempfile("delphirf_comparator_models_")
 dir.create(model_save_dir, recursive = TRUE, showWarnings = FALSE)
 

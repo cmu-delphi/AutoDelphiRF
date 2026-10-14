@@ -1,5 +1,5 @@
 {
-  "_comment": "Starter template for a new dataset. Copy this file to <your_dataset_name>.json, fill in the fields below, and run: python3 code/run_autodelphirf.py --config config/datasets/<your_dataset_name>.json --diagnosis-only  first, to check the input schema before running the full replay. Remove every _comment key (they are not recognized fields; only present here as guidance) before using the file.",
+  "_comment": "Starter configuration for a prepared triangle. Fill in the fields below, then run autodelphirf run --config <your_dataset_name>.json --diagnosis-only to validate it before the full replay.",
   "name": "your_dataset_name",
   "prepared_dir": "../../data/raw_preprocessed/your_dataset_name",
   "output_dir": "../../output/system/your_dataset_name",

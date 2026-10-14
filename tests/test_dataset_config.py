@@ -166,7 +166,7 @@ def test_the_shipped_template_is_itself_loadable(tmp_path):
     """`autodelphirf init` writes this file; it must load once paths are filled in."""
     from autodelphirf.core.resources import resource_path
 
-    template = json.loads(resource_path("dataset_template.json").read_text())
+    template = json.loads(resource_path("prepared_dataset_template.json").read_text())
     template["prepared_dir"] = "input"
     template["output_dir"] = "out"
     path = tmp_path / "from_template.json"

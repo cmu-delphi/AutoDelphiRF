@@ -13,7 +13,8 @@ from autodelphirf.core import resources
 
 @pytest.mark.parametrize("name", ["prepared_triangle_schema.json",
                                   "pipeline_defaults.json",
-                                  "dataset_template.json",
+                                  "prepared_dataset_template.json",
+                                  "raw_dataset_template.json",
                                   "prepare_triangle.R"])
 def test_every_declared_resource_ships_with_the_package(name):
     """Each file pyproject declares as package data is actually present."""

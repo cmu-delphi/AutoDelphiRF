@@ -17,9 +17,7 @@ ROUTING_DEFAULTS = DEFAULTS["routing"]
 RESIDUAL_DEFAULTS = DEFAULTS["residual"]
 RR_DELPHIRF_DEFAULTS = DEFAULTS["rr_delphirf"]
 PROCESS_DEFAULTS = DEFAULTS["process_monitor"]
-# Present in the defaults file today but not yet consumed by any module:
-# reserved for the Section 4 calibration/reliability layer once it is
-# ported into this package (see CONSOLIDATION_NOTES.md).
+# Shared defaults for calibration, reliability, and evaluation.
 CALIBRATION_DEFAULTS = DEFAULTS.get("calibration_reliability", {})
 EVALUATION_DEFAULTS = DEFAULTS.get("evaluation", {})
 

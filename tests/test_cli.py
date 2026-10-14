@@ -105,6 +105,26 @@ def test_run_refuses_both_a_config_and_an_archive(capsys):
     assert "not allowed with" in capsys.readouterr().err
 
 
+def test_run_refuses_prepared_and_raw_configs_together(capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["run", "--config", "prepared.json", "--raw-config", "raw.json"])
+    assert exit_info.value.code == 2
+    assert "not allowed with" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("extra", [
+    ["--name", "other"], ["--target-lag", "28"], ["--value-col", "count"],
+    ["--methods", "baseline_null"],
+])
+def test_raw_config_refuses_mixed_raw_cli_settings(tmp_path, capsys, extra):
+    config = tmp_path / "raw.json"
+    config.write_text(json.dumps({"name": "d", "archive": "archive.csv"}))
+    assert cli.main(["run", "--raw-config", str(config), *extra]) == 2
+    error = capsys.readouterr().err
+    assert "complete input" in error
+    assert extra[0] in error
+
+
 def test_run_with_a_config_does_not_demand_preparation_options(tmp_path, capsys):
     """--config is a complete description; --name would be noise."""
     config = tmp_path / "d.json"
@@ -205,6 +225,27 @@ def test_diagnose_handles_a_single_location_archive(tmp_path, capsys):
     assert "cross-location pooling is not possible" in output
 
 
+def test_raw_config_drives_diagnosis_with_relative_paths_and_column_mapping(
+        tmp_path, capsys):
+    archive = tmp_path / "data" / "archive.csv"
+    archive.parent.mkdir()
+    archive_frame(days=120, max_lag=30).rename(columns={
+        "geo_value": "place", "reference_date": "event_date",
+        "report_date": "issue_date", "value": "count"}).to_csv(archive, index=False)
+    config = tmp_path / "raw.json"
+    config.write_text(json.dumps({
+        "name": "mapped",
+        "archive": "data/archive.csv",
+        "work_dir": "work",
+        "columns": {"geo_value": "place", "reference_date": "event_date",
+                    "report_date": "issue_date", "values": ["count"]},
+        "value_type": "count",
+        "model_methods": ["baseline_null", "red"],
+    }))
+    assert cli.main(["diagnose", "--raw-config", str(config)]) == 0
+    assert "locations           2" in capsys.readouterr().out
+
+
 def test_a_fraction_signal_accepts_one_precomputed_rate_column(
         tmp_path, archive_csv, monkeypatch):
     """A one-column rate archive reaches preparation without a denominator."""
@@ -235,6 +276,17 @@ def test_init_writes_a_loadable_template(tmp_path, capsys):
     assert payload["name"] == "mine"
     assert "mine" in payload["prepared_dir"]
     assert "autodelphirf run --config" in capsys.readouterr().out
+
+
+def test_init_can_write_a_raw_archive_configuration(tmp_path, capsys):
+    destination = tmp_path / "mine-raw.json"
+    assert cli.main(["init", "--kind", "raw", "--name", "mine",
+                     "--output", str(destination)]) == 0
+    payload = json.loads(destination.read_text())
+    assert payload["name"] == "mine"
+    assert "mine" in payload["archive"]
+    assert payload["columns"]["reference_date"] == "reference_date"
+    assert "autodelphirf diagnose --raw-config" in capsys.readouterr().out
 
 
 def test_init_refuses_to_clobber_an_existing_file(tmp_path, capsys):
@@ -291,6 +343,64 @@ def test_prepare_reaches_the_r_bridge_with_the_diagnosed_settings(tmp_path, arch
     assert provenance["raw_archive"].endswith("archive.csv")
     assert provenance["diagnosis"]["n_locations"] == 2
     assert "autodelphirf run --config" in capsys.readouterr().out
+
+
+def test_raw_config_drives_preparation_and_records_requested_methods(
+        tmp_path, archive_csv, monkeypatch):
+    captured = {}
+
+    def fake_bridge(spec, on_output=None):
+        captured["spec"] = spec
+        spec.output_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr("autodelphirf.pre_diagnosis.preparation.run_r_bridge", fake_bridge)
+    config = tmp_path / "raw.json"
+    config.write_text(json.dumps({
+        "name": "mine", "archive": archive_csv.name, "work_dir": "work",
+        "columns": {"reference_date": "reference_date", "report_date": "report_date",
+                    "geo_value": "geo_value", "values": ["value"]},
+        "preprocessing": {"lag_terms": [1, 7], "training_days": 140,
+                          "triangle_format": "csv"},
+        "model_methods": ["baseline_null", "red"],
+    }))
+    assert cli.main(["prepare", "--raw-config", str(config)]) == 0
+    spec = captured["spec"]
+    assert spec.raw_csv == archive_csv.resolve()
+    assert spec.output_dir == (tmp_path / "work" / "mine").resolve()
+    assert spec.lag_terms == (1, 7)
+    assert spec.training_days == 140
+    generated = json.loads((tmp_path / "work" / "mine.json").read_text())
+    assert generated["model_methods"] == ["baseline_null", "red"]
+
+
+def test_raw_config_can_drive_the_complete_run(tmp_path, archive_csv, monkeypatch):
+    prepared_config = tmp_path / "work" / "mine.json"
+    called = {}
+
+    def fake_prepare(spec, prediction_layers, config_path):
+        called["spec"] = spec
+        called["methods"] = prediction_layers
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps({
+            "name": "mine", "prepared_dir": "mine", "output_dir": "results",
+            "model_methods": list(prediction_layers)}))
+        return config_path
+
+    def fake_run(config, diagnosis_only=False):
+        called["run_config"] = config
+        return {}
+
+    monkeypatch.setattr(cli, "prepare_dataset", fake_prepare)
+    monkeypatch.setattr("autodelphirf.workflow.run.run_pipeline", fake_run)
+    config = tmp_path / "raw.json"
+    config.write_text(json.dumps({
+        "name": "mine", "archive": archive_csv.name, "work_dir": "work",
+        "model_methods": ["baseline_null", "red"],
+    }))
+    assert cli.main(["run", "--raw-config", str(config)]) == 0
+    assert called["methods"] == ("baseline_null", "red")
+    assert called["run_config"].name == "mine"
+    assert prepared_config.is_file()
 
 
 def test_a_missing_r_install_is_reported_as_guidance(tmp_path, archive_csv, monkeypatch, capsys):

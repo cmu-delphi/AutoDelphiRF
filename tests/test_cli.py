@@ -193,9 +193,10 @@ def test_diagnose_prints_a_readable_report_and_writes_nothing(tmp_path, archive_
     before = set(tmp_path.iterdir())
     assert cli.main(["diagnose", "--archive", str(archive_csv)]) == 0
     printed = capsys.readouterr().out
-    for expected in ("locations", "cadence", "genuine revisions", "resolved L",
+    for expected in ("locations", "cadence", "selected L",
                      "training window"):
         assert expected in printed
+    assert "genuine revisions" not in printed
     assert "Nothing was written" in printed
     assert set(tmp_path.iterdir()) == before
 
@@ -207,10 +208,12 @@ def test_diagnose_json_emits_the_full_machine_readable_report(archive_csv, capsy
     assert "target_lag_completion_curve" in report
 
 
-def test_diagnose_surfaces_a_target_lag_disagreement_for_confirmation(archive_csv, capsys):
-    """A user's L is never adopted silently when the data disagrees."""
+def test_diagnose_reports_an_explicit_target_lag_as_the_user_choice(archive_csv, capsys):
     assert cli.main(["diagnose", "--archive", str(archive_csv), "--target-lag", "365"]) == 0
-    assert "CONFIRM" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "selected L          365" in output
+    assert "user_choice" in output
+    assert "CONFIRM" not in output
 
 
 def test_diagnose_handles_a_single_location_archive(tmp_path, capsys):
@@ -257,7 +260,8 @@ def test_a_fraction_signal_accepts_one_precomputed_rate_column(
 
     monkeypatch.setattr("autodelphirf.pre_diagnosis.preparation.run_r_bridge", fake_bridge)
     assert cli.main(["prepare", "--archive", str(archive_csv), "--name", "d",
-                     "--value-type", "fraction", "--out", str(tmp_path / "w")]) == 0
+                     "--value-type", "fraction", "--target-lag", "21",
+                     "--out", str(tmp_path / "w")]) == 0
     assert captured["spec"].value_cols == ("value",)
 
 
@@ -327,7 +331,8 @@ def test_prepare_reaches_the_r_bridge_with_the_diagnosed_settings(tmp_path, arch
     monkeypatch.setattr("autodelphirf.pre_diagnosis.preparation.run_r_bridge", fake_bridge)
     out = tmp_path / "work"
     assert cli.main(["prepare", "--archive", str(archive_csv), "--name", "mine",
-                     "--out", str(out), "--layers", "baseline_null,red"]) == 0
+                     "--out", str(out), "--target-lag", "21",
+                     "--layers", "baseline_null,red"]) == 0
 
     spec = captured["spec"]
     assert captured["on_output"] is None
@@ -359,7 +364,7 @@ def test_raw_config_drives_preparation_and_records_requested_methods(
         "name": "mine", "archive": archive_csv.name, "work_dir": "work",
         "columns": {"reference_date": "reference_date", "report_date": "report_date",
                     "geo_value": "geo_value", "values": ["value"]},
-        "preprocessing": {"lag_terms": [1, 7], "training_days": 140,
+        "preprocessing": {"target_lag": 21, "lag_terms": [1, 7], "training_days": 140,
                           "triangle_format": "csv"},
         "model_methods": ["baseline_null", "red"],
     }))
@@ -395,6 +400,7 @@ def test_raw_config_can_drive_the_complete_run(tmp_path, archive_csv, monkeypatc
     config = tmp_path / "raw.json"
     config.write_text(json.dumps({
         "name": "mine", "archive": archive_csv.name, "work_dir": "work",
+        "preprocessing": {"target_lag": 21},
         "model_methods": ["baseline_null", "red"],
     }))
     assert cli.main(["run", "--raw-config", str(config)]) == 0
@@ -407,6 +413,6 @@ def test_a_missing_r_install_is_reported_as_guidance(tmp_path, archive_csv, monk
     monkeypatch.delenv("AUTODELPHIRF_RSCRIPT", raising=False)
     monkeypatch.setattr("autodelphirf.pre_diagnosis.preparation.shutil.which", lambda _: None)
     assert cli.main(["prepare", "--archive", str(archive_csv), "--name", "d",
-                     "--out", str(tmp_path / "w")]) == 2
+                     "--target-lag", "21", "--out", str(tmp_path / "w")]) == 2
     error = capsys.readouterr().err
     assert "install R" in error and "DelphiRF" in error

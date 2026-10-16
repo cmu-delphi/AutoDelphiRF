@@ -90,11 +90,15 @@ if (!is.null(spec$geo_col) && nzchar(spec$geo_col)) {
 raw_all <- raw_all[!is.na(raw_all[[reference_col]]) & !is.na(raw_all[[report_col]]), , drop = FALSE]
 # A negative lag is a report filed before its own reference date: not a
 # revision, so it is dropped rather than modelled. The upper bound keeps the
-# follow-up needed for the target plus a margin, and nothing beyond it.
-raw_all <- raw_all[raw_all$lag >= 0 & raw_all$lag <= spec$ref_lag + 100, , drop = FALSE]
+# follow-up needed for the target plus a margin, without exceeding the same
+# two-year revision horizon used by raw pre-diagnosis.
+effective_max_lag <- min(spec$ref_lag + 100, spec$max_observed_lag_days)
+raw_all <- raw_all[raw_all$lag >= 0 & raw_all$lag <= effective_max_lag, , drop = FALSE]
 if (nrow(raw_all) == 0) {
-  stop("no rows left after dropping negative lags and lags beyond ref_lag + 100 (ref_lag=",
-       spec$ref_lag, "). Check that reference/report columns are not swapped.", call. = FALSE)
+  stop("no rows left after keeping lags from 0 through ", effective_max_lag,
+       " days (target lag=", spec$ref_lag, ", archive lag cap=",
+       spec$max_observed_lag_days,
+       "). Check that reference/report columns are not swapped.", call. = FALSE)
 }
 
 # --- Experiment calendar --------------------------------------------------

@@ -6,7 +6,47 @@ import pandas as pd
 import pytest
 
 from autodelphirf.post_assessment.run import assess_results, freeze_reliability_reference, sha256
+from autodelphirf.post_assessment.reporting import (_early_lag_location_summary,
+                                                     _location_quantile_summary)
 from autodelphirf.core.config import load_dataset_config, write_resolved_config
+
+
+def test_web_score_bands_weight_locations_equally_after_within_location_averaging():
+    scored = pd.DataFrame({
+        "lag": [1, 1, 1, 1],
+        "method": ["delphirf"] * 4,
+        "geo_value": ["a", "a", "b", "b"],
+        "absolute_error": [1.0, 3.0, 10.0, 14.0],
+        "wis": [2.0, 4.0, 20.0, 24.0],
+    })
+    summary = _location_quantile_summary(scored, ["lag", "method"])
+    ae = summary[summary.metric.eq("ae")].iloc[0]
+    wis = summary[summary.metric.eq("wis")].iloc[0]
+    assert ae.n_locations == 2
+    assert ae["median"] == pytest.approx(7.0)  # median of location means 2 and 12
+    assert ae.q10 == pytest.approx(3.0)
+    assert ae.q90 == pytest.approx(11.0)
+    assert wis["median"] == pytest.approx(12.5)
+
+
+def test_early_lag_location_summary_reports_mean_and_sample_sd_through_day_14():
+    scored = pd.DataFrame({
+        "lag": [1, 14, 15, 1, 14],
+        "method": ["delphirf"] * 5,
+        "geo_value": ["a", "a", "a", "b", "b"],
+        "absolute_error": [1.0, 3.0, 100.0, 4.0, 8.0],
+        "wis": [2.0, 6.0, 200.0, float("nan"), float("nan")],
+    })
+
+    summary = _early_lag_location_summary(scored)
+    a_ae = summary[(summary.geo_value == "a") & (summary.metric == "ae")].iloc[0]
+    b_ae = summary[(summary.geo_value == "b") & (summary.metric == "ae")].iloc[0]
+
+    assert a_ae["mean"] == pytest.approx(2.0)
+    assert a_ae["std"] == pytest.approx(2 ** 0.5)
+    assert a_ae.n == 2 and a_ae.maximum_lag == 14
+    assert b_ae["mean"] == pytest.approx(6.0)
+    assert set(summary[summary.metric.eq("wis")].geo_value) == {"a"}
 
 
 def config_payload(tmp_path, results):

@@ -96,12 +96,16 @@ For a CSV using the default column names above, run:
 ```bash
 autodelphirf run \
   --archive my_archive.csv \
-  --name mydata
+  --name mydata \
+  --target-lag 28
 ```
 
-AutoDelphiRF diagnoses the target lag, reporting cadence, feature lags, training
-window, and retraining calendar when they are not specified. Results are written
-to `autodelphirf_work` by default.
+Run `autodelphirf diagnose --archive my_archive.csv` first to inspect the
+target-lag evidence. AutoDelphiRF reports the area from 90% of records being
+within 10% relative error to 90% being within 1%; it does not choose the target
+lag. Preparation and training wait until you supply `--target-lag`. Reporting
+cadence, feature lags, training window, and retraining calendar are diagnosed
+when not specified. Results are written to `autodelphirf_work` by default.
 
 For custom column names:
 
@@ -113,7 +117,8 @@ autodelphirf run \
   --reference-col event_date \
   --report-col issue_date \
   --value-col count \
-  --value-type count
+  --value-type count \
+  --target-lag 28
 ```
 
 For a single-location CSV without a geography column, use `--no-geo` explicitly:
@@ -122,7 +127,8 @@ For a single-location CSV without a geography column, use `--no-geo` explicitly:
 autodelphirf run \
   --archive single_series.csv \
   --name single_series \
-  --no-geo
+  --no-geo \
+  --target-lag 28
 ```
 
 AutoDelphiRF reports that it is treating the archive as one synthetic location.

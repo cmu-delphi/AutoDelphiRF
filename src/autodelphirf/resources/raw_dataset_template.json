@@ -14,7 +14,6 @@
   "value_type": "count",
   "preprocessing": {
     "target_lag": null,
-    "confirm_target_lag": false,
     "temporal_resolution": null,
     "lag_terms": null,
     "training_days": null,

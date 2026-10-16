@@ -16,7 +16,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from autodelphirf.pre_diagnosis.diagnosis import diagnose_prepared_data, diagnose_target_lag
+from autodelphirf.pre_diagnosis.diagnosis import (diagnose_prepared_data,
+                                                  diagnose_target_lag,
+                                                  resolve_target_lag)
 from autodelphirf.pre_diagnosis.archive import diagnose_raw_archive
 from autodelphirf.workflow.run import (INTEGER_COLUMNS, apply_input_schema, build_cases,
                                       normalize_lag_dtypes)
@@ -128,10 +130,11 @@ def test_the_reported_ceiling_is_the_triangles_own_reach():
 
 
 def test_a_shorter_cadence_finds_a_target_lag_in_the_same_short_triangle():
-    """Confirms the early return is about the cadence, not about the data being unusable."""
+    """A shorter cadence produces evidence, but still never selects for the user."""
     result = diagnose_target_lag(diagnosis_frame(max_lag=6), value_column="value_7dav",
                                  cadence_days=2)
-    assert result["selected_target_lag"] is not None
+    assert result["selected_target_lag"] is None
+    assert result["completion"]
 
 
 def test_a_missing_value_column_is_reported_by_name():
@@ -175,12 +178,15 @@ def test_target_lag_requires_ninety_percent_of_tasks_within_tolerance():
     by_lag = {item["lag"]: item for item in result["completion"]}
 
     # At lag 7 the median error is 10%, and at lag 14 every task is still 10%
-    # away from the latest value. With the 5% tolerance neither lag qualifies.
+    # away from the latest value. With the 1% tolerance neither lag qualifies.
     assert by_lag[7]["median_relative_error"] == pytest.approx(0.1)
     assert by_lag[7]["within_tolerance_rate"] == pytest.approx(0.0)
     assert by_lag[14]["within_tolerance_rate"] == pytest.approx(0.0)
-    assert result["selected_target_lag"] == 21
-    assert result["within_tolerance_rate"] == pytest.approx(1.0)
+    assert result["selected_target_lag"] is None
+    assert result["suggested_target_lag_range"] == {
+        "lower": 14, "upper": 21, "completion_rate": 0.9,
+        "lower_relative_error": 0.10, "upper_relative_error": 0.01}
+    assert by_lag[21]["within_1pct_rate"] == pytest.approx(1.0)
 
 
 def test_raw_archive_target_lag_uses_the_same_ninety_percent_rule():
@@ -202,9 +208,83 @@ def test_raw_archive_target_lag_uses_the_same_ninety_percent_rule():
     # now uses the 90%-of-tasks completion rule.
     assert report.target_lag_completion_curve[7] == pytest.approx(0.1)
     assert report.target_lag_completion_curve[14] == pytest.approx(0.1)
-    assert report.target_lag_completion_band[7] == pytest.approx({"q10": 0.1, "q90": 0.5})
-    assert report.target_lag_completion_band[14] == pytest.approx({"q10": 0.1, "q90": 0.1})
-    assert report.recommended_target_lag == 21
+    assert report.target_lag_completion_band[7]["q10"] == pytest.approx(0.1)
+    assert report.target_lag_completion_band[7]["q60"] == pytest.approx(0.26)
+    assert report.target_lag_completion_band[7]["q75"] == pytest.approx(0.5)
+    assert report.target_lag_completion_band[7]["q90"] == pytest.approx(0.5)
+    assert report.target_lag_completion_band[7]["q95"] == pytest.approx(0.5)
+    assert report.target_lag_completion_band[14]["q10"] == pytest.approx(0.1)
+    assert report.target_lag_completion_band[14]["q90"] == pytest.approx(0.1)
+    assert report.target_lag_suggested_range == {
+        "lower": 14, "upper": 21, "completion_rate": 0.9,
+        "lower_relative_error": 0.10, "upper_relative_error": 0.01}
+    assert report.available_target_lags == [7, 14, 21]
+    assert report.resolved_target_lag is None
+
+
+def test_raw_archive_default_diagnoses_every_observed_positive_lag():
+    reference = pd.Timestamp("2024-01-01")
+    raw = pd.DataFrame([
+        {"geo_value": "aa", "reference_date": reference,
+         "report_date": reference + pd.Timedelta(days=lag), "value": value}
+        for lag, value in ((0, 5.0), (7, 8.0), (8, 9.0), (14, 10.0))
+    ])
+    report = diagnose_raw_archive(raw, late_observation_floor_days=0)
+
+    assert report.available_target_lags == [7, 8, 14]
+    assert sorted(report.target_lag_completion_curve) == [7, 8, 14]
+
+
+def test_raw_diagnosis_ignores_observations_after_two_years():
+    reference = pd.Timestamp("2022-01-01")
+    raw = pd.DataFrame([
+        {"geo_value": "aa", "reference_date": reference,
+         "report_date": reference + pd.Timedelta(days=lag), "value": float(lag)}
+        for lag in (0, 7, 730, 731, 900)
+    ])
+
+    report = diagnose_raw_archive(raw, late_observation_floor_days=0)
+
+    assert report.n_rows == 3
+    assert report.max_observed_lag_days == 730
+    assert report.available_target_lags == [7, 730]
+    assert sorted(report.target_lag_completion_curve) == [7, 730]
+
+
+def test_raw_diagnosis_uses_observed_reports_directly_without_a_genuine_event_concept():
+    reference = pd.Timestamp("2024-01-01")
+    raw = pd.DataFrame([
+        {"geo_value": "aa", "reference_date": reference,
+         "report_date": reference + pd.Timedelta(days=lag), "value": value}
+        for lag, value in ((0, 10.0), (1, 10.0), (2, 12.0))
+    ])
+
+    report = diagnose_raw_archive(raw, late_observation_floor_days=0)
+
+    # The first release and the unchanged repeat are both raw observations.
+    # Their spacing is diagnosed directly; genuine_event only becomes useful
+    # after DelphiRF adds completed-grid rows.
+    assert report.observed_report_gap_days == {
+        "n": 2, "q25": 1.0, "median": 1.0, "q75": 1.0,
+        "most_common_gap_days": {1: 2}}
+    payload = report.to_dict()
+    assert "genuine_event_rate" not in payload
+    assert "genuine_event_weekday_share" not in payload
+
+
+@pytest.mark.parametrize("chosen", [1, 14, 21, 400])
+def test_user_target_lag_always_wins_without_range_reconciliation(chosen):
+    diagnosed = {"selected_target_lag": None,
+                 "suggested_target_lag_range": {"lower": 14, "upper": 21}}
+    resolved, reason = resolve_target_lag(diagnosed, chosen, False, "example")
+    assert resolved == chosen
+    assert reason == "explicit user choice"
+
+
+def test_pipeline_target_lag_resolution_stops_without_a_user_choice():
+    diagnosed = {"suggested_target_lag_range": {"lower": 14, "upper": 21}}
+    with pytest.raises(ValueError, match="state the final target_lag explicitly"):
+        resolve_target_lag(diagnosed, None, False, "example")
 
 
 # --- input schema ---------------------------------------------------------

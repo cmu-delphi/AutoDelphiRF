@@ -63,7 +63,7 @@ def test_one_command_turns_a_raw_archive_into_a_report(tmp_path):
     work = tmp_path / "work"
 
     assert cli.main(["run", "--archive", str(archive), "--name", "example",
-                     "--out", str(work)]) == 0
+                     "--out", str(work), "--target-lag", "21"]) == 0
 
     prepared = work / "example"
     results = work / "results"
@@ -75,7 +75,7 @@ def test_one_command_turns_a_raw_archive_into_a_report(tmp_path):
 
     # Provenance: what was diagnosed, and what the user changed.
     provenance = json.loads((prepared / "preparation.json").read_text())
-    assert provenance["user_overrides"] == []
+    assert provenance["user_overrides"] == ["target_lag"]
     assert provenance["resolved_preprocessing"]["ref_lag"] > 0
     assert provenance["diagnosis"]["n_locations"] == 2
 
@@ -119,7 +119,7 @@ def test_diagnosis_only_validates_without_fitting(tmp_path):
     work = tmp_path / "work"
 
     assert cli.main(["prepare", "--archive", str(archive), "--name", "d",
-                     "--out", str(work)]) == 0
+                     "--out", str(work), "--target-lag", "19"]) == 0
     assert cli.main(["run", "--config", str(work / "d.json"), "--diagnosis-only"]) == 0
 
     results = work / "results"
@@ -137,7 +137,7 @@ def test_a_csv_triangle_runs_the_same_as_a_parquet_one(tmp_path):
     work = tmp_path / "work"
 
     assert cli.main(["prepare", "--archive", str(archive), "--name", "d", "--out", str(work),
-                     "--triangle-format", "csv"]) == 0
+                     "--triangle-format", "csv", "--target-lag", "19"]) == 0
     prepared = work / "d"
     assert list(prepared.glob("*.csv.gz"))
     assert not list(prepared.glob("*.parquet"))

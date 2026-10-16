@@ -197,8 +197,8 @@ def load_target_lag_params(dataset: str, path: Path | None = None) -> tuple[int 
     """The user's declared target lag for one dataset, if the params file has one.
 
     Returns ``(target_lag, confirmed, rule_overrides)``. A missing file or a
-    missing entry means "no declared choice", which routes the run to the
-    recommended target lag.
+    missing entry means "no declared choice", which stops the run after
+    diagnosis until a target lag is supplied.
     """
     path = path or target_lag_params_path()
     if path is None or not Path(path).exists():
@@ -549,9 +549,8 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
         params["initial_lag"] = config.initial_lag
     params["include_red"] = "red" in config.prediction_layers
     params["target_column"] = str(schedule.target_column.iloc[0])
-    # Target lag L: recommended from the revision process, then
-    # reconciled with the user's declared choice. The user always wins, but
-    # never without having been shown the recommendation.
+    # Target lag L is always the user's explicit choice. Diagnosis supplies a
+    # 90%-completion evidence range but never selects or overrides a value.
     user_lag, confirmed, rule = load_target_lag_params(config.name)
     if user_lag is None and "target_lag" in schedule:
         # A schedule that already states one acts as the declared choice, so a
@@ -566,7 +565,7 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
     # A triangle created by ``autodelphirf prepare`` carries the diagnosis made
     # from the full raw archive. Reuse it: re-diagnosing from the prepared
     # triangle is circular because that triangle is already truncated at L,
-    # and can produce a spurious smaller recommendation in the run log.
+    # and can produce misleading target-lag evidence in the run log.
     preparation_path = config.prepared_dir / "preparation.json"
     recorded = None
     if preparation_path.is_file():
@@ -574,11 +573,13 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
             recorded = json.loads(preparation_path.read_text()).get("diagnosis")
         except (OSError, json.JSONDecodeError):
             recorded = None
-    if recorded and recorded.get("recommended_target_lag") is not None:
+    if recorded and recorded.get("target_lag_suggested_range") is not None:
         diagnosed = {
-            "selected_target_lag": int(recorded["recommended_target_lag"]),
+            "selected_target_lag": None,
+            "suggested_target_lag_range": recorded["target_lag_suggested_range"],
             "status": "raw archive diagnosis recorded during preprocessing",
-            "rule": {"completion_rate": 0.90, "relative_error": 0.05},
+            "rule": {"completion_rate": 0.90, "relative_error": 0.01,
+                     "guidance_relative_error": 0.10},
             "completion": recorded.get("target_lag_completion_curve", {}),
             "source": "preparation.json (full raw archive)",
         }
@@ -592,13 +593,14 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
             raw_diagnosis = diagnose_raw_archive(
                 archive,
                 completion_rate=rule.get("completion_rate", 0.90),
-                completion_threshold=rule.get("relative_error", 0.05),
+                completion_threshold=rule.get("relative_error", 0.01),
             )
             diagnosed = {
-                "selected_target_lag": int(raw_diagnosis.recommended_target_lag),
+                "selected_target_lag": None,
+                "suggested_target_lag_range": raw_diagnosis.target_lag_suggested_range,
                 "status": "primary diagnosis reconstructed from the full raw archive",
                 "rule": {"completion_rate": rule.get("completion_rate", 0.90),
-                         "relative_error": rule.get("relative_error", 0.05)},
+                         "relative_error": rule.get("relative_error", 0.01)},
                 "completion": raw_diagnosis.target_lag_completion_curve,
             }
         else:
@@ -623,8 +625,8 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
                 f"prepared triangle was built with L={baked}, so its target column and "
                 f"target_date encode {baked}. Re-run `autodelphirf prepare` from the raw "
                 f"archive with --target-lag {resolved}, or keep target_lag={baked} for this run.")
-    print(f"Target lag: {resolved} days; recommendation: "
-          f"{diagnosed.get('selected_target_lag')} days ({reason})", flush=True)
+    print(f"Target lag: {resolved} days ({reason}); diagnostic range: "
+          f"{diagnosed.get('suggested_target_lag_range')}", flush=True)
     params["target_lag"] = resolved
     target_lag_record = {"resolved": resolved, "reason": reason,
                          "user_target_lag": user_lag, "user_confirmed": confirmed,

@@ -11,16 +11,24 @@ const state = {
   columns: [],
   diagnosis: null,
   answeredLag: null,        // the L the user settled on
-  confirmLag: false,        // true when that answer overrides the recommendation
+  confirmLag: false,        // retained in the request schema for compatibility
   environment: null,        // R/DelphiRF readiness, as reported at startup
   schedule: null,           // the retraining calendar last previewed by the server
   results: null,            // the finished run's summary, as /api/results returned it
   polling: null,
+  unlockedStage: 0,         // later workflow pages stay gated until prior work succeeds
+  currentStage: 0,
 };
 
 /* --- plumbing --------------------------------------------------------- */
 
 async function api(path, {method = 'GET', body = null, raw = false} = {}) {
+  // The documentation demo supplies an in-page, read-only API fixture so the
+  // same interface can be reviewed without starting the local web service.
+  // Production pages do not define this hook and continue to use fetch below.
+  if (typeof window.AUTODELPHIRF_DEMO_API === 'function') {
+    return window.AUTODELPHIRF_DEMO_API(path, {method, body, raw});
+  }
   const headers = {'X-AutoDelphiRF-Token': TOKEN};
   if (body && !raw) headers['Content-Type'] = 'application/json';
   const response = await fetch(path, {
@@ -36,6 +44,43 @@ async function api(path, {method = 'GET', body = null, raw = false} = {}) {
 const $ = (id) => document.getElementById(id);
 
 function show(id) { $(id).hidden = false; }
+
+function renderWizard() {
+  document.querySelectorAll('[data-wizard-page]').forEach((page) => {
+    page.hidden = Number(page.dataset.wizardPage) !== state.currentStage;
+  });
+  document.querySelectorAll('[data-wizard-stage]').forEach((button) => {
+    const stage = Number(button.dataset.wizardStage);
+    button.disabled = stage > state.unlockedStage;
+    button.classList.toggle('completed', stage < state.unlockedStage);
+    if (stage === state.currentStage) button.setAttribute('aria-current', 'step');
+    else button.removeAttribute('aria-current');
+  });
+}
+
+function unlockStage(stage) {
+  state.unlockedStage = Math.max(state.unlockedStage, stage);
+  renderWizard();
+}
+
+function goToStage(stage) {
+  if (stage > state.unlockedStage) return;
+  state.currentStage = stage;
+  renderWizard();
+  const heading = document.querySelector(`[data-wizard-page="${stage}"] h2`);
+  if (heading) {
+    heading.tabIndex = -1;
+    heading.focus({preventScroll: true});
+  }
+  window.scrollTo({top: 0, behavior: 'smooth'});
+}
+
+function initWizard() {
+  document.querySelectorAll('[data-wizard-stage]').forEach((button) => {
+    button.addEventListener('click', () => goToStage(Number(button.dataset.wizardStage)));
+  });
+  renderWizard();
+}
 
 function notice(kind, html) {
   return `<div class="notice ${kind}">${html}</div>`;
@@ -272,7 +317,7 @@ function currentMapping() {
   };
 }
 
-async function runDiagnosis(userTargetLag = null, acceptCustomLag = false) {
+async function runDiagnosis(userTargetLag = null) {
   const button = $('diagnose-button');
   const status = $('diagnose-status');
   button.disabled = true;
@@ -285,18 +330,11 @@ async function runDiagnosis(userTargetLag = null, acceptCustomLag = false) {
     status.textContent = '';
     renderDiagnosis(state.diagnosis, userTargetLag);
     show('card-diagnosis');
-    if (acceptCustomLag) {
-      acceptLag(
-        Number(userTargetLag),
-        Number(userTargetLag) !== Number(state.diagnosis.recommended_target_lag)
-      );
-      return;
-    }
+    unlockStage(1);
+    goToStage(1);
     // A re-diagnosis is an answer to the target-lag question, so scroll to the
-    // answer buttons rather than back to the top of the card: the recommendation
-    // and the curve are already read by then, and landing above them hides the
-    // one control that unlocks the rest of the page.
-    scrollIntoView(userTargetLag != null ? 'lag-answers' : 'card-diagnosis');
+    // Keep the decision control visible after a diagnosis refresh.
+    if (userTargetLag != null) scrollIntoView('lag-answers');
   } catch (error) {
     status.innerHTML = `<span class="pill bad">${escapeHtml(error.message)}</span>`;
     // The custom-value box is the other place this is triggered from, and it
@@ -312,21 +350,30 @@ async function runDiagnosis(userTargetLag = null, acceptCustomLag = false) {
 
 /* --- 4. diagnosis and the target-lag question ------------------------- */
 
-function fact(term, value) {
-  return `<div><dt>${term}</dt><dd>${value}</dd></div>`;
+function fact(term, value, explanation = '') {
+  const help = explanation ? `<details class="term-help">
+    <summary aria-label="Explain ${escapeHtml(term)}">?</summary>
+    <span>${escapeHtml(explanation)}</span>
+  </details>` : '';
+  return `<div><dt>${term}${help}</dt><dd>${value}</dd></div>`;
 }
 
 function renderDiagnosis(report, userTargetLag) {
   $('diagnosis-facts').innerHTML = [
-    fact('Rows', report.n_rows.toLocaleString()),
-    fact('Locations', report.n_locations.toLocaleString()),
-    fact('Reference dates', `${report.reference_date_min} → ${report.reference_date_max}`),
-    fact('Reference-date cadence', report.reference_axis_resolution),
-    fact('Report-date cadence', report.report_axis_resolution),
-    fact('Genuine revisions', `${(report.genuine_event_rate * 100).toFixed(1)}% of rows`),
-    fact('Revision feature lags', (report.reference_axis_feature_lags || []).join(', ') || '—'),
-    fact('Training window', `${report.training_window_days} days`),
+    fact('Rows', report.n_rows.toLocaleString(),
+         'Raw archive rows retained after invalid and duplicate records are removed.'),
+    fact('Locations', report.n_locations.toLocaleString(),
+         'Distinct surveillance locations or reporting units in the archive.'),
+    fact('Reference dates', `${report.reference_date_min} → ${report.reference_date_max}`,
+         'The date range of the events or surveillance periods being measured.'),
+    fact('Report dates', `${report.report_date_min} → ${report.report_date_max}`,
+         'The date range over which values were released or updated.'),
+    fact('Reference-date cadence', report.reference_axis_resolution,
+         'How often new measured events or surveillance periods occur.'),
+    fact('Report-date cadence', report.report_axis_resolution,
+         'How often reports or updates arrive in the archive.'),
   ].join('');
+  $('training-days').value = report.training_window_days || 180;
 
   const notes = (report.notes || []).map((note) => notice('warn', escapeHtml(note))).join('');
   $('diagnosis-notes').innerHTML = notes;
@@ -337,87 +384,38 @@ function renderDiagnosis(report, userTargetLag) {
 }
 
 function renderLagQuestion(report, userTargetLag) {
-  const recommended = report.recommended_target_lag;
+  const range = report.target_lag_suggested_range || {};
   const body = $('lag-question-body');
   const answers = $('lag-answers');
   const custom = $('custom-lag');
 
-  body.innerHTML = `AutoDelphiRF forecasts the target value reported at a prespecified
-    target lag. From your archive's historical revisions, the recommendation is
-    <strong>${recommended} days</strong> &mdash; the first candidate target lag at which the
-    relative error is within 5% for at least 90% of location and reference-date
-    combinations. The chart below still
-    shows median relative error as supplementary diagnostic information.`;
-
-  if (report.target_lag_confirmation_prompt) {
-    body.insertAdjacentHTML('afterend', '');
-    const prompt = escapeHtml(report.target_lag_confirmation_prompt);
-    answers.innerHTML = `<div style="width:100%">${notice('warn', prompt)}</div>`;
-  } else {
-    answers.innerHTML = '';
-  }
-
-  // The two real answers, plus the escape hatch. When the user has supplied a
-  // value the server's resolution already picked a default; the buttons make
-  // both options explicit so the default is chosen, not merely accepted by
-  // silence.
-  if (userTargetLag != null) {
-    $('custom-lag-note').textContent =
-      `Re-diagnosed with ${userTargetLag} days. Choose which target lag to use from the `
-      + 'buttons above, and the retraining schedule opens next.';
-  }
-
-  const options = [];
-  options.push({
-    id: 'accept',
-    label: `Use ${recommended} days`,
-    sub: 'the recommendation',
-    lag: recommended,
-    confirm: false,
-  });
-  if (userTargetLag != null && userTargetLag !== recommended) {
-    options.push({
-      id: 'mine',
-      label: `Use ${userTargetLag} days`,
-      sub: 'my value, overriding the recommendation',
-      lag: userTargetLag,
-      confirm: true,
-    });
-  }
-
-  answers.insertAdjacentHTML('beforeend', options.map((option) => `
-    <button class="secondary" data-lag="${option.lag}" data-confirm="${option.confirm}"
-            data-id="${option.id}">
-      <span class="layer-name">${escapeHtml(option.label)}</span><br>
-      <span class="layer-desc">${escapeHtml(option.sub)}</span>
-    </button>`).join('') + `
-    <button class="secondary" id="choose-other">
-      <span class="layer-name">Use a different value</span><br>
-      <span class="layer-desc">I know this stream's target lag</span>
-    </button>`);
-
-  answers.querySelectorAll('button[data-lag]').forEach((button) => {
-    button.addEventListener('click', () => {
-      answers.querySelectorAll('button').forEach((other) => other.classList.remove('chosen'));
-      button.classList.add('chosen');
-      custom.hidden = true;
-      acceptLag(Number(button.dataset.lag), button.dataset.confirm === 'true');
-    });
-  });
-  $('choose-other').addEventListener('click', () => {
-    custom.hidden = false;
-    $('custom-lag-input').value = userTargetLag != null ? userTargetLag : recommended;
-    $('custom-lag-note').textContent =
-      'AutoDelphiRF will re-diagnose with your value and show you how the two compare.';
-    $('custom-lag-input').focus();
-  });
+  body.innerHTML = `<dl class="lag-definitions">
+      <div><dt>Target lag</dt><dd>The maturity point, measured in days after the reference date,
+        used to define training outcomes.</dd></div>
+      <div><dt>Reporting lag</dt><dd>How old an observation was when a nowcast was made: the number
+        of days between its reference date and report date.</dd></div>
+    </dl>
+    <p>In real time, the finalized value is unavailable, and we cannot know exactly
+    when reporting will be complete. Choosing a target lag is therefore a compromise.</p>
+    <ol class="lag-tradeoffs">
+      <li><strong>Accuracy.</strong> A lag that is too short can define targets that are still far
+        from their eventual values.</li>
+      <li><strong>Timeliness.</strong> A lag that is too long removes the newest reports from model
+        training. That lost revision history matters most when reporting patterns change abruptly.</li>
+    </ol>
+    <p>Use the figure and table to judge the trade-off, then choose the target lag yourself.
+    AutoDelphiRF will use your value exactly as entered.</p>`;
+  answers.innerHTML = '';
+  custom.hidden = true;
+  if (userTargetLag != null) $('custom-lag-input').value = userTargetLag;
+  $('custom-lag-note').textContent = 'A target lag must be selected before the analysis can continue.';
   $('custom-lag-apply').onclick = () => {
     const value = Number($('custom-lag-input').value);
     if (!Number.isFinite(value) || value < 1) {
       $('custom-lag-note').textContent = 'Enter a whole number of days.';
       return;
     }
-    runDiagnosis(value, true);
+    acceptLag(value, false);
   };
 }
 
@@ -427,7 +425,8 @@ function acceptLag(lag, confirm) {
   show('card-schedule');
   loadLayers().then(() => {
     show('card-methods');
-    scrollIntoView('card-methods');
+    unlockStage(2);
+    goToStage(2);
   }).catch((error) => showFailure(error.message));
 }
 
@@ -442,12 +441,16 @@ function initSchedule(retraining) {
     `default ${retraining.default_retrain_days} for a ${retraining.temporal_resolution} stream`;
   $('first-origin-hint').textContent =
     `default ${retraining.default_first_origin_offset_days} days into the archive, `
-    + `which reports from ${retraining.report_date_min} to ${retraining.report_date_max}`;
+    + `whose report-date range is ${retraining.report_date_min} to ${retraining.report_date_max}`;
   renderSchedule(retraining);
 
   $('retrain-days').oninput = previewSchedule;
   $('first-origin-date').onchange = previewSchedule;
+  $('training-days').oninput = () => {
+    if (state.schedule) renderSchedule(state.schedule);
+  };
   $('schedule-reset').onclick = () => {
+    $('training-days').value = state.diagnosis.training_window_days || 180;
     $('retrain-days').value = retraining.default_retrain_days;
     $('first-origin-date').value = retraining.first_origin;
     previewSchedule();
@@ -455,7 +458,8 @@ function initSchedule(retraining) {
   $('schedule-continue').onclick = () => {
     loadLayers().then(() => {
       show('card-methods');
-      scrollIntoView('card-methods');
+      unlockStage(2);
+      goToStage(2);
     });
   };
 }
@@ -495,16 +499,16 @@ function renderSchedule(preview) {
   const cost = origins > 120
     ? notice('warn', `That is <strong>${origins}</strong> retrainings. Every ticked method is
         refitted at each one, so a run this long is an overnight job rather than a coffee
-        break. A longer interval, or a later first origin, shortens it.`)
+        break. A longer interval, or a later first report-date origin, shortens it.`)
     : '';
+  const trainingDays = Number($('training-days').value) || 180;
   $('schedule-preview').innerHTML = `
-    <dl class="facts">
-      ${fact('Retrainings', `<strong>${origins}</strong>`)}
-      ${fact('First origin', `${preview.first_origin}
-        <span class="hint">${preview.history_days_at_first_origin} days of history behind it</span>`)}
-      ${fact('Last origin', preview.last_origin)}
-      ${fact('Interval', `${preview.retrain_days} days`)}
-    </dl>${cost}`;
+    <div class="schedule-summary">
+      <strong>${trainingDays}-day training window</strong>
+      <span>Retrain every ${preview.retrain_days} days</span>
+      <span>${origins} report-date rolling fits</span>
+      <span>Report-date origins: ${preview.first_origin} to ${preview.last_origin}</span>
+    </div>${cost}`;
 }
 
 /* --- the completion curve --------------------------------------------- */
@@ -512,157 +516,247 @@ function renderSchedule(preview) {
 function drawCompletionCurve(report) {
   const curve = report.target_lag_completion_curve || {};
   const band = report.target_lag_completion_band || {};
-  const points = Object.keys(curve)
+  const allPoints = Object.keys(curve)
     .map((lag) => ({
       lag: Number(lag),
       error: Number(curve[lag]),
       q10: Number((band[lag] || {}).q10),
+      q60: Number((band[lag] || {}).q60),
+      q75: Number((band[lag] || {}).q75),
       q90: Number((band[lag] || {}).q90),
+      q95: Number((band[lag] || {}).q95),
     }))
     .filter((point) => Number.isFinite(point.lag) && Number.isFinite(point.error))
     .sort((a, b) => a.lag - b.lag);
+  const points = allPoints.filter((point) => point.lag >= 0 && point.lag <= 365);
 
   const container = $('completion-chart');
-  if (points.length < 2) {
-    container.innerHTML = `<p class="hint">Not enough candidate target lags to plot a curve.</p>`;
-    $('completion-table').innerHTML = '';
+  if (!points.length) {
+    container.innerHTML = `<p class="hint">No candidate target lags could be evaluated.</p>`;
     return;
   }
+  const range = report.target_lag_suggested_range || {};
+  const availableLags = (report.available_target_lags || allPoints.map((point) => point.lag))
+    .map(Number).filter((lag) => Number.isInteger(lag) && lag >= 1).sort((a, b) => a - b);
+  const availableSet = new Set(availableLags);
+  const initial = points.find((point) => point.lag === Number(range.lower)) || points[0];
 
-  const width = 640;
-  const height = 240;
-  const pad = {top: 14, right: 18, bottom: 34, left: 66};
+  const width = 680;
+  const height = 318;
+  const pad = {top: 44, right: 22, bottom: 48, left: 76};
   const plotWidth = width - pad.left - pad.right;
   const plotHeight = height - pad.top - pad.bottom;
-
-  const maxLag = points[points.length - 1].lag;
-  const bandPoints = points.filter((point) => Number.isFinite(point.q10) && Number.isFinite(point.q90));
-  const maxError = Math.max(0.12, ...points.map((point) => point.error),
-                            ...bandPoints.map((point) => point.q90));
-  const x = (lag) => pad.left + (lag / maxLag) * plotWidth;
+  const minLag = 0;
+  const maxLag = 365;
+  const lagSpan = Math.max(1, maxLag - minLag);
+  const finiteErrors = points.flatMap((point) =>
+    [point.error, point.q60, point.q75, point.q90, point.q95].filter(Number.isFinite));
+  const maxError = Math.max(0.10, ...finiteErrors) * 1.06;
+  const x = (lag) => pad.left + ((lag - minLag) / lagSpan) * plotWidth;
   const y = (error) => pad.top + plotHeight - (error / maxError) * plotHeight;
-
-  const recommended = report.recommended_target_lag;
-  const recommendedPoint = points.find((point) => point.lag === recommended);
-
-  // Y gridlines at round shares.
-  const ticks = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.75, 1.0].filter((t) => t <= maxError);
-  const gridlines = ticks.map((tick) => `
+  const bottom = pad.top + plotHeight;
+  const hasSuggestedRange = range.lower != null && range.upper != null
+    && Number.isFinite(Number(range.lower)) && Number.isFinite(Number(range.upper))
+    && Number(range.lower) >= minLag && Number(range.lower) <= maxLag
+    && Number(range.upper) >= minLag && Number(range.upper) <= maxLag;
+  const suggestedStart = hasSuggestedRange
+    ? Math.max(minLag, Math.min(maxLag, Math.min(Number(range.lower), Number(range.upper)))) : null;
+  const suggestedEnd = hasSuggestedRange
+    ? Math.max(minLag, Math.min(maxLag, Math.max(Number(range.lower), Number(range.upper)))) : null;
+  const suggestedLabelX = hasSuggestedRange
+    ? Math.max(pad.left + 64, Math.min(width - pad.right - 64,
+      (x(suggestedStart) + x(suggestedEnd)) / 2)) : null;
+  const suggestedFill = hasSuggestedRange ? `
+    <rect x="${x(suggestedStart).toFixed(1)}" y="${pad.top}"
+          width="${Math.max(1, x(suggestedEnd) - x(suggestedStart)).toFixed(1)}"
+          height="${plotHeight}" class="completion-suggested-area"/>` : '';
+  const suggestedMarkers = hasSuggestedRange ? `
+    <line x1="${x(suggestedStart).toFixed(1)}" x2="${x(suggestedStart).toFixed(1)}"
+          y1="${pad.top}" y2="${bottom}" class="completion-suggested-boundary"/>
+    <line x1="${x(suggestedEnd).toFixed(1)}" x2="${x(suggestedEnd).toFixed(1)}"
+          y1="${pad.top}" y2="${bottom}" class="completion-suggested-boundary"/>
+    <path d="M${x(suggestedStart).toFixed(1)},${pad.top - 4}
+             V${pad.top - 9} H${x(suggestedEnd).toFixed(1)} V${pad.top - 4}"
+          class="completion-suggested-bracket"/>
+    <text x="${suggestedLabelX.toFixed(1)}" y="${pad.top - 15}"
+          text-anchor="middle" class="completion-suggested-label">Suggested lag range</text>
+    <text x="${(x(suggestedStart) + 7).toFixed(1)}" y="${pad.top + 7}"
+          transform="rotate(90 ${(x(suggestedStart) + 7).toFixed(1)} ${pad.top + 7})"
+          class="completion-suggested-lag-label">${suggestedStart} days</text>
+    <text x="${(x(suggestedEnd) + 7).toFixed(1)}" y="${pad.top + 7}"
+          transform="rotate(90 ${(x(suggestedEnd) + 7).toFixed(1)} ${pad.top + 7})"
+          class="completion-suggested-lag-label">${suggestedEnd} days</text>` : '';
+  const percentilePath = (key) => {
+    const valid = points.filter((point) => Number.isFinite(point[key]));
+    if (!valid.length) return '';
+    return `M${x(valid[0].lag).toFixed(1)},${bottom.toFixed(1)} `
+      + valid.map((point) =>
+        `L${x(point.lag).toFixed(1)},${y(point[key]).toFixed(1)}`).join(' ')
+      + ` L${x(valid[valid.length - 1].lag).toFixed(1)},${bottom.toFixed(1)} Z`;
+  };
+  const medianLine = points.map((point, index) =>
+    `${index ? 'L' : 'M'}${x(point.lag).toFixed(1)},${y(point.error).toFixed(1)}`).join(' ');
+  const yTicks = Array.from({length: 5}, (_, index) => (maxError * index) / 4);
+  const grid = yTicks.map((tick) => `
     <line x1="${pad.left}" x2="${width - pad.right}" y1="${y(tick).toFixed(1)}"
-          y2="${y(tick).toFixed(1)}" stroke="var(--border)" stroke-width="1"/>
+          y2="${y(tick).toFixed(1)}" class="completion-gridline"/>
     <text x="${pad.left - 8}" y="${(y(tick) + 4).toFixed(1)}" text-anchor="end"
-          font-size="11" fill="var(--text-muted)">${(tick * 100).toFixed(0)}%</text>`).join('');
-
-  const xTicks = points.filter((_, index) => index % Math.ceil(points.length / 7) === 0);
-  const xLabels = xTicks.map((point) => `
-    <text x="${x(point.lag).toFixed(1)}" y="${height - 12}" text-anchor="middle"
-          font-size="11" fill="var(--text-muted)">${point.lag}</text>`).join('');
-
-  const line = points.map((point, index) =>
-    `${index === 0 ? 'M' : 'L'}${x(point.lag).toFixed(1)},${y(point.error).toFixed(1)}`).join(' ');
-
-  const shadedBand = bandPoints.length === points.length ? `
-    <path d="${[
-      ...bandPoints.map((point, index) =>
-        `${index === 0 ? 'M' : 'L'}${x(point.lag).toFixed(1)},${y(point.q90).toFixed(1)}`),
-      ...bandPoints.slice().reverse().map((point) =>
-        `L${x(point.lag).toFixed(1)},${y(point.q10).toFixed(1)}`),
-      'Z',
-    ].join(' ')}" fill="var(--series-1)" opacity="0.18" stroke="none"/>
-    <text x="${width - pad.right}" y="${pad.top + 12}" text-anchor="end"
-          font-size="11" fill="var(--text-muted)">10th–90th percentile</text>` : '';
-
-  // The 5% tolerance the rule is defined against, as a reference line.
-  const tolerance = 0.05;
-  const toleranceLine = tolerance <= maxError ? `
-    <line x1="${pad.left}" x2="${width - pad.right}" y1="${y(tolerance).toFixed(1)}"
-          y2="${y(tolerance).toFixed(1)}" stroke="var(--text-secondary)" stroke-width="2"
-          stroke-dasharray="5 4"/>
-    <text x="${width - pad.right}" y="${(y(tolerance) - 7).toFixed(1)}" text-anchor="end"
-          font-size="11.5" font-weight="600" fill="var(--text-secondary)">5% tolerance</text>` : '';
-
-  const markers = points.map((point) => `
-    <circle cx="${x(point.lag).toFixed(1)}" cy="${y(point.error).toFixed(1)}" r="4"
-            fill="var(--series-1)" stroke="var(--surface-1)" stroke-width="2"
-            data-lag="${point.lag}" data-error="${point.error}"
-            data-q10="${point.q10}" data-q90="${point.q90}"/>`).join('');
-
-  // The recommendation: a vertical rule and a direct label, not a second hue.
-  const recommendedMark = recommendedPoint ? `
-    <line x1="${x(recommended).toFixed(1)}" x2="${x(recommended).toFixed(1)}"
-          y1="${pad.top}" y2="${pad.top + plotHeight}" stroke="var(--series-1)"
-          stroke-width="2" stroke-dasharray="3 3" opacity="0.55"/>
-    <circle cx="${x(recommended).toFixed(1)}" cy="${y(recommendedPoint.error).toFixed(1)}" r="6.5"
-            fill="var(--series-1)" stroke="var(--surface-1)" stroke-width="2.5"/>
-    <text x="${x(recommended).toFixed(1)}" y="${pad.top - 2}" text-anchor="middle"
-          font-size="12" font-weight="700" fill="var(--text-primary)">${recommended} days</text>` : '';
+          class="completion-axis-label">${(tick * 100).toFixed(0)}%</text>`).join('');
+  const xTicks = [0, 60, 120, 180, 240, 300, 365];
+  const xLabels = xTicks.map((lag) => `
+    <text x="${x(lag).toFixed(1)}" y="${height - 23}" text-anchor="middle"
+          class="completion-axis-label">${lag}</text>`).join('');
+  const toleranceLines = [0.01, 0.10].filter((value) => value <= maxError).map((value) => `
+    <line x1="${pad.left}" x2="${width - pad.right}" y1="${y(value).toFixed(1)}"
+          y2="${y(value).toFixed(1)}" class="completion-tolerance"/>
+    <text x="${width - pad.right - 4}" y="${(y(value) - 5).toFixed(1)}" text-anchor="end"
+          class="completion-tolerance-label">${(value * 100).toFixed(0)}%</text>`).join('');
 
   container.innerHTML = `
-    <svg viewBox="0 0 ${width} ${height}" role="img"
-         aria-label="Median relative error by candidate target lag with a 10th to 90th
-                     percentile band. Recommended target lag ${recommended} days.">
-      ${gridlines}
-      ${toleranceLine}
-      ${shadedBand}
-      <path d="${line}" fill="none" stroke="var(--series-1)" stroke-width="2"
-            stroke-linejoin="round" stroke-linecap="round"/>
-      <text x="${pad.left + 8}" y="${pad.top + 12}" font-size="11"
-            font-weight="600" fill="var(--text-secondary)">Median</text>
-      ${markers}
-      ${recommendedMark}
-      <line x1="${pad.left}" x2="${width - pad.right}" y1="${pad.top + plotHeight}"
-            y2="${pad.top + plotHeight}" stroke="var(--border-strong)" stroke-width="1"/>
-      <text x="${pad.left + plotWidth / 2}" y="${height - 1}" text-anchor="middle"
-            font-size="11.5" fill="var(--text-secondary)">candidate target lag (days after reference date)</text>
-      <text x="15" y="${pad.top + plotHeight / 2}" text-anchor="middle"
-            transform="rotate(-90 15 ${pad.top + plotHeight / 2})"
-            font-size="11.5" fill="var(--text-secondary)">relative error</text>
-    </svg>
-    <div class="tooltip" id="chart-tooltip"></div>`;
+    <div class="completion-legend" aria-label="Percentile layers">
+      <span class="median">Median</span><span class="q60">60th percentile</span>
+      <span class="q75">75th percentile</span><span class="q90">90th percentile</span>
+      <span class="q95">95th percentile</span>
+    </div>
+    <div class="completion-plot">
+      <svg viewBox="0 0 ${width} ${height}" role="img"
+           aria-label="Relative error percentiles by available target lag. Move across the figure to inspect a lag in the table below.">
+        ${suggestedFill}
+        ${grid}
+        ${toleranceLines}
+        <path d="${percentilePath('q95')}" class="completion-band q95"/>
+        <path d="${percentilePath('q90')}" class="completion-band q90"/>
+        <path d="${percentilePath('q75')}" class="completion-band q75"/>
+        <path d="${percentilePath('q60')}" class="completion-band q60"/>
+        <path d="${medianLine}" class="completion-median"/>
+        ${suggestedMarkers}
+        <line x1="${pad.left}" x2="${width - pad.right}" y1="${bottom}" y2="${bottom}"
+              class="completion-axis"/>
+        ${xLabels}
+        <text x="${pad.left + plotWidth / 2}" y="${height - 2}" text-anchor="middle"
+              class="completion-axis-title">Target lag (days after reference date)</text>
+        <text x="18" y="${pad.top + plotHeight / 2}" text-anchor="middle"
+              transform="rotate(-90 18 ${pad.top + plotHeight / 2})"
+              class="completion-axis-title">Relative error (%)</text>
+        <g class="completion-guide" aria-hidden="true">
+          <line y1="${pad.top}" y2="${bottom}"/>
+          ${['median', 'q60', 'q75', 'q90', 'q95'].map((key) =>
+            `<circle data-guide-point="${key}" r="4"/>`).join('')}
+        </g>
+        <rect x="${pad.left}" y="${pad.top}" width="${plotWidth}" height="${plotHeight}"
+              class="completion-hit-area" tabindex="0"
+              aria-label="Use the target-lag selector below for keyboard exploration"/>
+      </svg>
+    </div>
+    <div class="percentile-explorer" role="group" aria-label="Relative error by available target lag">
+      <label class="lag-selector">Target lag, in days after the reference date
+        <input type="number" id="completion-lag-input" min="1" step="1"
+               value="${initial.lag}" inputmode="numeric">
+        <span class="lag-area-status" id="completion-area-status"></span>
+        <button type="button" id="completion-use-lag" class="primary compact">Use this lag</button>
+      </label>
+      ${['median', 'q60', 'q75', 'q90', 'q95'].map((key) => `
+        <div class="percentile-cell" data-percentile-cell="${key}">
+          <span>${key === 'median' ? 'Median' : `${key.slice(1)}th percentile`}</span>
+          <strong>—</strong>
+          <small></small>
+        </div>`).join('')}
+    </div>`;
 
-  attachChartHover(container, points, recommended);
-  renderCompletionTable(points, recommended);
-}
-
-function attachChartHover(container, points, recommended) {
-  const tooltip = $('chart-tooltip');
-  container.querySelectorAll('circle[data-lag]').forEach((marker) => {
-    const showTip = () => {
-      const lag = marker.dataset.lag;
-      const error = (Number(marker.dataset.error) * 100).toFixed(1);
-      const q10 = Number(marker.dataset.q10);
-      const q90 = Number(marker.dataset.q90);
-      const interval = Number.isFinite(q10) && Number.isFinite(q90)
-        ? ` · 10th–90th: ${(q10 * 100).toFixed(1)}%–${(q90 * 100).toFixed(1)}%`
-        : '';
-      tooltip.innerHTML = `${lag} days · ${error}% median error${interval}` +
-        (Number(lag) === recommended ? ' · recommended' : '');
-      const box = marker.getBoundingClientRect();
-      const parent = container.getBoundingClientRect();
-      tooltip.style.left = `${box.left - parent.left + box.width / 2}px`;
-      tooltip.style.top = `${box.top - parent.top}px`;
-      tooltip.classList.add('visible');
-    };
-    // A bigger hit target than the 4px mark.
-    marker.setAttribute('pointer-events', 'all');
-    marker.style.cursor = 'crosshair';
-    marker.addEventListener('mouseenter', showTip);
-    marker.addEventListener('focus', showTip);
-    marker.addEventListener('mouseleave', () => tooltip.classList.remove('visible'));
+  const describeTolerance = (value) => {
+    if (!Number.isFinite(value)) return {label: 'unavailable', level: 'unknown'};
+    if (value <= 0.01 || Math.abs(value - 0.01) < 1e-8) {
+      return {label: 'Within 1% error', level: 'within-one'};
+    }
+    if (value <= 0.10 || Math.abs(value - 0.10) < 1e-8) {
+      return {label: 'Within 10% error', level: 'within-ten'};
+    }
+    return {label: 'Above 10% error', level: 'above-ten'};
+  };
+  const updateGuide = (point) => {
+    const guide = container.querySelector('.completion-guide');
+    const displayed = point.lag >= minLag && point.lag <= maxLag;
+    guide.style.display = displayed ? '' : 'none';
+    if (!displayed) return;
+    const guideX = x(point.lag);
+    guide.querySelector('line').setAttribute('x1', guideX.toFixed(1));
+    guide.querySelector('line').setAttribute('x2', guideX.toFixed(1));
+    const values = {median: point.error, q60: point.q60, q75: point.q75,
+                    q90: point.q90, q95: point.q95};
+    Object.entries(values).forEach(([key, value]) => {
+      const marker = guide.querySelector(`[data-guide-point="${key}"]`);
+      marker.hidden = !Number.isFinite(value);
+      if (Number.isFinite(value)) {
+        marker.setAttribute('cx', guideX.toFixed(1));
+        marker.setAttribute('cy', y(value).toFixed(1));
+      }
+    });
+  };
+  const renderPoint = (point, {syncInput = true, context = ''} = {}) => {
+    const values = {median: point.error, q60: point.q60, q75: point.q75,
+                    q90: point.q90, q95: point.q95};
+    Object.entries(values).forEach(([key, value]) => {
+      const cell = container.querySelector(`[data-percentile-cell="${key}"]`);
+      const tolerance = describeTolerance(value);
+      cell.className = `percentile-cell ${tolerance.level}`;
+      cell.querySelector('strong').textContent = Number.isFinite(value)
+        ? `${(value * 100).toFixed(1)}%` : '—';
+      cell.querySelector('small').textContent = tolerance.label;
+    });
+    $('completion-area-status').textContent = point.lag > maxLag
+      ? 'This available lag is outside the displayed 0–365 day range.' : context;
+    if (syncInput) $('completion-lag-input').value = point.lag;
+    $('custom-lag-input').value = point.lag;
+    $('custom-lag-note').textContent =
+      `Review the error distribution for ${point.lag} days, then confirm to continue.`;
+    updateGuide(point);
+  };
+  const lagInput = $('completion-lag-input');
+  lagInput.addEventListener('input', () => {
+    const requested = Number(lagInput.value);
+    const valid = Number.isInteger(requested) && requested >= 1;
+    $('completion-use-lag').disabled = !valid;
+    if (!valid) {
+      $('completion-area-status').textContent = 'Enter a positive whole number.';
+      return;
+    }
+    if (availableSet.has(requested)) {
+      const exact = allPoints.find((point) => point.lag === requested);
+      if (exact) {
+        renderPoint(exact, {syncInput: false});
+        return;
+      }
+      $('completion-use-lag').disabled = true;
+      $('completion-area-status').textContent =
+        `Lag ${requested} exists, but its diagnostic percentages are unavailable. Re-run diagnosis.`;
+      return;
+    }
+    $('completion-use-lag').disabled = true;
+    const lowerLags = availableLags.filter((lag) => lag < requested);
+    const below = lowerLags[lowerLags.length - 1];
+    const above = availableLags.find((lag) => lag > requested);
+    const neighbours = [below, above].filter((lag) => lag != null).map((lag) => `${lag} days`);
+    $('completion-area-status').textContent = neighbours.length
+      ? `No data exist at lag ${requested}. Nearest available: ${neighbours.join(' and ')}.`
+      : `No data exist at lag ${requested}.`;
   });
-  container.addEventListener('mouseleave', () => tooltip.classList.remove('visible'));
-}
-
-function renderCompletionTable(points, recommended) {
-  $('completion-table').innerHTML = `
-    <table>
-      <thead><tr><th>Candidate target lag</th><th>Median relative error</th></tr></thead>
-      <tbody>${points.map((point) => `
-        <tr class="${point.lag === recommended ? 'recommended' : ''}">
-          <td>${point.lag} days${point.lag === recommended ? ' (recommended)' : ''}</td>
-          <td>${(point.error * 100).toFixed(1)}%</td>
-        </tr>`).join('')}</tbody>
-    </table>`;
+  $('completion-use-lag').addEventListener('click', () => {
+    const requested = Number(lagInput.value);
+    if (Number.isInteger(requested) && requested >= 1 && availableSet.has(requested)) {
+      acceptLag(requested, false);
+    }
+  });
+  const hitArea = container.querySelector('.completion-hit-area');
+  const pointFromPointer = (event) => {
+    const box = hitArea.getBoundingClientRect();
+    const svgX = pad.left + ((event.clientX - box.left) / Math.max(1, box.width)) * plotWidth;
+    return points.reduce((closest, point) =>
+      Math.abs(x(point.lag) - svgX) < Math.abs(x(closest.lag) - svgX) ? point : closest,
+    points[0]);
+  };
+  hitArea.addEventListener('pointermove', (event) => renderPoint(pointFromPointer(event)));
+  hitArea.addEventListener('pointerdown', (event) => renderPoint(pointFromPointer(event)));
+  renderPoint(initial);
 }
 
 /* --- 5. methods ------------------------------------------------------- */
@@ -672,11 +766,21 @@ let layersLoaded = false;
 const METHOD_LABELS = {
   baseline_null: 'Latest reported value',
   red: 'Revision-pattern matching',
-  delphirf: 'RevRoute pooling + DelphiRF',
-  naive_delphirf: 'Separate DelphiRF by location',
+  delphirf: 'RevRoute-DelphiRF',
+  naive_delphirf: 'Naive DelphiRF',
   similarity_weighted_delphirf: 'Similarity-weighted DelphiRF',
-  global_delphirf: 'One DelphiRF model for all locations',
+  global_delphirf: 'Global DelphiRF',
 };
+
+const METHOD_DESCRIPTIONS = {
+  baseline_null: 'No adjustment. Carries the currently available value forward as the nowcast.',
+  delphirf: 'The primary AutoDelphiRF method. It automatically decides which reporting lags and locations can share information.',
+  naive_delphirf: 'Fits locations separately; small reporting lags are modeled separately and larger reporting lags are grouped.',
+  global_delphirf: 'Uses one model that combines all locations and reporting lags.',
+  red: 'Finds historical observations with similar revision patterns. Primarily intended for sparse reporting histories, such as weekly data.',
+};
+
+const WEB_HIDDEN_METHODS = new Set(['similarity_weighted_delphirf']);
 
 function methodLabel(name) {
   return METHOD_LABELS[name] || String(name).replace(/_/g, ' ');
@@ -689,12 +793,12 @@ function comparisonLabel(comparison) {
 async function loadLayers() {
   if (layersLoaded) return;
   const {layers} = await api('/api/layers');
-  $('layer-list').innerHTML = layers.map((layer) => `
+  $('layer-list').innerHTML = layers.filter((layer) => !WEB_HIDDEN_METHODS.has(layer.name)).map((layer) => `
     <label class="layer">
       <input type="checkbox" value="${escapeHtml(layer.name)}"${layer.default ? ' checked' : ''}>
       <span>
-        <span class="layer-name">${escapeHtml(layer.label || methodLabel(layer.name))}</span><br>
-        <span class="layer-desc">${escapeHtml(layer.description)}</span>
+        <span class="layer-name">${escapeHtml(methodLabel(layer.name))}</span><br>
+        <span class="layer-desc">${escapeHtml(METHOD_DESCRIPTIONS[layer.name] || layer.description)}</span>
         ${layer.expensive ? '<br><span class="layer-cost">Fits a model — slower</span>' : ''}
       </span>
     </label>`).join('');
@@ -740,7 +844,7 @@ async function startRun() {
          : 'Install DelphiRF in R as the README describes.'}<br>
        <span class="hint">Your archive, target lag and schedule are unaffected &mdash; this
        check runs when the page loads, so reload the page after reinstalling DelphiRF.</span>`);
-    scrollIntoView('card-run');
+    goToStage(2);
     return;
   }
 
@@ -764,7 +868,7 @@ async function startRun() {
     await api('/api/run', {method: 'POST', body: request});
     status.textContent = '';
     show('card-run');
-    scrollIntoView('card-run');
+    goToStage(2);
     pollStatus();
   } catch (error) {
     button.disabled = false;
@@ -845,6 +949,7 @@ async function restoreLastRun() {
       state.diagnosis = saved.diagnosis;
       renderDiagnosis(saved.diagnosis, request ? request.target_lag : null);
       show('card-diagnosis');
+      unlockStage(1);
     }
     if (request && saved.diagnosis) {
       state.answeredLag = Number(request.target_lag);
@@ -861,9 +966,12 @@ async function restoreLastRun() {
       if (request.min_location_rows) $('min-location-rows').value = request.min_location_rows;
       if (request.triangle_format) $('triangle-format').value = request.triangle_format;
       show('card-methods');
+      unlockStage(2);
     }
     if (snapshot.state === 'idle') return;
     show('card-run');
+    unlockStage(2);
+    goToStage(2);
     renderRun(snapshot);
     if (snapshot.state === 'running') pollStatus();
   } catch (_) {
@@ -945,24 +1053,298 @@ async function loadResults() {
   try {
     results = await api('/api/results');
   } catch (error) {
-    $('results-headline').innerHTML = notice('warn',
+    $('results-message').innerHTML = notice('warn',
       `The run finished, but its tables could not be read: ${escapeHtml(error.message)}`);
     show('card-results');
+    unlockStage(3);
+    goToStage(3);
     return;
   }
   state.results = results;
   const tables = results.tables || {};
-  renderHeadline(tables.headline || [], tables.availability || []);
-  renderByOrigin(tables.by_origin || []);
-  renderPooling(tables.revroute_pools || [], tables.revroute_pool_profile || []);
-  $('results-links').innerHTML = `
-    ${results.report_available
-      ? '<a class="report-link" href="/report/report/report.html" target="_blank" rel="noopener">Open the full report</a>'
-      : notice('warn', 'The run finished but no report file was written.')}
-    <p class="outputs">Every table above, and a great many more, were written to
-      <code>${escapeHtml(results.output_dir)}</code>.</p>`;
+  renderLagEvaluation(tables.web_metrics_by_lag || []);
+  renderLocationEvaluation(tables.web_metrics_by_location || []);
+  renderEarlyLagEvaluation(tables.web_metrics_by_origin_lag || []);
   show('card-results');
-  scrollIntoView('card-results');
+  unlockStage(3);
+  goToStage(3);
+}
+
+const SERIES_SLOTS = 8;
+let resultTimeMetric = 'ae';
+let resultLagRows = [];
+let resultLocationRows = [];
+let resultOriginRows = [];
+
+function metricRows(rows, metric) {
+  return rows.filter((row) => row.metric === metric
+    && Number.isFinite(row.median) && Number.isFinite(row.q10) && Number.isFinite(row.q90));
+}
+
+function renderLagEvaluation(rows) {
+  const usable = rows.filter((row) => Number(row.n_locations) > 0);
+  resultLagRows = usable;
+  if (!usable.length) {
+    $('lag-score-grid').hidden = true;
+    $('results-message').innerHTML = notice('warn',
+      'No location-level evaluation table was written for this run.');
+    return;
+  }
+  $('results-message').innerHTML = '';
+  $('lag-score-grid').hidden = false;
+  bindResultMetricSwitch();
+  drawLagEvaluation();
+}
+
+function renderEarlyLagEvaluation(rows) {
+  const section = $('early-lag-section');
+  resultOriginRows = rows;
+  if (!rows.length) {
+    section.hidden = true;
+    return;
+  }
+  section.hidden = false;
+  bindResultMetricSwitch();
+  drawEarlyLagCharts();
+}
+
+function renderLocationEvaluation(rows) {
+  resultLocationRows = rows.filter((row) => Number(row.n) > 0
+    && Number.isFinite(Number(row.median))
+    && Number.isFinite(Number(row.q10))
+    && Number.isFinite(Number(row.q90)));
+  drawLocationEvaluation();
+}
+
+function bindResultMetricSwitch() {
+  document.querySelectorAll('[data-result-metric]').forEach((button) => {
+    button.onclick = () => {
+      resultTimeMetric = button.dataset.resultMetric;
+      document.querySelectorAll('[data-result-metric]').forEach((candidate) =>
+        candidate.classList.toggle('active', candidate.dataset.resultMetric === resultTimeMetric));
+      drawLagEvaluation();
+      drawLocationEvaluation();
+      drawEarlyLagCharts();
+    };
+  });
+}
+
+function drawLocationEvaluation() {
+  const container = $('location-score-chart');
+  if (!container) return;
+  const isWis = resultTimeMetric === 'wis';
+  $('location-score-title').textContent =
+    `${isWis ? 'WIS' : 'AE'} by location at early reporting lags`;
+  const rows = resultLocationRows.filter((row) => row.metric === resultTimeMetric);
+  if (!rows.length) {
+    container.innerHTML = `<p class="hint empty-chart">No ${isWis ? 'WIS' : 'AE'} location summary is available. Re-run post-assessment with the current version to create it.</p>`;
+    return;
+  }
+  drawLocationBarChart('location-score-chart', rows, {
+    yLabel: isWis ? 'Median WIS' : 'Median AE',
+  });
+}
+
+function drawLagEvaluation() {
+  if (!resultLagRows.length) return;
+  const isWis = resultTimeMetric === 'wis';
+  $('lag-score-title').textContent = `${isWis ? 'WIS' : 'AE'} over reporting lags`;
+  drawQuantileBandChart('lag-score-chart', metricRows(resultLagRows, resultTimeMetric), {
+    xField: 'lag', xLabel: 'Reporting lag (days)',
+    yLabel: isWis ? 'WIS' : 'AE', xKind: 'number',
+  });
+}
+
+function drawEarlyLagCharts() {
+  const container = $('early-lag-grid');
+  if (!container || !resultOriginRows.length) return;
+  const eligible = metricRows(resultOriginRows, resultTimeMetric);
+  if (!eligible.length) {
+    container.innerHTML = `<p class="hint">WIS is unavailable because the selected methods did not issue predictive distributions.</p>`;
+    return;
+  }
+  const allLags = [...new Set(eligible.map((row) => Number(row.lag)))]
+    .filter(Number.isFinite).sort((a, b) => a - b).slice(0, 2);
+  const selectedRows = eligible.filter((row) => allLags.includes(Number(row.lag)));
+  const observedMaximum = Math.max(...selectedRows.flatMap((row) =>
+    [Number(row.q90), Number(row.median)]), 0) || 1;
+  const sharedYAxis = niceAxis(observedMaximum);
+  const sharedXKeys = [...new Set(selectedRows.map((row) => row.cutoff))].sort();
+  container.innerHTML = allLags.map((lag, index) => `
+    <figure class="result-figure early-lag-figure">
+      <figcaption><span class="fig-title">Lag ${escapeHtml(String(lag))} days</span>
+        <span class="fig-sub">${resultTimeMetric === 'wis' ? 'WIS' : 'AE'} · lower is better</span></figcaption>
+      <div class="result-chart" id="early-lag-chart-${index}"></div>
+    </figure>`).join('');
+  allLags.forEach((lag, index) => drawQuantileBandChart(
+    `early-lag-chart-${index}`, eligible.filter((row) => Number(row.lag) === lag), {
+      xField: 'cutoff', xLabel: 'report-date origin',
+      yLabel: resultTimeMetric === 'wis' ? 'WIS' : 'AE', xKind: 'date',
+      compact: true, yMax: sharedYAxis.maximum, yTicks: sharedYAxis.ticks,
+      xKeys: sharedXKeys,
+    }));
+}
+
+function niceAxis(observedMaximum, tickCount = 5) {
+  const maximum = Number.isFinite(observedMaximum) && observedMaximum > 0
+    ? observedMaximum : 1;
+  const roughStep = maximum / Math.max(1, tickCount - 1);
+  const power = 10 ** Math.floor(Math.log10(roughStep));
+  const normalized = roughStep / power;
+  const factor = [1, 2, 2.5, 5, 10].find((candidate) => candidate >= normalized) || 10;
+  const step = factor * power;
+  const niceMaximum = step * Math.ceil(maximum / step);
+  const ticks = Array.from({length: Math.round(niceMaximum / step) + 1},
+    (_, index) => index * step);
+  return {maximum: niceMaximum, ticks};
+}
+
+function drawLocationBarChart(containerId, rows, options) {
+  const container = $(containerId);
+  const methods = [...new Set(rows.map((row) => row.method))].slice(0, SERIES_SLOTS);
+  const locations = [...new Set(rows.map((row) => String(row.geo_value)))];
+  const nullMedians = new Map(rows.filter((row) => row.method === 'baseline_null')
+    .map((row) => [String(row.geo_value), Number(row.median)]));
+  const locationMedians = new Map(locations.map((location) => {
+    const values = rows.filter((row) => String(row.geo_value) === location)
+      .map((row) => Number(row.median)).filter(Number.isFinite);
+    return [location, values.reduce((sum, value) => sum + value, 0) / values.length];
+  }));
+  locations.sort((a, b) => (nullMedians.get(b) ?? locationMedians.get(b))
+    - (nullMedians.get(a) ?? locationMedians.get(a)) || a.localeCompare(b));
+
+  const observedMaximum = Math.max(...rows.map((row) => Number(row.q90)), 0) || 1;
+  const yAxis = niceAxis(observedMaximum);
+  const width = Math.max(720, locations.length * Math.max(50, methods.length * 15 + 18));
+  const height = 350;
+  const pad = {top: 14, right: 18, bottom: 82, left: 76};
+  const plotWidth = width - pad.left - pad.right;
+  const plotHeight = height - pad.top - pad.bottom;
+  const groupWidth = plotWidth / Math.max(1, locations.length);
+  const barWidth = Math.min(13, Math.max(5, (groupWidth - 10) / Math.max(1, methods.length)));
+  const occupiedWidth = barWidth * methods.length;
+  const y = (value) => pad.top + plotHeight
+    - Math.max(0, Number(value)) / yAxis.maximum * plotHeight;
+  const lookup = new Map(rows.map((row) =>
+    [`${String(row.geo_value)}\u0000${row.method}`, row]));
+
+  const grid = yAxis.ticks.map((tick) => `<line x1="${pad.left}" x2="${width - pad.right}"
+      y1="${y(tick).toFixed(1)}" y2="${y(tick).toFixed(1)}" stroke="var(--border)"/>
+    <text x="${pad.left - 10}" y="${(y(tick) + 5).toFixed(1)}" text-anchor="end"
+      font-size="15" font-weight="550" fill="var(--text-primary)">${compactNumber(tick)}</text>`).join('');
+  const bars = locations.flatMap((location, locationIndex) => methods.map((method, methodIndex) => {
+    const row = lookup.get(`${location}\u0000${method}`);
+    if (!row) return '';
+    const median = Number(row.median);
+    const q10 = Number(row.q10);
+    const q90 = Number(row.q90);
+    const center = pad.left + locationIndex * groupWidth + groupWidth / 2
+      - occupiedWidth / 2 + methodIndex * barWidth + barWidth / 2;
+    const top = y(median);
+    const bottom = y(0);
+    const errorTop = y(q90);
+    const errorBottom = y(q10);
+    const color = `var(--series-${methodIndex + 1})`;
+    const detail = `${methodLabel(method)} · ${location}: median ${compactNumber(median)}, 10th–90th percentile ${compactNumber(q10)}–${compactNumber(q90)}, n=${row.n}`;
+    return `<g><title>${escapeHtml(detail)}</title>
+      <rect x="${(center - barWidth / 2 + 1).toFixed(1)}" y="${top.toFixed(1)}"
+        width="${Math.max(2, barWidth - 2).toFixed(1)}" height="${Math.max(0, bottom - top).toFixed(1)}"
+        fill="${color}" opacity="0.82"/>
+      <line x1="${center.toFixed(1)}" x2="${center.toFixed(1)}" y1="${errorTop.toFixed(1)}"
+        y2="${errorBottom.toFixed(1)}" stroke="var(--text-primary)" stroke-width="1.2"/>
+      <line x1="${(center - 4).toFixed(1)}" x2="${(center + 4).toFixed(1)}"
+        y1="${errorTop.toFixed(1)}" y2="${errorTop.toFixed(1)}" stroke="var(--text-primary)" stroke-width="1.2"/>
+      <line x1="${(center - 4).toFixed(1)}" x2="${(center + 4).toFixed(1)}"
+        y1="${errorBottom.toFixed(1)}" y2="${errorBottom.toFixed(1)}" stroke="var(--text-primary)" stroke-width="1.2"/>
+    </g>`;
+  })).join('');
+  const xLabels = locations.map((location, index) => {
+    const x = pad.left + index * groupWidth + groupWidth / 2;
+    return `<text x="${x.toFixed(1)}" y="${height - pad.bottom + 18}" text-anchor="end"
+      transform="rotate(-55 ${x.toFixed(1)} ${height - pad.bottom + 18})"
+      font-size="13" font-weight="550" fill="var(--text-primary)">${escapeHtml(location)}</text>`;
+  }).join('');
+  const legend = methods.map((method, index) => `<li><span class="swatch" style="background:var(--series-${index + 1})"></span>
+    ${escapeHtml(methodLabel(method))}</li>`).join('');
+  container.innerHTML = `<ul class="legend">${legend}</ul>
+    <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img"
+      aria-label="${escapeHtml(options.yLabel)} by location for reporting lags through 14 days">
+      ${grid}${bars}${xLabels}
+      <line x1="${pad.left}" x2="${width - pad.right}" y1="${pad.top + plotHeight}"
+        y2="${pad.top + plotHeight}" stroke="var(--border-strong)"/>
+      <text x="20" y="${pad.top + plotHeight / 2}" text-anchor="middle"
+        transform="rotate(-90 20 ${pad.top + plotHeight / 2})"
+        font-size="16" font-weight="600" fill="var(--text-primary)">${escapeHtml(options.yLabel)}</text>
+    </svg>`;
+}
+
+function drawQuantileBandChart(containerId, rows, options) {
+  const container = $(containerId);
+  if (!rows.length) {
+    container.innerHTML = '<p class="hint empty-chart">No eligible values.</p>';
+    return;
+  }
+  const width = 960;
+  const height = options.compact ? 225 : 350;
+  const pad = {top: 14, right: 20, bottom: 52, left: 88};
+  const plotWidth = width - pad.left - pad.right;
+  const plotHeight = height - pad.top - pad.bottom;
+  const keys = options.xKeys || [...new Set(rows.map((row) => row[options.xField]))]
+    .sort(options.xKind === 'number' ? (a, b) => Number(a) - Number(b) : undefined);
+  const methods = [...new Set(rows.map((row) => row.method))];
+  const keyIndex = new Map(keys.map((key, index) => [key, index]));
+  const series = methods.slice(0, SERIES_SLOTS).map((method, index) => ({
+    method, color: `var(--series-${index + 1})`,
+    points: rows.filter((row) => row.method === method)
+      .sort((a, b) => keyIndex.get(a[options.xField]) - keyIndex.get(b[options.xField])),
+  })).filter((entry) => entry.points.length);
+  const observedMaximum = Math.max(...rows.flatMap((row) =>
+    [Number(row.q90), Number(row.median)]), 0) || 1;
+  const yAxis = Number.isFinite(options.yMax)
+    ? {maximum: options.yMax, ticks: options.yTicks || niceAxis(options.yMax).ticks}
+    : niceAxis(observedMaximum);
+  const maximum = yAxis.maximum;
+  const x = (key) => pad.left + (keys.length === 1 ? plotWidth / 2
+    : keyIndex.get(key) / (keys.length - 1) * plotWidth);
+  const y = (value) => pad.top + plotHeight - Number(value) / maximum * plotHeight;
+  const ticks = yAxis.ticks;
+  const grid = ticks.map((tick) => `<line x1="${pad.left}" x2="${width - pad.right}"
+      y1="${y(tick).toFixed(1)}" y2="${y(tick).toFixed(1)}" stroke="var(--border)"/>
+    <text x="${pad.left - 12}" y="${(y(tick) + 5).toFixed(1)}" text-anchor="end"
+      font-size="15" font-weight="550" fill="var(--text-primary)">${compactNumber(tick)}</text>`).join('');
+  const shapes = series.map((entry) => {
+    const upper = entry.points.map((point) => `${x(point[options.xField]).toFixed(1)},${y(point.q90).toFixed(1)}`);
+    const lower = [...entry.points].reverse().map((point) => `${x(point[options.xField]).toFixed(1)},${y(point.q10).toFixed(1)}`);
+    const median = entry.points.map((point, index) => `${index ? 'L' : 'M'}${x(point[options.xField]).toFixed(1)},${y(point.median).toFixed(1)}`).join(' ');
+    return `<polygon points="${upper.concat(lower).join(' ')}" fill="${entry.color}" opacity="0.13"/>
+      <path d="${median}" fill="none" stroke="${entry.color}" stroke-width="2"
+        stroke-linejoin="round" stroke-linecap="round"/>`;
+  }).join('');
+  const labelCount = options.compact ? 4 : 6;
+  const labelIndexes = new Set([0, keys.length - 1]);
+  const step = Math.max(1, Math.ceil((keys.length - 1) / (labelCount - 1)));
+  for (let index = 0; index < keys.length; index += step) labelIndexes.add(index);
+  const xLabels = [...labelIndexes].filter((index) => index >= 0).sort((a, b) => a - b)
+    .map((index) => {
+      const raw = String(keys[index]);
+      const label = options.xKind === 'date' ? raw.slice(0, 7) : raw;
+      return `<text x="${x(keys[index]).toFixed(1)}" y="${height - 22}" text-anchor="middle"
+        font-size="15" font-weight="550" fill="var(--text-primary)">${escapeHtml(label)}</text>`;
+    }).join('');
+  const legend = series.map((entry) => `<li><span class="swatch" style="background:${entry.color}"></span>
+    ${escapeHtml(methodLabel(entry.method))}</li>`).join('');
+  container.innerHTML = `<ul class="legend">${legend}</ul>
+    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(options.yLabel)} by ${escapeHtml(options.xLabel)}">
+      ${grid}${shapes}
+      <line x1="${pad.left}" x2="${width - pad.right}" y1="${pad.top + plotHeight}"
+        y2="${pad.top + plotHeight}" stroke="var(--border-strong)"/>
+      ${xLabels}
+      <text x="${pad.left + plotWidth / 2}" y="${height - 2}" text-anchor="middle"
+        font-size="16" font-weight="600" fill="var(--text-primary)">${escapeHtml(options.xLabel)}</text>
+      <text x="20" y="${pad.top + plotHeight / 2}" text-anchor="middle"
+        transform="rotate(-90 20 ${pad.top + plotHeight / 2})"
+        font-size="16" font-weight="600" fill="var(--text-primary)">${escapeHtml(options.yLabel)}</text>
+    </svg>`;
 }
 
 function compactNumber(value) {
@@ -972,226 +1354,11 @@ function compactNumber(value) {
   if (magnitude >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
   if (magnitude >= 1e4) return `${Math.round(value / 1e3)}k`;
   if (magnitude >= 1e3) return `${(value / 1e3).toFixed(1)}k`;
-  if (magnitude >= 1) return value.toFixed(magnitude >= 100 ? 0 : 1);
+  if (magnitude >= 1) {
+    const digits = magnitude >= 100 || Number.isInteger(value) ? 0 : 1;
+    return value.toFixed(digits).replace(/\.0$/, '');
+  }
   return value === 0 ? '0' : value.toPrecision(2);
-}
-
-function percent(value) {
-  return Number.isFinite(value) ? `${(value * 100).toFixed(0)}%` : '\u2014';
-}
-
-function signed(value) {
-  if (!Number.isFinite(value)) return '\u2014';
-  return `${value > 0 ? '+' : ''}${value.toPrecision(3)}`;
-}
-
-function renderHeadline(headline, availability) {
-  const available = new Map(availability.map((row) => [row.method, row.availability]));
-  if (!headline.length) {
-    $('results-headline').innerHTML = notice('warn',
-      'No pairwise comparison was written, so there is nothing to score against the baseline.');
-    return;
-  }
-  // A negative mean delta is less loss than the baseline, so the method won.
-  const rows = headline.map((row) => {
-    const better = row.mean_delta < 0;
-    return `<tr>
-      <td>${escapeHtml(comparisonLabel(row.comparison))}</td>
-      <td>${escapeHtml(String(row.loss || '').replace(/_/g, ' '))}</td>
-      <td class="num">${row.n}</td>
-      <td class="num ${better ? 'good' : 'bad'}">${signed(row.mean_delta)}</td>
-      <td class="num">${percent(row.win_probability)}</td>
-    </tr>`;
-  }).join('');
-  const thin = [...available].filter(([, share]) => share < 1);
-  $('results-headline').innerHTML = `
-    <p class="hint">Each row is one method against the reference, pooled over every
-      retraining origin. A negative mean change is less error than the reference;
-      &ldquo;wins&rdquo; is the share of individual cases it beat.</p>
-    <table class="result-table">
-      <thead><tr><th>Comparison</th><th>Loss</th><th class="num">Cases</th>
-        <th class="num">Mean change in error</th><th class="num">Wins</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-    ${thin.length ? notice('warn', `Not every method produced a prediction everywhere: `
-      + thin.map(([m, share]) => `${escapeHtml(methodLabel(m))} ${percent(share)}`).join(', ')
-      + '. Thin early history is the usual reason.') : ''}`;
-}
-
-function renderByOrigin(byOrigin) {
-  const figure = $('origin-figure');
-  if (!byOrigin.length) {
-    figure.hidden = true;
-    return;
-  }
-  figure.hidden = false;
-  const methods = [...new Set(byOrigin.map((row) => row.method))];
-  const cutoffs = [...new Set(byOrigin.map((row) => row.cutoff))].sort();
-  $('origin-fig-sub').textContent =
-    `${cutoffs.length} retraining origins, ${methods.length} methods. `
-    + 'Each point is one origin: the model refitted there, then scored on what it predicted next.';
-  renderOriginShortfall(cutoffs.length);
-  drawOriginChart(byOrigin, methods, cutoffs);
-  $('origin-table').innerHTML = `
-    <table class="result-table">
-      <thead><tr><th>Retraining date</th>${methods.map((m) =>
-        `<th class="num">${escapeHtml(methodLabel(m))}</th>`).join('')}</tr></thead>
-      <tbody>${cutoffs.map((cutoff) => {
-        const cells = methods.map((method) => {
-          const row = byOrigin.find((r) => r.cutoff === cutoff && r.method === method);
-          return `<td class="num">${row ? row.mean_ae.toPrecision(4) : '\u2014'}</td>`;
-        }).join('');
-        return `<tr><td>${escapeHtml(cutoff)}</td>${cells}</tr>`;
-      }).join('')}</tbody>
-    </table>`;
-}
-
-function renderOriginShortfall(evaluated) {
-  // The newest origins do not have their target values yet: scoring one needs
-  // L days of follow-up the archive does not have, so the schedule asks for more
-  // origins than the replay can score. Said plainly rather than quietly
-  // showing the smaller number.
-  const scheduled = state.results ? state.results.origins_scheduled : 0;
-  const note = $('origin-shortfall');
-  if (!scheduled || scheduled <= evaluated) {
-    note.innerHTML = '';
-    return;
-  }
-  note.innerHTML = notice('warn',
-    `The schedule asked for <strong>${scheduled}</strong> retrainings but
-     <strong>${evaluated}</strong> could be scored. The rest are too recent: scoring an origin
-     needs the target value at lag L, and those values are not available yet.`);
-}
-
-function renderPooling(pools, profile) {
-  const container = $('results-pooling');
-  if (!pools.length) {
-    container.innerHTML = '';
-    return;
-  }
-  // RevRoute relearns its pools at every origin, so these are per-retraining
-  // results, not one property of the run.
-  const byFold = new Map();
-  profile.forEach((row) => {
-    if (!byFold.has(row.cutoff)) byFold.set(row.cutoff, []);
-    byFold.get(row.cutoff).push(row);
-  });
-  const rows = pools.map((pool) => {
-    const detail = (byFold.get(pool.cutoff) || [])
-      .map((row) => `group ${row.pool}: ${row.tasks} location-lag combination(s) across ${row.locations} location(s)`)
-      .join('; ');
-    return `<tr>
-      <td>${escapeHtml(String(pool.cutoff).slice(0, 10))}</td>
-      <td class="num">${pool.represented_tasks ?? pool.tasks ?? '\u2014'}</td>
-      <td class="num">${pool.pool_count ?? pool.k_selected ?? '\u2014'}</td>
-      <td class="num">${pool.largest_pool ?? '\u2014'}</td>
-      <td class="num">${pool.singleton_pools ?? '\u2014'}</td>
-      <td class="pool-detail">${escapeHtml(detail)}</td>
-    </tr>`;
-  }).join('');
-  container.innerHTML = `
-    <h3>How similar location and reporting-lag combinations were grouped</h3>
-    <p class="hint">The method relearns which location and reporting-lag combinations can
-      share one quantile regression every time it retrains. A group count that changes over
-      time reflects changes in the revision process. Groups containing only one combination
-      indicate that the archive did not support combining it with another.</p>
-    <details class="table-view" open>
-      <summary>${pools.length} retrainings</summary>
-      <table class="result-table">
-        <thead><tr><th>Retraining date</th><th class="num">Location-lag combinations</th><th class="num">Groups</th>
-          <th class="num">Largest</th><th class="num">Singletons</th>
-          <th>Composition</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </details>`;
-}
-
-/* The per-origin chart. Change over time, several methods -> a multi-series
- * line. Colour is assigned by method in fixed slot order and never cycled;
- * identity is carried by a legend and the table view as well as the hue,
- * which is also what the light-mode contrast relief on slots 3-5 requires.
- */
-const SERIES_SLOTS = 8;
-
-function drawOriginChart(rows, methods, cutoffs) {
-  const container = $('origin-chart');
-  const width = 720;
-  const height = 280;
-  const pad = {top: 14, right: 18, bottom: 38, left: 62};
-  const plotWidth = width - pad.left - pad.right;
-  const plotHeight = height - pad.top - pad.bottom;
-
-  const series = methods.slice(0, SERIES_SLOTS).map((method, index) => ({
-    method,
-    color: `var(--series-${index + 1})`,
-    points: cutoffs.map((cutoff, position) => {
-      const row = rows.find((r) => r.cutoff === cutoff && r.method === method);
-      return row && Number.isFinite(row.mean_ae) ? {position, cutoff, value: row.mean_ae} : null;
-    }).filter(Boolean),
-  })).filter((entry) => entry.points.length);
-
-  const values = series.flatMap((entry) => entry.points.map((point) => point.value));
-  if (!values.length || cutoffs.length < 2) {
-    container.innerHTML = `<p class="hint">Not enough retraining origins to plot a line.</p>`;
-    return;
-  }
-  // A method that is exactly right everywhere would otherwise divide by zero.
-  const maxValue = Math.max(...values) || 1;
-  const x = (position) => pad.left + (cutoffs.length === 1 ? plotWidth / 2
-    : (position / (cutoffs.length - 1)) * plotWidth);
-  const y = (value) => pad.top + plotHeight - (value / maxValue) * plotHeight;
-
-  const ticks = [0, 0.25, 0.5, 0.75, 1].map((share) => share * maxValue);
-  const gridlines = ticks.map((tick) => `
-    <line x1="${pad.left}" x2="${width - pad.right}" y1="${y(tick).toFixed(1)}"
-          y2="${y(tick).toFixed(1)}" stroke="var(--border)" stroke-width="1"/>
-    <text x="${pad.left - 8}" y="${(y(tick) + 4).toFixed(1)}" text-anchor="end"
-          font-size="11" fill="var(--text-muted)">${compactNumber(tick)}</text>`).join('');
-
-  // At most seven dated labels, however many origins there are -- and the last
-  // origin always gets one, so the axis does not appear to stop short of where
-  // the line actually ends. Its neighbour is dropped if they would collide.
-  const step = Math.ceil(cutoffs.length / 7);
-  const last = cutoffs.length - 1;
-  const labelled = new Set(cutoffs.map((_, position) => position).filter((p) => p % step === 0));
-  labelled.delete(last - (last % step));
-  if (last - Math.max(...labelled, 0) < step / 2) labelled.delete(Math.max(...labelled, 0));
-  labelled.add(last);
-  const xLabels = [...labelled].sort((a, b) => a - b).map((position) => `
-    <text x="${x(position).toFixed(1)}" y="${height - 16}" text-anchor="middle"
-          font-size="11" fill="var(--text-muted)">${escapeHtml(String(cutoffs[position]).slice(0, 7))}</text>`)
-    .join('');
-
-  // Markers only when the origins are few enough that they do not merge into
-  // a solid band; the line carries the shape either way.
-  const showMarkers = cutoffs.length <= 40;
-  const paths = series.map((entry) => {
-    const line = entry.points.map((point, index) =>
-      `${index === 0 ? 'M' : 'L'}${x(point.position).toFixed(1)},${y(point.value).toFixed(1)}`).join(' ');
-    const markers = showMarkers ? entry.points.map((point) => `
-      <circle cx="${x(point.position).toFixed(1)}" cy="${y(point.value).toFixed(1)}" r="4"
-              fill="${entry.color}" stroke="var(--surface-1)" stroke-width="2"/>`).join('') : '';
-    return `<path d="${line}" fill="none" stroke="${entry.color}" stroke-width="2"
-                  stroke-linejoin="round" stroke-linecap="round"/>${markers}`;
-  }).join('');
-
-  const legend = series.map((entry) => `
-    <li><span class="swatch" style="background:${entry.color}"></span>
-      ${escapeHtml(methodLabel(entry.method))}</li>`).join('');
-
-  container.innerHTML = `
-    <ul class="legend">${legend}</ul>
-    <svg viewBox="0 0 ${width} ${height}" role="img"
-         aria-label="Mean absolute error at each of ${cutoffs.length} retraining origins,
-                     for ${series.map((entry) => entry.method).join(', ')}.">
-      ${gridlines}
-      ${paths}
-      <line x1="${pad.left}" x2="${width - pad.right}" y1="${pad.top + plotHeight}"
-            y2="${pad.top + plotHeight}" stroke="var(--border-strong)" stroke-width="1"/>
-      ${xLabels}
-      <text x="${pad.left + plotWidth / 2}" y="${height - 1}" text-anchor="middle"
-            font-size="11.5" fill="var(--text-secondary)">retraining origin</text>
-    </svg>`;
 }
 
 /* --- go --------------------------------------------------------------- */
@@ -1202,6 +1369,7 @@ window.addEventListener('unhandledrejection', (event) => showFailure(
   (event.reason && event.reason.message) || String(event.reason)));
 
 loadEnvironment();
+initWizard();
 initDropzone();
 $('stop-run').addEventListener('click', stopRun);
 $('resume-run').addEventListener('click', resumeRun);

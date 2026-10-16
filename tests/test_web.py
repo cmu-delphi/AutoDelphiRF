@@ -15,11 +15,12 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 import pytest
+import pandas as pd
 
 from autodelphirf.app import web
 from autodelphirf.pre_diagnosis.preparation import PreparationError
 from autodelphirf.app.web import (ALLOWED_SUFFIXES, DEFAULT_LAYERS, AutoDelphiRFServer, Session,
-                                 archive_suffix, guess_columns, optional_int,
+                                 _demonstration_lags, archive_suffix, guess_columns, optional_int,
                                  results_summary, safe_stem)
 
 from conftest import archive_frame
@@ -122,6 +123,18 @@ def test_storing_an_archive_reports_its_columns_and_a_preview(session, archive_b
     assert session.archive_path.is_file()
 
 
+def test_csv_upload_preview_does_not_invoke_the_full_archive_reader(
+        session, archive_bytes, monkeypatch):
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("CSV upload preview must not parse the full archive")
+
+    monkeypatch.setattr(web, "read_archive", fail_if_called)
+    stored = session.store_archive("large.csv", archive_bytes)
+
+    assert len(stored["preview"]) == 5
+    assert stored["columns"] == ["geo_value", "reference_date", "report_date", "value"]
+
+
 def test_an_unreadable_upload_is_rejected_and_leaves_no_file(session, tmp_path):
     with pytest.raises(PreparationError, match="could not read"):
         session.store_archive("broken.csv", b"\x00\x01\x02 not,a,csv\n\"unclosed")
@@ -145,20 +158,28 @@ def test_diagnosis_returns_the_curve_the_page_plots(session, archive_bytes):
     report = session.diagnose({"reference_col": "reference_date", "report_col": "report_date",
                                "geo_col": "geo_value", "value_cols": ["value"],
                                "value_type": "count"})
-    assert report["recommended_target_lag"] > 0
+    assert report["resolved_target_lag"] is None
+    assert report["target_lag_suggested_range"]["lower"] > 0
+    assert report["target_lag_suggested_range"]["upper"] >= report["target_lag_suggested_range"]["lower"]
     curve = report["target_lag_completion_curve"]
     assert len(curve) >= 2
+    assert report["available_target_lags"]
+    assert all(lag > 0 for lag in report["available_target_lags"])
     # The chart plots lag -> median relative error; both must be numeric.
     assert all(float(lag) >= 0 and 0 <= float(error) for lag, error in curve.items())
+    for evidence in report["target_lag_completion_band"].values():
+        assert {"q60", "q75", "q90", "q95"} <= set(evidence)
 
 
-def test_a_user_target_lag_produces_the_confirmation_prompt_the_page_shows(session, archive_bytes):
+def test_a_user_target_lag_is_used_without_reconciliation(session, archive_bytes):
     session.store_archive("a.csv", archive_bytes)
     report = session.diagnose({"reference_col": "reference_date", "report_col": "report_date",
                                "geo_col": "geo_value", "value_cols": ["value"],
                                "value_type": "count", "target_lag": 400})
     assert report["user_target_lag"] == 400
-    assert report["target_lag_confirmation_prompt"]
+    assert report["resolved_target_lag"] == 400
+    assert report["target_lag_resolution"] == "user_choice"
+    assert report["target_lag_confirmation_prompt"] is None
 
 
 @pytest.mark.parametrize("value,expected", [(None, None), ("", None), (14, 14), ("14", 14),
@@ -304,6 +325,39 @@ def test_results_read_back_the_tables_a_run_wrote(tmp_path):
     assert summary["n_origins"] == 2
     # RevRoute relearns its pools every retraining, so there is one row per origin.
     assert len(summary["tables"]["revroute_pools"]) == 2
+
+
+def test_results_read_location_bands_for_the_web_evaluation(tmp_path):
+    tables = tmp_path / "report" / "tables"
+    tables.mkdir(parents=True)
+    (tables / "web_metrics_by_lag.csv").write_text(
+        "lag,method,metric,n_locations,median,q10,q90\n"
+        "1,delphirf,ae,3,2.0,1.0,4.0\n")
+    (tables / "web_metrics_by_origin_lag.csv").write_text(
+        "cutoff,lag,method,metric,n_locations,median,q10,q90\n"
+        "2020-01-01,1,delphirf,ae,3,2.0,1.0,4.0\n"
+        "2020-01-01,2,delphirf,ae,3,2.0,1.0,4.0\n"
+        "2020-01-01,3,delphirf,ae,3,2.0,1.0,4.0\n"
+        "2020-01-01,4,delphirf,ae,3,2.0,1.0,4.0\n")
+    (tables / "web_metrics_by_location.csv").write_text(
+        "geo_value,method,metric,maximum_lag,n,mean,std,median,q10,q90\n"
+        "aa,delphirf,ae,14,20,2.5,0.8,2.1,0.5,4.2\n")
+    summary = results_summary(tmp_path)
+    assert summary["tables"]["web_metrics_by_lag"][0]["n_locations"] == 3
+    assert summary["tables"]["web_metrics_by_origin_lag"][0]["cutoff"] == "2020-01-01"
+    assert {row["lag"] for row in summary["tables"]["web_metrics_by_origin_lag"]} == {1, 2}
+    assert summary["tables"]["web_metrics_by_location"][0]["geo_value"] == "aa"
+
+
+def test_demonstration_lags_use_the_first_supported_lag_and_first_supported_lag_at_day_7_or_later():
+    rows = []
+    for lag, origins in ((4, range(10)), (5, range(1)), (6, range(9)),
+                         (7, range(3)), (11, range(10))):
+        for origin in origins:
+            for method in ("baseline_null", "delphirf"):
+                rows.append({"lag": lag, "cutoff": f"2020-01-{origin + 1:02d}",
+                             "method": method, "metric": "ae", "n_locations": 56})
+    assert _demonstration_lags(pd.DataFrame(rows)) == [4, 11]
 
 
 def test_results_derive_pool_composition_from_saved_assignments(tmp_path):
@@ -482,6 +536,14 @@ def test_the_layer_list_only_offers_registered_layers(server):
     assert all(layer["name"] in PREDICTION_LAYERS for layer in layers)
     assert any(layer["default"] for layer in layers)
     assert all(layer["description"] for layer in layers)
+    by_name = {layer["name"]: layer for layer in layers}
+    assert "similarity_weighted_delphirf" not in by_name
+    assert by_name["naive_delphirf"]["label"] == "Naive DelphiRF"
+    assert "small reporting lags are modeled separately" in by_name["naive_delphirf"]["description"]
+    assert by_name["global_delphirf"]["label"] == "Global DelphiRF"
+    assert "combines all locations and reporting lags" in by_name["global_delphirf"]["description"]
+    assert "sparse reporting histories" in by_name["red"]["description"]
+    assert "weekly data" in by_name["red"]["description"]
 
 
 def test_status_before_any_run_is_idle(server):
@@ -499,7 +561,9 @@ def test_uploading_and_diagnosing_over_http(server, archive_bytes):
         "reference_col": "reference_date", "report_col": "report_date",
         "geo_col": "geo_value", "value_cols": ["value"], "value_type": "count"})
     assert status == 200
-    assert json.loads(body)["recommended_target_lag"] > 0
+    diagnosis = json.loads(body)
+    assert diagnosis["resolved_target_lag"] is None
+    assert diagnosis["target_lag_suggested_range"]["lower"] > 0
 
 
 def test_an_unsupported_upload_is_a_400_with_a_readable_message(server):

@@ -10,17 +10,44 @@
 
 <header class="masthead">
   <div class="wrap">
-    <h1>AutoDelphiRF</h1>
-    <p class="lede">Drop a revision archive below. AutoDelphiRF will diagnose it, ask you about
-      anything it cannot decide on its own, then run the experiment and write a report.</p>
+    <div class="hero-copy">
+      <h1>AutoDelphiRF</h1>
+      <p class="lede">AutoDelphiRF automates revision nowcasting from a raw surveillance archive:
+        it diagnoses the reporting pattern, configures the forecast, and evaluates performance
+        without preliminary data exploration. It forecasts one indicator from its own revision
+        history so the adjustment remains independent for downstream use. This development
+        interface supports a one-time retrospective analysis that mimics real-time forecasting
+        with rolling training and evaluation windows.</p>
+    </div>
+
+    <aside class="development-card" aria-label="Development status">
+      <div><strong>This web interface is in development.</strong>
+        <span>Feedback on the workflow, explanations, and results is welcome.</span></div>
+    </aside>
+
+    <nav class="workflow-flow" aria-label="AutoDelphiRF workflow">
+      <button type="button" class="flow-node flow-history" data-wizard-stage="0"
+              aria-current="step">Revision archive</button>
+      <span class="flow-arrow" aria-hidden="true">&rarr;</span>
+      <button type="button" class="flow-node flow-diagnosis" data-wizard-stage="1" disabled>
+        Pre-forecast diagnosis</button>
+      <span class="flow-arrow" aria-hidden="true">&rarr;</span>
+      <button type="button" class="flow-node flow-pooling" data-wizard-stage="2" disabled>
+        Rolling forecast</button>
+      <span class="flow-arrow" aria-hidden="true">&rarr;</span>
+      <button type="button" class="flow-node flow-assessment" data-wizard-stage="3" disabled>
+        Evaluate results</button>
+    </nav>
   </div>
 </header>
 
 <main class="wrap">
 
+  <div class="wizard-page" data-wizard-page="0">
+
   <!-- 1. Environment -------------------------------------------------- -->
   <section class="card" id="card-environment" aria-labelledby="h-environment">
-    <h2 id="h-environment"><span class="step">1</span> Environment</h2>
+    <h2 id="h-environment">Environment</h2>
     <div id="environment-body" class="status-row">
       <span class="spinner" aria-hidden="true"></span> Checking for R and DelphiRF&hellip;
     </div>
@@ -28,9 +55,14 @@
 
   <!-- 2. Archive ------------------------------------------------------ -->
   <section class="card" id="card-upload" aria-labelledby="h-upload">
-    <h2 id="h-upload"><span class="step">2</span> Your archive</h2>
+    <h2 id="h-upload">Your archive</h2>
     <p class="hint">One row per <strong>(location, reference date, report date, value)</strong>.
       CSV, gzipped CSV, or Parquet. Nothing leaves this machine.</p>
+    <div class="archive-definitions" aria-label="Archive date definitions">
+      <p><strong>Reference date:</strong> when the measured event or surveillance period occurred.</p>
+      <p><strong>Report date:</strong> when that value was released or updated.</p>
+      <p>Multiple report dates for the same location and reference date show how the value was revised.</p>
+    </div>
 
     <div id="dropzone" class="dropzone" tabindex="0" role="button"
          aria-describedby="dropzone-hint">
@@ -54,16 +86,18 @@
 
   <!-- 3. Columns ------------------------------------------------------ -->
   <section class="card" id="card-columns" hidden aria-labelledby="h-columns">
-    <h2 id="h-columns"><span class="step">3</span> What is in each column?</h2>
+    <h2 id="h-columns">What is in each column?</h2>
     <p class="hint">AutoDelphiRF guessed from the column names. Correct anything it got wrong.</p>
     <div id="column-form" class="field-grid"></div>
 
     <fieldset class="inline-choice">
       <legend>What does the value measure?</legend>
       <label><input type="radio" name="value-type" value="count" checked>
-        <span><strong>A count or fraction</strong> &mdash; one value column</span></label>
+        <span><strong>A single reported value</strong> &mdash; a count, rate, percentage, or
+          already-calculated fraction</span></label>
       <label><input type="radio" name="value-type" value="fraction">
-        <span><strong>A fraction</strong> &mdash; a numerator and a denominator</span></label>
+        <span><strong>A numerator and denominator</strong> &mdash; AutoDelphiRF will construct
+          the fraction</span></label>
     </fieldset>
 
     <div id="denominator-field" hidden></div>
@@ -73,57 +107,107 @@
       <span id="diagnose-status" class="status-inline"></span>
     </div>
   </section>
+  </div>
 
   <!-- 4. Diagnosis + the target-lag question -------------------------- -->
+  <div class="wizard-page" data-wizard-page="1" hidden>
   <section class="card" id="card-diagnosis" hidden aria-labelledby="h-diagnosis">
-    <h2 id="h-diagnosis"><span class="step">4</span> What AutoDelphiRF found</h2>
+    <h2 id="h-diagnosis">What AutoDelphiRF found</h2>
     <dl id="diagnosis-facts" class="facts"></dl>
     <div id="diagnosis-notes"></div>
 
     <div class="question" id="lag-question">
-      <h3 id="lag-question-title">How long until a value is final?</h3>
+      <h3 id="lag-question-title">How long until reported values are sufficiently stable?</h3>
       <p class="question-body" id="lag-question-body"></p>
 
       <figure class="viz-root" id="completion-figure">
         <figcaption>
-          <span class="fig-title">Median relative error against the latest observed value</span>
-          <span class="fig-sub">Each point is a candidate target lag and reports the median for
-            context. The recommendation uses a separate rule: at least 90% of location and
-            reference-date combinations must be within 5% relative error.</span>
+          <span class="fig-title">Relative error by available target lag after the reference date</span>
+          <span class="fig-sub">Enter a lag that exists in the archive. The other columns
+            show its historical error distribution.</span>
         </figcaption>
+        <div class="completion-explainer">
+          <strong>How to read this figure</strong>
+          <p><b>Relative error</b> compares the value available at a given lag with the most
+            mature value retained for the same historical record. A 1% error means the two
+            values differ by 1% of the mature value.</p>
+          <p><b>Percentiles</b> summarize that error across historical records. The median is
+            the middle record. If the 90th percentile is 1%, then 90% of records had no more
+            than 1% relative error at that lag.</p>
+        </div>
         <div id="completion-chart" class="chart"></div>
-        <details class="table-view">
-          <summary>Show these numbers as a table</summary>
-          <div id="completion-table"></div>
-        </details>
       </figure>
 
       <div class="answers" id="lag-answers"></div>
       <div class="custom-lag" id="custom-lag" hidden>
-        <label for="custom-lag-input">Use this target lag instead, in days</label>
+        <label for="custom-lag-input">Use a target lag not listed in the table</label>
         <div class="custom-lag-row">
-          <input type="number" id="custom-lag-input" min="1" max="3650" step="1">
-          <button id="custom-lag-apply" class="secondary">Re-diagnose with this value</button>
+          <input type="number" id="custom-lag-input" min="1" step="1">
+          <button id="custom-lag-apply" class="primary">Use this target lag</button>
         </div>
         <p class="hint" id="custom-lag-note"></p>
       </div>
     </div>
   </section>
+  </div>
 
   <!-- 5. Retraining schedule ------------------------------------------ -->
+  <div class="wizard-page" data-wizard-page="2" hidden>
   <section class="card" id="card-schedule" hidden aria-labelledby="h-schedule">
-    <h2 id="h-schedule"><span class="step">5</span> How often should it retrain?</h2>
-    <p class="hint">AutoDelphiRF is evaluated retrospectively: at each date below it refits on
-      the history visible at that date, predicts forward, and moves on. That is the
-      <em>retraining interval</em>, not just an evaluation stride &mdash; so it sets both how
-      current each model is and how long the run takes.</p>
+    <h2 id="h-schedule">Recreate historical real-time forecasts</h2>
+
+    <figure class="rolling-concept" aria-labelledby="rolling-concept-title">
+      <figcaption id="rolling-concept-title">How rolling training and evaluation work</figcaption>
+      <div class="rolling-legend" aria-hidden="true">
+        <span class="training-key">Training window</span>
+        <span class="origin-key">Retraining origin (report date)</span>
+        <span class="testing-key">Evaluation window</span>
+      </div>
+      <div class="concept-axis" aria-hidden="true">
+        <span class="concept-unavailable" title="Target-lag values not yet available">
+          Target-lag values<br>not yet available</span>
+        <div class="concept-row">
+          <span class="concept-row-name">Origin 1</span>
+          <span class="concept-training first" title="Training window"></span>
+          <span class="concept-origin first"></span>
+          <span class="concept-testing first" title="Held-out evaluation window"></span>
+        </div>
+        <div class="concept-row">
+          <span class="concept-row-name">Origin 2</span>
+          <span class="concept-training next" title="Updated training window"></span>
+          <span class="concept-origin next"></span>
+          <span class="concept-testing next" title="Next held-out evaluation window"></span>
+        </div>
+        <div class="concept-gap" aria-hidden="true">&#8942;</div>
+        <div class="concept-row">
+          <span class="concept-row-name">Last origin</span>
+          <span class="concept-training last" title="Final training window"></span>
+          <span class="concept-origin last"></span>
+          <span class="concept-testing last" title="Final held-out evaluation window"></span>
+        </div>
+        <div class="concept-time"><span>Earlier</span><span>Calendar time</span><span>Later</span></div>
+      </div>
+    </figure>
+
+    <div class="rolling-explanation">
+      <p>At each report-date origin, the model trains only on reports available at that time and is
+        evaluated on later data. This prevents future-information leakage and recreates real-time
+        revision forecasting.</p>
+      <p>Revision patterns usually do not change every day, so the model can be retrained less often
+        than new reports arrive. Choosing the retraining interval balances faster adaptation against
+        computational cost.</p>
+    </div>
 
     <div class="field-grid">
+      <label>Training window (days)
+        <input type="number" id="training-days" min="30" step="1" value="180">
+        <span class="hint">Default: 180 days</span>
+      </label>
       <label>Retrain every (days)
         <input type="number" id="retrain-days" min="1" max="3650" step="1">
         <span class="hint" id="retrain-days-hint"></span>
       </label>
-      <label>First retraining origin
+      <label>First report-date retraining origin
         <input type="date" id="first-origin-date">
         <span class="hint" id="first-origin-hint"></span>
       </label>
@@ -139,7 +223,7 @@
 
   <!-- 6. Methods ------------------------------------------------------ -->
   <section class="card" id="card-methods" hidden aria-labelledby="h-methods">
-    <h2 id="h-methods"><span class="step">6</span> Which methods should run?</h2>
+    <h2 id="h-methods">Which methods should run?</h2>
     <p class="hint">The defaults are the smallest run that answers &ldquo;is routing worth
       anything on my data&rdquo;. The rest fit forests and take substantially longer.</p>
     <div id="layer-list" class="layer-list"></div>
@@ -147,10 +231,6 @@
     <details class="advanced">
       <summary>Advanced settings</summary>
       <div class="field-grid">
-        <label>Training window (days)
-          <input type="number" id="training-days" min="30" step="1"
-                 placeholder="diagnosed">
-        </label>
         <label>Skip locations with fewer rows than
           <input type="number" id="min-location-rows" min="1" step="1" value="100">
         </label>
@@ -171,7 +251,7 @@
 
   <!-- 7. Run ---------------------------------------------------------- -->
   <section class="card" id="card-run" hidden aria-labelledby="h-run">
-    <h2 id="h-run"><span class="step">7</span> Retraining</h2>
+    <h2 id="h-run">Retraining</h2>
     <div class="run-header">
       <span id="run-state" class="badge">starting</span>
       <span id="run-elapsed" class="hint"></span>
@@ -185,29 +265,95 @@
     <pre id="run-log" class="log" aria-live="polite" aria-label="Run log"></pre>
     <div id="run-result" hidden></div>
   </section>
+  </div>
 
   <!-- 8. Results -------------------------------------------------------- -->
+  <div class="wizard-page" data-wizard-page="3" hidden>
   <section class="card" id="card-results" hidden aria-labelledby="h-results">
-    <h2 id="h-results"><span class="step">8</span> What came out</h2>
-    <div id="results-headline"></div>
-
-    <figure class="viz-root" id="origin-figure" hidden>
-      <figcaption>
-        <span class="fig-title">Mean absolute error at each retraining origin</span>
-        <span class="fig-sub" id="origin-fig-sub"></span>
-      </figcaption>
-      <div id="origin-chart" class="chart"></div>
-      <div id="origin-shortfall"></div>
-      <details class="table-view">
-        <summary>Show these numbers as a table</summary>
-        <div id="origin-table"></div>
-      </details>
-    </figure>
-
-    <!-- Temporarily hide the grouping section; remove hidden to restore it. -->
-    <div id="results-pooling" hidden></div>
-    <div id="results-links"></div>
+    <h2 id="h-results">Evaluate results</h2>
+    <p class="section-intro">Scores are expressed in the indicator's original units.
+      Each line is the median location-level
+      score; the shaded band spans the 10th to 90th percentiles across locations.</p>
+    <div class="score-definitions" aria-label="Evaluation score definitions">
+      <article>
+        <h3>Absolute error (AE)</h3>
+        <p>The distance between the point nowcast and the later target value, measured in the
+          indicator's original units. Lower is better.</p>
+        <div class="score-equation">
+          <math display="block"
+                aria-label="Absolute error equals the absolute value of the prediction minus the target">
+            <mrow>
+              <mi mathvariant="normal">AE</mi><mo>=</mo>
+              <mo>|</mo><mover accent="true"><mi>y</mi><mo>ˆ</mo></mover><mo>−</mo><mi>y</mi><mo>|</mo>
+            </mrow>
+          </math>
+        </div>
+        <p class="equation-key"><var>ŷ</var> is the point nowcast and <var>y</var> is the target value.</p>
+      </article>
+      <article>
+        <h3>Weighted interval score (WIS)</h3>
+        <p>Evaluates the full probabilistic nowcast across all predicted quantiles. It penalizes
+          quantiles that are far from the target, with a larger penalty when the target falls on
+          the wrong side of a quantile. Lower is better.</p>
+        <div class="score-equation">
+          <math display="block"
+                aria-label="Weighted interval score equals two divided by K times the sum of quantile losses">
+            <mrow>
+              <mi mathvariant="normal">WIS</mi><mo>=</mo>
+              <mfrac><mn>2</mn><mi>K</mi></mfrac>
+              <munderover>
+                <mo>∑</mo>
+                <mrow><mi>k</mi><mo>=</mo><mn>1</mn></mrow>
+                <mi>K</mi>
+              </munderover>
+              <msub><mi>ρ</mi><msub><mi>τ</mi><mi>k</mi></msub></msub>
+              <mo>(</mo>
+              <mi>y</mi><mo>−</mo>
+              <msub>
+                <mover accent="true"><mi>q</mi><mo>ˆ</mo></mover>
+                <msub><mi>τ</mi><mi>k</mi></msub>
+              </msub>
+              <mo>)</mo>
+            </mrow>
+          </math>
+        </div>
+        <p class="equation-key"><var>q̂</var><sub>τ</sub> is the estimated predictive quantile at probability
+          <var>τ</var>, <var>y</var> is the target, and <var>K</var> is the number of predicted quantiles.
+          Here, ρ<sub>τ</sub> is the standard quantile-loss function.</p>
+      </article>
+    </div>
+    <div id="results-message"></div>
+    <div class="evaluation-toolbar">
+      <span class="evaluation-toolbar-label">Score shown in every figure</span>
+      <div class="metric-switch" role="group" aria-label="Evaluation score">
+        <button type="button" class="active" data-result-metric="ae">AE</button>
+        <button type="button" data-result-metric="wis">WIS</button>
+      </div>
+    </div>
+    <div class="lag-score-grid" id="lag-score-grid" hidden>
+      <figure class="result-figure">
+        <figcaption><span class="fig-title" id="lag-score-title">AE over reporting lags</span>
+          <span class="fig-sub">Median across locations; band spans the 10th–90th percentiles. Lower is better.</span></figcaption>
+        <div id="lag-score-chart" class="result-chart"></div>
+      </figure>
+      <figure class="result-figure" id="location-score-figure">
+        <figcaption><span class="fig-title" id="location-score-title">AE by location at early reporting lags</span>
+          <span class="fig-sub">All locations are included. Bars show the median across matched cases with reporting lag ≤14 days. Whiskers span the 10th–90th percentiles. Lower is better. Scroll horizontally when needed.</span></figcaption>
+        <div id="location-score-chart" class="result-chart location-score-chart"></div>
+      </figure>
+    </div>
+    <section class="early-lag-section" id="early-lag-section" hidden>
+      <div class="early-lag-heading">
+        <div><h3>Performance over report-date origins</h3>
+          <p>The earliest well-supported reporting lag and the first well-supported lag at or
+            beyond day 7. Each must retain at least 80% of the best available origin and
+            location coverage. Bands show the 10th–90th
+            percentiles across locations at each origin.</p></div>
+      </div>
+      <div class="early-lag-grid" id="early-lag-grid"></div>
+    </section>
   </section>
+  </div>
 
 </main>
 

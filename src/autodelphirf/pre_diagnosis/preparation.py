@@ -12,7 +12,8 @@ import tempfile
 import pandas as pd
 
 from .diagnosis import WEEKDAYS, weekday_groups_from_share
-from .archive import DEFAULT_TRAINING_WINDOW_DAYS, diagnose_raw_archive
+from .archive import (DEFAULT_TRAINING_WINDOW_DAYS, MAX_OBSERVED_LAG_DAYS,
+                      diagnose_raw_archive)
 from ..core.resources import resource_path
 
 #: Fraction signals are the one case where the archive carries two value
@@ -101,6 +102,7 @@ class PreparationSpec:
     smoothed: bool
     temporal_resol: str
     ref_lag: int
+    max_observed_lag_days: int
     lag_terms: tuple[int, ...]
     weekday_groups: dict
     training_days: int
@@ -124,7 +126,9 @@ class PreparationSpec:
             "value_cols": list(self.value_cols), "geo_col": self.geo_col,
             "constant_geo": self.constant_geo, "value_type": self.value_type,
             "smoothed": self.smoothed, "temporal_resol": self.temporal_resol,
-            "ref_lag": int(self.ref_lag), "lag_terms": [int(t) for t in self.lag_terms],
+            "ref_lag": int(self.ref_lag),
+            "max_observed_lag_days": int(self.max_observed_lag_days),
+            "lag_terms": [int(t) for t in self.lag_terms],
             "weekday_groups": self.weekday_groups, "training_days": int(self.training_days),
             "testing_days": int(self.testing_days), "lower": int(self.lower),
             "upper": int(self.upper), "target_column": self.target_column,
@@ -250,10 +254,8 @@ def build_spec(name: str, raw_csv: Path, output_dir: Path, *, reference_col: str
 
     A keyword left at ``None`` is diagnosed from the archive; a keyword given
     explicitly is recorded as an override and used as given. ``target_lag``
-    is the one exception worth stating: when the user's value disagrees with
-    the diagnosed one, :func:`autodelphirf.pre_diagnosis.archive.resolve_target_lag`
-    decides, and its prompt is carried into ``preparation.json`` -- no
-    target lag is adopted without the recommendation having been recorded.
+    is intentionally not diagnosed: the archive supplies an evidence range,
+    then preparation pauses until the user supplies the final value.
     """
     if value_type not in VALUE_TYPES:
         raise PreparationError(f"value_type must be one of {VALUE_TYPES}, got {value_type!r}")
@@ -266,6 +268,10 @@ def build_spec(name: str, raw_csv: Path, output_dir: Path, *, reference_col: str
         raise PreparationError("a count signal takes exactly one --value-col")
     if (start_date is None) != (end_date is None):
         raise PreparationError("--start-date and --end-date must be given together")
+    if target_lag is not None and not 0 <= int(target_lag) <= MAX_OBSERVED_LAG_DAYS:
+        raise PreparationError(
+            f"target_lag must be between 0 and {MAX_OBSERVED_LAG_DAYS} days; "
+            "later raw observations are outside the modelled revision horizon.")
 
     diagnosis = diagnose_archive(raw_csv, geo_col=geo_col, reference_col=reference_col,
                                  report_col=report_col, value_cols=value_cols,
@@ -273,20 +279,23 @@ def build_spec(name: str, raw_csv: Path, output_dir: Path, *, reference_col: str
     overrides = []
     if target_lag is not None:
         overrides.append("target_lag")
-    # resolve_target_lag already reconciled a user value with the suggestion,
-    # keeping the safer (longer) target lag by default and recording the
-    # disagreement for confirmation. ``confirm_target_lag`` is the user having
-    # ANSWERED that confirmation: the prompt says the default applies "if you
-    # do not respond", so a response has to be able to win. Without it a user
-    # who deliberately wants a shorter target lag than the diagnosis has no way
-    # to say so explicitly.
-    resolved_lag = int(diagnosis["resolved_target_lag"])
+    resolved = diagnosis.get("resolved_target_lag")
+    if resolved is None:
+        bounds = diagnosis.get("target_lag_suggested_range") or {}
+        raise PreparationError(
+            "target_lag requires a user decision before preprocessing. The diagnostic "
+            f"range is {bounds.get('lower')} to {bounds.get('upper')} days (90% within "
+            "10% to 1% relative error). Re-run with --target-lag L.")
+    resolved_lag = int(resolved)
+    if not 0 <= resolved_lag <= MAX_OBSERVED_LAG_DAYS:
+        raise PreparationError(
+            f"target_lag must be between 0 and {MAX_OBSERVED_LAG_DAYS} days; "
+            "later raw observations are outside the modelled revision horizon.")
     if confirm_target_lag:
         if target_lag is None:
             raise PreparationError(
                 "confirm_target_lag was set without a target_lag to confirm; there is nothing "
                 "to confirm when the target lag comes from the diagnosis.")
-        resolved_lag = int(target_lag)
         overrides.append("target_lag_confirmed")
 
     if temporal_resol is None:
@@ -351,6 +360,7 @@ def build_spec(name: str, raw_csv: Path, output_dir: Path, *, reference_col: str
         reference_col=reference_col, report_col=report_col, value_cols=tuple(value_cols),
         geo_col=geo_col, constant_geo="single_location", value_type=value_type,
         smoothed=bool(smoothed), temporal_resol=temporal_resol, ref_lag=resolved_lag,
+        max_observed_lag_days=MAX_OBSERVED_LAG_DAYS,
         lag_terms=tuple(int(t) for t in lag_terms), weekday_groups=dict(weekday_groups),
         training_days=int(training_days), testing_days=int(testing_days),
         lower=int(lower), upper=int(upper), target_column=TARGET_COLUMNS[bool(smoothed)],

@@ -2,12 +2,9 @@
 
 ``autodelphirf web`` starts a small HTTP server on localhost and opens a page that
 walks one dataset through the whole workflow. It exists because the workflow
-has genuine *questions* in it -- above all the target lag L, where
-``ingest.resolve_target_lag`` composes a prompt that says the default applies
-"if you do not respond", and until now there was nowhere to respond. On the
-command line that prompt is a line of text scrolling past. Here it is a
-question with buttons, shown next to the completion curve the recommendation
-was derived from.
+has genuine *questions* in it -- above all the target lag L. The interface
+shows the 90%-completion evidence and waits for an explicit user choice; it
+never converts the diagnostic range into a target automatically.
 
 The server runs the real pipeline in this process: it calls
 ``prepare.diagnose_archive``, then ``prepare.prepare_dataset`` (which shells
@@ -92,23 +89,29 @@ COLUMN_HINTS = {
 
 #: Layers offered in the UI, with the one-line description shown beside each.
 LAYER_DESCRIPTIONS = {
-    "baseline_null": "Uses the latest reported value as the forecast. This is the reference for comparing other methods.",
-    "red": ("Matches historical observations with similar revision paths and reporting stages, "
-            "then uses their remaining changes to forecast the final value and uncertainty."),
-    "delphirf": "Groups similar location and reporting-lag combinations, then fits DelphiRF.",
-    "naive_delphirf": "Separate local DelphiRF fits without cross-location pooling.",
+    "baseline_null": "No adjustment. Carries the currently available value forward as the nowcast.",
+    "red": ("Finds historical observations with similar revision patterns. Primarily intended "
+            "for sparse reporting histories, such as weekly data."),
+    "delphirf": ("The primary AutoDelphiRF method. It automatically decides which reporting "
+                  "lags and locations can share information."),
+    "naive_delphirf": ("Fits locations separately; small reporting lags are modeled separately "
+                        "and larger reporting lags are grouped."),
     "similarity_weighted_delphirf": "DelphiRF with its prospective similarity weights.",
-    "global_delphirf": "One global DelphiRF fit with location fixed effects.",
+    "global_delphirf": "Uses one model that combines all locations and reporting lags.",
 }
 
 LAYER_LABELS = {
     "baseline_null": "Latest reported value",
     "red": "Revision-pattern matching",
-    "delphirf": "RevRoute pooling + DelphiRF",
-    "naive_delphirf": "Separate DelphiRF by location",
+    "delphirf": "RevRoute-DelphiRF",
+    "naive_delphirf": "Naive DelphiRF",
     "similarity_weighted_delphirf": "Similarity-weighted DelphiRF",
-    "global_delphirf": "One DelphiRF model for all locations",
+    "global_delphirf": "Global DelphiRF",
 }
+
+# Still registered and runnable through the CLI/configuration API, but omitted
+# from the development web selector until its presentation is ready.
+WEB_HIDDEN_LAYERS = frozenset({"similarity_weighted_delphirf"})
 
 
 
@@ -301,6 +304,9 @@ RESULT_TABLES = {
     # completed run remains viewable across that harmless artifact change.
     "headline": ("v1_pairwise_point.csv", "report/tables/v1_pairwise_point.csv"),
     "by_origin": ("report/tables/comparison_by_origin.csv",),
+    "web_metrics_by_lag": ("report/tables/web_metrics_by_lag.csv",),
+    "web_metrics_by_origin_lag": ("report/tables/web_metrics_by_origin_lag.csv",),
+    "web_metrics_by_location": ("report/tables/web_metrics_by_location.csv",),
     "availability": ("report/tables/model_availability.csv",),
     "revroute_pools": ("revroute_pool_summary.csv",),
     "_revroute_assignments": ("revroute_pools.csv",),
@@ -311,7 +317,52 @@ RESULT_TABLES = {
 #: origins produces a pool profile with thousands of rows, and the browser
 #: does not need them all to show the shape of the result; the CSVs on disk
 #: remain complete either way.
-MAX_RESULT_ROWS = 2000
+MAX_RESULT_ROWS = 20000
+
+
+def _demonstration_lags(frame: pd.DataFrame, count: int = 2) -> list:
+    """Two cadence anchors with enough support for time-series display.
+
+    Availability alone is insufficient: cadence alignment can leave an exact
+    lag represented at only one rolling origin. Support is measured relative
+    to the best-supported lag in the same result so this works for archives
+    with very different numbers of origins and locations.
+    """
+    needed = {"lag", "cutoff", "method", "n_locations"}
+    if frame.empty or not needed.issubset(frame.columns):
+        return []
+    work = frame.copy()
+    if "metric" in work and work.metric.eq("ae").any():
+        work = work[work.metric.eq("ae")]
+    work["lag"] = pd.to_numeric(work.lag, errors="coerce")
+    work["n_locations"] = pd.to_numeric(work.n_locations, errors="coerce")
+    work = work.dropna(subset=["lag", "cutoff", "method", "n_locations"])
+    if work.empty:
+        return []
+    method_count = int(work.method.nunique())
+    origin_methods = (work.groupby(["lag", "cutoff"], observed=True).method.nunique()
+                      .rename("n_methods").reset_index())
+    complete_origins = (origin_methods[origin_methods.n_methods.eq(method_count)]
+                        .groupby("lag", observed=True).size().rename("origins"))
+    location_support = work.groupby("lag", observed=True).n_locations.median()
+    support = pd.concat([complete_origins, location_support.rename("locations")], axis=1).fillna(0)
+    maximum_origins = float(support.origins.max())
+    maximum_locations = float(support.locations.max())
+    eligible = support[
+        support.origins.ge(0.8 * maximum_origins)
+        & support.locations.ge(0.8 * maximum_locations)
+    ].sort_index().index.tolist()
+    selected = eligible[:1]
+    if selected:
+        later = next((lag for lag in eligible if lag >= 7 and lag != selected[0]), None)
+        if later is not None:
+            selected.append(later)
+    if len(selected) < count:
+        ranked = (support.reset_index()
+                  .sort_values(["origins", "locations", "lag"], ascending=[False, False, True]))
+        selected.extend(lag for lag in ranked.lag.tolist()
+                        if lag not in selected and len(selected) < count)
+    return sorted(selected)
 
 
 def results_summary(output_dir) -> dict:
@@ -339,6 +390,13 @@ def results_summary(output_dir) -> dict:
             # The per-subset breakdown is in the report; the page wants the
             # one line per comparison that answers "did it help overall".
             frame = frame[frame.subset.eq("overall")]
+        if key == "web_metrics_by_origin_lag" and "lag" in frame:
+            # Show the earliest well-supported lag and the first supported lag
+            # at or beyond day 7. Cadence alignment can make an exact lag
+            # appear at only one origin, which is not a meaningful curve.
+            demonstration_lags = _demonstration_lags(frame, count=2)
+            frame = frame[pd.to_numeric(frame["lag"], errors="coerce")
+                          .isin(demonstration_lags)]
         if len(frame) > MAX_RESULT_ROWS:
             truncated.append(key)
             frame = frame.head(MAX_RESULT_ROWS)
@@ -458,10 +516,16 @@ class Session:
         stem = safe_stem(filename)
         destination = self.work_dir / f"{stem}{suffix}"
         destination.write_bytes(payload)
-        # Read the header only: a multi-hundred-megabyte archive should not be
-        # parsed twice just to populate the column dropdowns.
+        # Read only enough rows to populate the column dropdowns. Calling the
+        # full diagnosis reader here would parse a multi-hundred-megabyte CSV
+        # once during upload and then a second time during diagnosis.
         try:
-            preview = read_archive(destination).head(5)
+            if destination.name.endswith((".csv", ".csv.gz")):
+                preview = pd.read_csv(destination, nrows=5)
+            else:
+                # Parquet is already columnar and does not pass through the
+                # expensive CSV parser; retain the common archive reader.
+                preview = read_archive(destination).head(5)
         except Exception as error:                      # noqa: BLE001 - reported to the page
             destination.unlink(missing_ok=True)
             raise PreparationError(f"could not read {filename}: {error}") from error
@@ -581,9 +645,7 @@ class Session:
                                    or DEFAULT_MIN_LOCATION_ROWS),
                 triangle_format=request.get("triangle_format", "parquet"))
 
-            resolution = ("your confirmed choice" if request.get("confirm_target_lag")
-                          else "matches the recommendation")
-            job.append(f"Target lag: {spec.ref_lag} days ({resolution})")
+            job.append(f"Target lag: {spec.ref_lag} days (explicit user choice)")
             job.append(f"Methods: {', '.join(LAYER_LABELS.get(name, name) for name in layers)}")
             job.append(f"Retraining every {spec.testing_days} days from {spec.start_date} "
                        f"to {spec.end_date}")
@@ -773,7 +835,8 @@ class Handler(BaseHTTPRequestHandler):
                             "description": LAYER_DESCRIPTIONS.get(name, ""),
                             "default": name in DEFAULT_LAYERS,
                             "expensive": name in EXPENSIVE_LAYERS}
-                           for name in LAYER_DESCRIPTIONS if name in PREDICTION_LAYERS]}))
+                           for name in LAYER_DESCRIPTIONS
+                           if name in PREDICTION_LAYERS and name not in WEB_HIDDEN_LAYERS]}))
         elif path.startswith("/report"):
             self._serve_report(path[len("/report"):])
         else:

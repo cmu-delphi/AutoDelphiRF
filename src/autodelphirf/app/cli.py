@@ -22,9 +22,9 @@ Six subcommands, in the order a new user meets them:
 which diagnoses the archive, preprocesses it through DelphiRF, runs rolling
 training and testing, and writes ``work/results/report/report.html``.
 
-``autodelphirf web`` is the same workflow with the questions asked on a page
-rather than through flags -- above all the target lag, where the
-diagnosis makes a recommendation the user is meant to accept or override.
+``autodelphirf web`` is the same workflow with the questions asked on a page.
+For target lag, diagnosis supplies an evidence range and waits for the user's
+explicit choice.
 """
 from __future__ import annotations
 
@@ -177,11 +177,9 @@ def preparation_options(include_archive: bool = True) -> argparse.ArgumentParser
         "Each of these is diagnosed from the archive when omitted. Anything set here is "
         "recorded as a user override in preparation.json.")
     diagnosed.add_argument("--target-lag", type=int, metavar="L",
-                           help="target lag in days; reconciled with the recommended one")
+                           help="explicit target lag in days; always used as supplied")
     diagnosed.add_argument("--confirm-target-lag", action="store_true",
-                           help="use --target-lag even when the diagnosis disagrees. Without "
-                                "this, a value shorter than the recommended target lag loses to "
-                                "the diagnosis because its target value may be less stable.")
+                           help="deprecated compatibility flag; an explicit --target-lag already wins")
     diagnosed.add_argument("--temporal-resolution", choices=("daily", "weekly"),
                            help="reporting cadence")
     diagnosed.add_argument("--lag-terms", metavar="N,N",
@@ -268,10 +266,12 @@ def _report_diagnosis(diagnosis: dict) -> None:
     print(f"  cadence             {diagnosis['temporal_resolution']} "
           f"(reference axis {diagnosis['reference_axis_resolution']}, "
           f"report axis {diagnosis['report_axis_resolution']})")
-    print(f"  genuine revisions   {diagnosis['genuine_event_rate']:.1%} of archived rows")
     print(f"  feature lags        {diagnosis['reference_axis_feature_lags']}")
-    print(f"  suggested L         {diagnosis['recommended_target_lag']} days")
-    print(f"  resolved L          {diagnosis['resolved_target_lag']} days "
+    bounds = diagnosis.get("target_lag_suggested_range") or {}
+    print(f"  suggested L area    {bounds.get('lower')} .. {bounds.get('upper')} days "
+          "(90% within 10% .. 1% relative error)")
+    resolved = diagnosis.get("resolved_target_lag")
+    print(f"  selected L          {resolved if resolved is not None else 'awaiting user decision'} "
           f"({diagnosis['target_lag_resolution']})")
     print(f"  training window     {diagnosis['training_window_days']} days")
     if diagnosis.get("target_lag_confirmation_prompt"):

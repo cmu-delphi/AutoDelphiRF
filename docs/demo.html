@@ -1,0 +1,2878 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AutoDelphiRF</title>
+<style>
+/* AutoDelphiRF local UI.
+ *
+ * Palette roles follow the data-viz reference instance: the eight categorical
+ * slots in its documented order (the per-origin chart draws one method per
+ * slot), neutrals for everything else. Dark mode gets its own steps rather
+ * than an automatic inversion, and is declared under both the media query and
+ * the explicit theme scope.
+ *
+ * The eight-slot set is validated for line charts (the adjacent pairlist):
+ * worst adjacent CVD delta-E 9.1 light / 8.4 dark, worst normal-vision 19.6 /
+ * 19.3. Slots 3, 4 and 5 sit below 3:1 on the light surface, so every chart
+ * using them ships a legend and a table view -- that is the relief rule, not
+ * a nicety.
+ */
+
+:root {
+  color-scheme: light;
+  --surface-page:   #f3f6f8;
+  --surface-1:      #ffffff;
+  --surface-2:      #eaf0f4;
+  --border:         #d7e0e6;
+  --border-strong:  #aebdc7;
+  --text-primary:   #142b3a;
+  --text-secondary: #294653;
+  --text-muted:     #3f5d6a;
+  --series-1:       #176b87;
+  --series-1-soft:  rgba(23, 107, 135, 0.11);
+  --series-2:       #eb6834;
+  --series-3:       #1baf7a;
+  --series-4:       #eda100;
+  --series-5:       #e87ba4;
+  --series-6:       #008300;
+  --series-7:       #4a3aa7;
+  --series-8:       #e34948;
+  --good:           #1a7f4b;
+  --good-soft:      rgba(26, 127, 75, 0.10);
+  --warn:           #9a6400;
+  --warn-soft:      rgba(154, 100, 0, 0.10);
+  --bad:            #b3261e;
+  --bad-soft:       rgba(179, 38, 30, 0.10);
+  --development:    #b84d43;
+  --development-soft: #fff0ed;
+  --radius:         6px;
+  --shadow:         0 8px 28px rgba(30, 66, 84, .07);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --surface-page:   #131312;
+    --surface-1:      #1a1a19;
+    --surface-2:      #232322;
+    --border:         #343431;
+    --border-strong:  #4a4a45;
+    --text-primary:   #ffffff;
+    --text-secondary: #d1d4cf;
+    --text-muted:     #acb4af;
+    --series-1:       #3987e5;
+    --series-1-soft:  rgba(57, 135, 229, 0.18);
+    --series-2:       #d95926;
+    --series-3:       #199e70;
+    --series-4:       #c98500;
+    --series-5:       #d55181;
+    --series-6:       #008300;
+    --series-7:       #9085e9;
+    --series-8:       #e66767;
+    --good:           #3fae72;
+    --good-soft:      rgba(63, 174, 114, 0.14);
+    --warn:           #d6a038;
+    --warn-soft:      rgba(214, 160, 56, 0.14);
+    --bad:            #e66767;
+    --bad-soft:       rgba(230, 103, 103, 0.14);
+    --shadow:         0 1px 2px rgba(0, 0, 0, .4), 0 4px 12px rgba(0, 0, 0, .3);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-page:   #131312;
+  --surface-1:      #1a1a19;
+  --surface-2:      #232322;
+  --border:         #343431;
+  --border-strong:  #4a4a45;
+  --text-primary:   #ffffff;
+  --text-secondary: #d1d4cf;
+  --text-muted:     #acb4af;
+  --series-1:       #3987e5;
+  --series-1-soft:  rgba(57, 135, 229, 0.18);
+  --series-2:       #d95926;
+  --series-3:       #199e70;
+  --series-4:       #c98500;
+  --series-5:       #d55181;
+  --series-6:       #008300;
+  --series-7:       #9085e9;
+  --series-8:       #e66767;
+  --good:           #3fae72;
+  --good-soft:      rgba(63, 174, 114, 0.14);
+  --warn:           #d6a038;
+  --warn-soft:      rgba(214, 160, 56, 0.14);
+  --bad:            #e66767;
+  --bad-soft:       rgba(230, 103, 103, 0.14);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  background: var(--surface-page);
+  color: var(--text-primary);
+  font: 16px/1.58 "Avenir Next", Avenir, "Segoe UI", Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: 1180px; margin: 0 auto; padding: 0 24px; }
+
+.masthead {
+  padding: calc(42px + env(safe-area-inset-top, 0px)) 0 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-1);
+}
+.masthead .wrap { max-width: 1180px; }
+.hero-copy { max-width: none; }
+.masthead h1 {
+  margin: 0;
+  font-size: clamp(34px, 5vw, 58px);
+  line-height: .98;
+  letter-spacing: -.055em;
+  font-weight: 650;
+}
+.lede {
+  margin: 20px 0 0;
+  max-width: none;
+  color: var(--text-secondary);
+  font-size: 16px;
+}
+.development-card {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  max-width: none;
+  margin: 24px 0 30px;
+  padding: 13px 16px;
+  border: 1px solid #e6b7b0;
+  border-left: 4px solid var(--development);
+  border-radius: 4px;
+  background: var(--development-soft);
+  color: #713630;
+  font-size: 13.5px;
+}
+.development-card strong, .development-card span { display: block; }
+.workflow-flow {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) 24px minmax(190px, 1fr) 24px
+                         minmax(150px, 1fr) 24px minmax(150px, 1fr);
+  align-items: center;
+  gap: 5px;
+  margin-top: 0;
+  padding: 0;
+  border-top: 1px solid var(--border);
+  background: var(--surface-1);
+}
+.flow-node {
+  appearance: none;
+  width: 100%;
+  display: grid;
+  place-items: center;
+  min-height: 82px;
+  padding: 17px 8px 15px;
+  border: 0;
+  border-bottom: 4px solid transparent;
+  border-radius: 0;
+  text-align: left;
+  font: inherit;
+  font-weight: 650;
+  color: var(--text-primary);
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+  background: transparent;
+}
+.flow-node:hover:not(:disabled) { background: var(--surface-2); }
+.flow-node:focus-visible { outline: 3px solid var(--series-1); outline-offset: 2px; }
+.flow-node[aria-current="step"] {
+  border-bottom-color: var(--series-1);
+  color: var(--series-1);
+}
+.flow-node.completed:not([aria-current="step"])::after {
+  content: "Completed";
+  display: block;
+  margin-top: 4px;
+  color: var(--good);
+  font-size: 10px;
+  font-weight: 700;
+}
+.flow-node:disabled {
+  opacity: .48;
+  cursor: not-allowed;
+  filter: grayscale(.35);
+}
+.flow-arrow {
+  display: grid;
+  place-items: center;
+  color: var(--text-secondary);
+  font-size: 18px;
+  line-height: 1;
+}
+
+@media (max-width: 760px) {
+  .workflow-flow { grid-template-columns: 1fr; }
+  .flow-node { min-height: 70px; white-space: normal; }
+  .flow-arrow { transform: rotate(90deg); min-height: 20px; }
+}
+
+main { padding: 24px 0 48px; display: flex; flex-direction: column; gap: 18px; }
+.wizard-page { display: flex; flex-direction: column; gap: 18px; }
+.wizard-page[hidden] { display: none; }
+
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 28px;
+  box-shadow: var(--shadow);
+}
+.card h2 {
+  margin: 0 0 4px;
+  font-size: 19px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  letter-spacing: -.01em;
+}
+.card h3 { margin: 0 0 6px; font-size: 15px; }
+
+.hint { margin: 6px 0 0; color: var(--text-secondary); font-size: 14px; max-width: none; }
+
+/* --- dropzone --------------------------------------------------------- */
+
+.dropzone {
+  margin-top: 14px;
+  border: 2px dashed var(--border-strong);
+  border-radius: var(--radius);
+  padding: 34px 20px;
+  text-align: center;
+  cursor: pointer;
+  background: var(--surface-2);
+  transition: border-color .15s, background .15s, transform .08s;
+}
+.dropzone:hover, .dropzone:focus-visible {
+  border-color: var(--series-1);
+  outline: none;
+}
+.dropzone.dragging {
+  border-color: var(--series-1);
+  background: var(--series-1-soft);
+  transform: scale(1.005);
+}
+.dropzone.has-file { border-style: solid; border-color: var(--good); }
+.drop-icon { width: 30px; height: 30px; color: var(--text-muted); margin-bottom: 6px; }
+.drop-title { margin: 0; font-weight: 600; }
+.drop-sub { margin: 2px 0 0; color: var(--text-secondary); font-size: 14px; }
+.archive-definitions {
+  margin: 12px 0 16px;
+  padding: 11px 14px;
+  border-left: 3px solid var(--series-1);
+  background: var(--series-1-soft);
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+.archive-definitions p { margin: 3px 0; max-width: none; }
+.archive-definitions strong { color: var(--text-primary); }
+
+.progress { margin-top: 14px; }
+.progress-bar {
+  height: 6px; background: var(--surface-2); border-radius: 3px; overflow: hidden;
+}
+.progress-fill { height: 100%; width: 0; background: var(--series-1); transition: width .15s; }
+
+/* --- forms ------------------------------------------------------------ */
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+.field-grid label {
+  display: flex; flex-direction: column; gap: 5px;
+  font-size: 13px; font-weight: 600; color: var(--text-secondary);
+}
+select, input[type="number"], input[type="text"] {
+  font: inherit;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--surface-1);
+  color: var(--text-primary);
+  width: 100%;
+}
+select:focus-visible, input:focus-visible, button:focus-visible {
+  outline: 2px solid var(--series-1); outline-offset: 1px;
+}
+
+.inline-choice {
+  margin: 16px 0 0; padding: 12px 14px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface-2);
+}
+.inline-choice legend {
+  padding: 0 6px; font-size: 13px; font-weight: 600; color: var(--text-secondary);
+}
+.inline-choice label {
+  display: flex; align-items: flex-start; gap: 9px; padding: 4px 0;
+  font-size: 14px; cursor: pointer;
+}
+.inline-choice input { margin-top: 3px; flex: none; }
+
+.actions {
+  margin-top: 18px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+}
+
+button {
+  font: inherit; font-weight: 600;
+  border-radius: 7px; padding: 9px 16px;
+  cursor: pointer; border: 1px solid transparent;
+  transition: background .12s, border-color .12s;
+}
+button.primary { background: var(--series-1); color: #fff; }
+button.primary:hover:not(:disabled) { filter: brightness(1.07); }
+button.primary.large { padding: 11px 22px; font-size: 15px; }
+button.secondary {
+  background: var(--surface-1); color: var(--text-primary); border-color: var(--border-strong);
+}
+button.secondary:hover:not(:disabled) { background: var(--surface-2); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+
+.status-inline { color: var(--text-secondary); font-size: 13.5px; }
+.status-row {
+  display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+  font-size: 14px; margin-top: 10px;
+}
+.status-row > .hint { margin-left: auto; }
+
+.spinner {
+  width: 13px; height: 13px; flex: none;
+  border: 2px solid var(--border-strong); border-top-color: var(--series-1);
+  border-radius: 50%; animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation-duration: 2s; }
+  .dropzone { transition: none; }
+}
+
+.pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 9px; border-radius: 999px;
+  font-size: 12.5px; font-weight: 600; border: 1px solid transparent;
+}
+.pill.good { background: var(--good-soft); color: var(--good); border-color: var(--good); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
+.pill.bad  { background: var(--bad-soft);  color: var(--bad);  border-color: var(--bad); }
+
+.notice {
+  margin-top: 12px; padding: 11px 13px;
+  border-radius: 8px; border: 1px solid var(--border);
+  background: var(--surface-2); font-size: 13.5px; color: var(--text-secondary);
+}
+.notice.warn { background: var(--warn-soft); border-color: var(--warn); color: var(--text-primary); }
+.notice.bad  { background: var(--bad-soft);  border-color: var(--bad);  color: var(--text-primary); }
+.notice.good { background: var(--good-soft); border-color: var(--good); color: var(--text-primary); }
+.notice code { font-size: 12.5px; }
+
+/* --- facts ------------------------------------------------------------ */
+
+.facts {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 2px 18px; margin: 14px 0 0;
+  border-top: 1px solid var(--border); padding-top: 14px;
+}
+.facts > div { padding: 5px 0; }
+.facts dt { position: relative; display: flex; align-items: center; gap: 5px;
+            font-size: 12px; color: var(--text-muted); text-transform: uppercase;
+            letter-spacing: .04em; }
+.facts dd { margin: 1px 0 0; font-size: 15px; font-variant-numeric: tabular-nums; }
+#diagnosis-facts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.term-help { position: relative; display: inline-block; text-transform: none; letter-spacing: 0; }
+.term-help summary {
+  display: grid; place-items: center;
+  width: 17px; height: 17px; padding: 0;
+  border: 1px solid var(--border-strong); border-radius: 50%;
+  background: var(--surface-1); color: var(--text-secondary);
+  cursor: pointer; font-size: 12px; font-weight: 750; line-height: 1;
+  list-style: none;
+}
+.term-help summary::-webkit-details-marker { display: none; }
+.term-help summary:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; }
+.term-help span {
+  position: absolute; z-index: 8; top: 23px; left: 0;
+  width: min(250px, 72vw); padding: 9px 11px;
+  border: 1px solid var(--border-strong); border-radius: 6px;
+  background: var(--surface-1); box-shadow: var(--shadow);
+  color: var(--text-primary); font-size: 14px; font-weight: 450; line-height: 1.4;
+}
+#diagnosis-facts > div:nth-child(3n) .term-help span { right: 0; left: auto; }
+
+/* --- the question ----------------------------------------------------- */
+
+.question {
+  margin-top: 20px; padding: 18px;
+  border: 1px solid var(--series-1); border-radius: var(--radius);
+  background: var(--series-1-soft);
+}
+.question-body { margin: 0 0 4px; max-width: none; }
+.question-body p { margin: 0 0 10px; }
+.lag-definitions {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px;
+  margin: 0 0 14px;
+}
+.lag-definitions > div { padding: 10px 12px; border: 1px solid var(--border); background: var(--surface-1); }
+.lag-definitions dt { color: var(--text-primary); font-weight: 700; }
+.lag-definitions dd { margin: 3px 0 0; color: var(--text-secondary); font-size: 14px; }
+.lag-tradeoffs { margin: 8px 0 12px; padding-left: 22px; }
+.lag-tradeoffs li { margin: 5px 0; padding-left: 4px; }
+.answers { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+.answers button { text-align: left; }
+.answers .chosen { box-shadow: inset 0 0 0 2px var(--series-1); }
+
+.custom-lag { margin-top: 14px; }
+.custom-lag label { display: block; font-size: 13px; font-weight: 600;
+                    color: var(--text-secondary); margin-bottom: 5px; }
+.custom-lag-row { display: flex; gap: 9px; flex-wrap: wrap; }
+.custom-lag-row input { max-width: 130px; }
+
+/* --- chart ------------------------------------------------------------ */
+
+figure.viz-root {
+  margin: 18px 0 0; padding: 18px;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 4px;
+}
+figure figcaption { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
+.fig-title { font-size: 17px; font-weight: 650; }
+.fig-sub { font-size: 15px; color: var(--text-secondary); }
+.completion-explainer {
+  margin: 12px 0 16px;
+  padding: 12px 14px;
+  border-left: 3px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: 15px;
+}
+.completion-explainer > strong { color: var(--text-primary); }
+.completion-explainer p { margin: 5px 0 0; max-width: none; }
+.completion-explainer b { color: var(--text-primary); font-weight: 650; }
+.chart { position: relative; overflow-x: auto; }
+.chart svg { display: block; max-width: 100%; height: auto; }
+.completion-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 0 0 7px;
+  color: var(--text-primary);
+  font-size: 15px;
+}
+.completion-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.completion-legend span::before {
+  content: "";
+  width: 18px;
+  height: 7px;
+  background: var(--series-1);
+}
+.completion-legend .median::before { height: 3px; opacity: 1; }
+.completion-legend .q60::before { opacity: .35; }
+.completion-legend .q75::before { opacity: .25; }
+.completion-legend .q90::before { opacity: .18; }
+.completion-legend .q95::before { opacity: .10; }
+.completion-plot {
+  min-width: 520px;
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+}
+.completion-gridline { stroke: var(--border); stroke-width: 1; }
+.completion-axis { stroke: var(--border-strong); stroke-width: 1; }
+.completion-axis-label { fill: var(--text-secondary); font-size: 14px; }
+.completion-axis-title { fill: var(--text-primary); font-size: 15px; }
+.completion-band { fill: var(--series-1); stroke: none; }
+.completion-band.q95 { opacity: .08; }
+.completion-band.q90 { opacity: .10; }
+.completion-band.q75 { opacity: .13; }
+.completion-band.q60 { opacity: .17; }
+.completion-median {
+  fill: none;
+  stroke: var(--series-1);
+  stroke-width: 2.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.completion-tolerance {
+  stroke: var(--text-secondary);
+  stroke-width: 1.2;
+  stroke-dasharray: 5 4;
+}
+.completion-tolerance-label {
+  fill: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 650;
+}
+.completion-suggested-area { fill: var(--development-soft); }
+.completion-suggested-boundary {
+  stroke: var(--development);
+  stroke-width: 1.5;
+}
+.completion-suggested-bracket {
+  fill: none;
+  stroke: var(--development);
+  stroke-width: 1.5;
+}
+.completion-suggested-label {
+  fill: var(--development);
+  font-size: 14px;
+  font-weight: 650;
+}
+.completion-suggested-lag-label {
+  fill: var(--development);
+  font-size: 14px;
+  font-weight: 650;
+}
+.completion-guide { pointer-events: none; }
+.completion-guide line { stroke: var(--series-1); stroke-width: 1.5; stroke-dasharray: 3 3; }
+.completion-guide circle { fill: var(--surface-1); stroke: var(--series-1); stroke-width: 2; }
+.completion-hit-area { fill: transparent; cursor: crosshair; touch-action: none; }
+.completion-hit-area:focus-visible { outline: 3px solid var(--series-1); outline-offset: -3px; }
+.percentile-explorer {
+  display: grid;
+  grid-template-columns: 1.35fr repeat(5, minmax(88px, 1fr));
+  margin-top: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--surface-1);
+}
+.lag-selector, .percentile-cell {
+  min-height: 132px;
+  padding: 14px 12px;
+  border-right: 1px solid var(--border);
+}
+.percentile-cell:last-child { border-right: 0; }
+.lag-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 650;
+  background: var(--surface-2);
+}
+.lag-selector input { width: 100%; font-size: 15px; font-weight: 650; }
+.lag-area-status { color: var(--series-1); font-size: 14px; line-height: 1.35; }
+.lag-selector .compact { margin-top: auto; width: 100%; padding: 8px 10px; text-align: center; }
+.percentile-cell { display: flex; flex-direction: column; gap: 3px; }
+.percentile-cell > span { color: var(--text-primary); font-size: 15px; line-height: 1.3; font-weight: 600; }
+.percentile-cell strong {
+  margin-top: 8px;
+  color: var(--series-1);
+  font-size: 23px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.percentile-cell small { margin-top: auto; font-size: 15px; font-weight: 650; }
+.percentile-cell.within-one { background: rgba(23, 107, 135, .14); }
+.percentile-cell.within-ten { background: rgba(23, 107, 135, .07); }
+.percentile-cell.above-ten small { color: var(--development); }
+.percentile-cell.within-one small, .percentile-cell.within-ten small { color: var(--good); }
+.table-view { margin-top: 10px; }
+.table-view summary {
+  cursor: pointer; font-size: 13px; color: var(--text-secondary); font-weight: 600;
+}
+.table-view table { border-collapse: collapse; margin-top: 8px; font-size: 13px; width: 100%; }
+.table-view th, .table-view td {
+  text-align: right; padding: 4px 10px; border-bottom: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+.table-view th:first-child, .table-view td:first-child { text-align: left; }
+.table-view th { color: var(--text-muted); font-weight: 600; }
+.table-view tr.recommended td { font-weight: 700; color: var(--series-1); }
+
+/* --- methods ---------------------------------------------------------- */
+
+.layer-list { margin-top: 14px; display: flex; flex-direction: column; gap: 2px; }
+.layer {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 9px 11px; border-radius: 7px; cursor: pointer;
+  border: 1px solid transparent;
+}
+.layer:hover { background: var(--surface-2); }
+.layer input { margin-top: 3px; flex: none; }
+.layer-name { font-weight: 600; font-size: 15px; }
+.layer-name code { font-size: 13px; color: var(--text-secondary); font-weight: 400; }
+.layer-desc { font-size: 14px; color: var(--text-secondary); }
+.layer-cost { font-size: 12px; color: var(--warn); font-weight: 600; }
+
+.advanced { margin-top: 16px; }
+.advanced summary {
+  cursor: pointer; font-size: 13.5px; font-weight: 600; color: var(--text-secondary);
+}
+
+/* --- run -------------------------------------------------------------- */
+
+.run-header { display: flex; align-items: center; gap: 12px; margin: 12px 0 10px; }
+.badge {
+  padding: 3px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 600;
+  background: var(--surface-2); border: 1px solid var(--border); color: var(--text-secondary);
+}
+.badge.running { background: var(--series-1-soft); color: var(--series-1);
+                 border-color: var(--series-1); }
+.badge.done { background: var(--good-soft); color: var(--good); border-color: var(--good); }
+.badge.failed { background: var(--bad-soft); color: var(--bad); border-color: var(--bad); }
+
+.log {
+  margin: 0; padding: 13px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+  font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  max-height: 340px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  color: var(--text-secondary);
+}
+
+.report-link {
+  display: inline-block; margin-top: 12px;
+  padding: 11px 20px; border-radius: 8px;
+  background: var(--good); color: #fff; font-weight: 600; text-decoration: none;
+}
+.report-link:hover { filter: brightness(1.07); }
+
+.outputs { margin-top: 12px; font-size: 13.5px; color: var(--text-secondary); }
+.outputs code { word-break: break-all; }
+
+.footer { padding: 0 20px 32px; color: var(--text-muted); font-size: 13px; }
+.footer a { color: var(--series-1); }
+
+@media (max-width: 520px) {
+  .card { padding: 16px; }
+  .facts { grid-template-columns: 1fr 1fr; }
+  .status-row > .hint { width: 100%; margin-left: 22px; }
+}
+
+@media (max-width: 820px) {
+  .percentile-explorer { grid-template-columns: repeat(3, 1fr); }
+  .lag-selector, .percentile-cell { border-bottom: 1px solid var(--border); }
+  .percentile-cell:nth-child(3n) { border-right: 0; }
+}
+
+/* --- retraining schedule ---------------------------------------------- */
+
+#schedule-preview .notice { margin-top: 10px; }
+label > .hint { display: block; margin-top: 3px; font-weight: 400; }
+.rolling-concept {
+  margin: 18px 0 0;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.rolling-concept figcaption { margin: 0 0 12px; font-size: 15px; font-weight: 650; }
+.rolling-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin-bottom: 16px;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+}
+.rolling-legend span { display: inline-flex; align-items: center; gap: 7px; }
+.rolling-legend span::before { content: ""; width: 19px; height: 8px; }
+.rolling-legend .training-key::before { background: var(--series-1); opacity: .72; }
+.rolling-legend .origin-key::before { width: 3px; height: 15px; background: var(--text-primary); }
+.rolling-legend .testing-key::before {
+  background: var(--development-soft); border: 1px solid var(--development);
+}
+.concept-axis { position: relative; min-width: 720px; overflow: hidden; }
+.rolling-concept { overflow-x: auto; }
+.concept-row {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 82px repeat(14, 1fr);
+  align-items: center;
+  min-height: 58px;
+  border-bottom: 1px solid var(--border);
+}
+.concept-row > * { grid-row: 1; }
+.concept-row-name { grid-column: 1; color: var(--text-secondary); font-size: 12.5px; font-weight: 650; }
+.concept-training, .concept-testing {
+  align-self: center;
+  z-index: 1;
+  padding: 7px 10px;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 11px;
+  text-align: center;
+}
+.concept-training { background: var(--series-1); color: #fff; opacity: .74; }
+.concept-testing {
+  background: var(--development-soft);
+  border: 1px solid var(--development);
+  color: #713630;
+}
+.concept-training.first { grid-column: 2 / 8; }
+.concept-origin.first { grid-column: 8; }
+.concept-testing.first { grid-column: 8 / 9; }
+.concept-training.next { grid-column: 3 / 9; }
+.concept-origin.next { grid-column: 9; }
+.concept-testing.next { grid-column: 9 / 10; }
+.concept-training.last { grid-column: 6 / 12; }
+.concept-origin.last { grid-column: 12; }
+.concept-testing.last { grid-column: 12 / 13; }
+.concept-origin {
+  position: relative;
+  align-self: center;
+  z-index: 2;
+  width: 1px;
+  height: 28px;
+  background: var(--text-primary);
+}
+.concept-gap {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  min-height: 28px;
+  margin-left: 82px;
+  color: var(--text-muted);
+  font-size: 18px;
+  line-height: 1;
+}
+.concept-unavailable {
+  position: absolute;
+  z-index: 0;
+  display: grid;
+  place-items: center;
+  top: 0;
+  right: 0;
+  bottom: 25px;
+  width: calc((100% - 82px) * 3 / 14);
+  border-left: 2px solid var(--border-strong);
+  background: repeating-linear-gradient(-45deg, rgba(110, 132, 145, .16) 0 5px,
+              rgba(110, 132, 145, .035) 5px 10px);
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 650;
+  line-height: 1.25;
+  text-align: center;
+}
+.concept-time {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  margin-left: 82px;
+  padding-top: 8px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+.rolling-explanation {
+  display: block;
+  margin-top: 14px;
+}
+.rolling-explanation p {
+  margin: 0;
+  max-width: none;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+.rolling-explanation p + p { margin-top: 10px; }
+.schedule-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-top: 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.schedule-summary strong { color: var(--text-primary); }
+.schedule-summary span + span::before { content: "·"; margin-right: 18px; color: var(--border-strong); }
+
+@media (max-width: 820px) {
+  #diagnosis-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rolling-concept { padding: 16px 12px; }
+  .rolling-explanation { grid-template-columns: 1fr; }
+}
+
+/* --- results ----------------------------------------------------------- */
+
+.section-intro {
+  max-width: none;
+  margin: 0 0 22px;
+  color: var(--text-secondary);
+}
+.score-definitions {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px;
+  margin: 0 0 18px;
+}
+.score-definitions article {
+  padding: 14px 16px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.score-definitions h3 { margin: 0 0 6px; font-size: 17px; }
+.score-definitions p { margin: 0; max-width: none; color: var(--text-secondary); font-size: 14px; }
+.score-equation {
+  margin: 12px 0 8px; min-height: 42px;
+  display: grid; place-items: center;
+  color: var(--text-primary);
+}
+.score-equation math {
+  font-family: 'STIX Two Math', 'Cambria Math', 'Times New Roman', serif;
+  font-size: 25px;
+}
+.score-definitions .equation-key { font-size: 13.5px; }
+.lag-score-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+.result-figure {
+  min-width: 0;
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+}
+.result-figure figcaption { margin-bottom: 12px; }
+.result-figure .fig-title,
+.result-figure .fig-sub { display: block; }
+.result-figure .fig-title { color: var(--text-primary); font-weight: 650; }
+.result-figure .fig-sub { margin-top: 3px; color: var(--text-secondary); font-size: 15px; }
+.result-chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.result-chart .empty-chart { min-height: 190px; display: grid; place-items: center; }
+.location-score-chart { overflow-x: auto; }
+.location-score-chart svg { width: auto; min-width: 100%; max-width: none; }
+.early-lag-section { margin-top: 28px; padding-top: 24px; border-top: 1px solid var(--border); }
+.early-lag-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 14px;
+}
+.early-lag-heading h3 { margin: 0 0 4px; font-size: 17px; }
+.early-lag-heading p { max-width: none; margin: 0; color: var(--text-secondary); font-size: 14px; }
+.evaluation-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin: 0 0 16px;
+}
+.evaluation-toolbar-label { color: var(--text-primary); font-size: 15px; font-weight: 650; }
+.metric-switch {
+  display: inline-flex;
+  flex: none;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+.metric-switch button {
+  min-height: 32px;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  box-shadow: none;
+  font-size: 14px;
+  font-weight: 600;
+}
+.metric-switch button.active { background: var(--surface-1); color: var(--text-primary); box-shadow: var(--shadow-sm); }
+.early-lag-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.early-lag-figure { width: 100%; padding: 14px 16px 10px; }
+@media (max-width: 720px) {
+  .lag-score-grid { grid-template-columns: 1fr; }
+  .early-lag-grid { grid-template-columns: 1fr; }
+  .early-lag-heading { align-items: stretch; flex-direction: column; }
+  .evaluation-toolbar { align-items: flex-start; flex-direction: column; }
+  .score-definitions, .lag-definitions { grid-template-columns: 1fr; }
+}
+
+.result-table { border-collapse: collapse; margin-top: 10px; font-size: 13px; width: 100%; }
+.result-table th, .result-table td {
+  text-align: left; padding: 5px 10px; border-bottom: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+.result-table th { color: var(--text-muted); font-weight: 600; }
+.result-table .num { text-align: right; }
+.result-table td.good { color: var(--good); font-weight: 600; }
+.result-table td.bad  { color: var(--bad); font-weight: 600; }
+.result-table .pool-detail { color: var(--text-secondary); font-size: 12px; }
+/* Identity is never colour alone: the swatch is paired with the method name,
+   and the same rows appear in the table view under the chart. */
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 0 0 8px; padding: 0; list-style: none; }
+.legend li { display: flex; align-items: center; gap: 7px; font-size: 15px;
+             font-weight: 550; color: var(--text-primary); }
+.legend .swatch { width: 13px; height: 13px; border-radius: 3px; flex: none; }
+
+/* --- failures ---------------------------------------------------------- */
+
+.js-failure {
+  position: fixed; left: 16px; right: 16px; bottom: 16px; z-index: 50;
+  padding: 12px 14px; border-radius: var(--radius); box-shadow: var(--shadow);
+  background: var(--bad-soft); border: 1px solid var(--bad); color: var(--text-primary);
+  font-size: 13.5px;
+}
+.js-failure code { display: block; margin: 5px 0; word-break: break-word; }
+.js-failure .hint { display: block; }
+
+
+/* Standalone documentation preview */
+.demo-preview-card {
+  margin: 0 0 1.5rem;
+  padding: 1rem 1.2rem;
+  border: 1px solid #bb6b5c;
+  border-left: 5px solid #bb4f42;
+  border-radius: 6px;
+  background: #fff4f0;
+  color: #512b26;
+  font-size: 1rem;
+}
+.demo-preview-card strong { display: block; margin-bottom: .25rem; }
+
+</style>
+</head>
+<body data-token="static-demo">
+
+<header class="masthead">
+  <div class="wrap">
+    <div class="hero-copy">
+      <h1>AutoDelphiRF</h1>
+      <p class="lede">AutoDelphiRF automates revision nowcasting from a raw surveillance archive:
+        it diagnoses the reporting pattern, configures the forecast, and evaluates performance
+        without preliminary data exploration. It forecasts one indicator from its own revision
+        history so the adjustment remains independent for downstream use. This development
+        interface supports a one-time retrospective analysis that mimics real-time forecasting
+        with rolling training and evaluation windows.</p>
+    </div>
+
+    <aside class="development-card" aria-label="Development status">
+      <div><strong>This web interface is in development.</strong>
+        <span>Feedback on the workflow, explanations, and results is welcome.</span></div>
+    </aside>
+
+    <aside class="demo-preview-card" aria-label="Static preview notice">
+      <strong>Static design preview with synthetic data</strong>
+      This page simulates a completed retrospective analysis so the full interface can be reviewed without installing AutoDelphiRF, uploading a file, or fitting models. Values shown here are illustrative and are not research results.
+    </aside>
+
+    <nav class="workflow-flow" aria-label="AutoDelphiRF workflow">
+      <button type="button" class="flow-node flow-history" data-wizard-stage="0" onclick="return window.selectDemoStage(event, this)"
+              aria-current="step">Revision archive</button>
+      <span class="flow-arrow" aria-hidden="true">&rarr;</span>
+      <button type="button" class="flow-node flow-diagnosis" data-wizard-stage="1" onclick="return window.selectDemoStage(event, this)" disabled>
+        Pre-forecast diagnosis</button>
+      <span class="flow-arrow" aria-hidden="true">&rarr;</span>
+      <button type="button" class="flow-node flow-pooling" data-wizard-stage="2" onclick="return window.selectDemoStage(event, this)" disabled>
+        Rolling forecast</button>
+      <span class="flow-arrow" aria-hidden="true">&rarr;</span>
+      <button type="button" class="flow-node flow-assessment" data-wizard-stage="3" onclick="return window.selectDemoStage(event, this)" disabled>
+        Evaluate results</button>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <div class="wizard-page" data-wizard-page="0">
+
+  <!-- 1. Environment -------------------------------------------------- -->
+  <section class="card" id="card-environment" aria-labelledby="h-environment">
+    <h2 id="h-environment">Environment</h2>
+    <div id="environment-body" class="status-row">
+      <span class="spinner" aria-hidden="true"></span> Checking for R and DelphiRF&hellip;
+    </div>
+  </section>
+
+  <!-- 2. Archive ------------------------------------------------------ -->
+  <section class="card" id="card-upload" aria-labelledby="h-upload">
+    <h2 id="h-upload">Your archive</h2>
+    <p class="hint">One row per <strong>(location, reference date, report date, value)</strong>.
+      CSV, gzipped CSV, or Parquet. Nothing leaves this machine.</p>
+    <div class="archive-definitions" aria-label="Archive date definitions">
+      <p><strong>Reference date:</strong> when the measured event or surveillance period occurred.</p>
+      <p><strong>Report date:</strong> when that value was released or updated.</p>
+      <p>Multiple report dates for the same location and reference date show how the value was revised.</p>
+    </div>
+
+    <div id="dropzone" class="dropzone" tabindex="0" role="button"
+         aria-describedby="dropzone-hint">
+      <svg class="drop-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" stroke="currentColor"
+              stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      <p class="drop-title">Drop your archive here</p>
+      <p id="dropzone-hint" class="drop-sub">or click to choose a file</p>
+      <input type="file" id="file-input" accept=".csv,.gz,.parquet" hidden>
+    </div>
+
+    <div id="upload-progress" class="progress" hidden>
+      <div class="progress-bar"><div class="progress-fill" id="upload-fill"></div></div>
+      <p class="hint" id="upload-progress-text">Reading&hellip;</p>
+    </div>
+    <div id="upload-result" hidden></div>
+  </section>
+
+  <!-- 3. Columns ------------------------------------------------------ -->
+  <section class="card" id="card-columns" hidden aria-labelledby="h-columns">
+    <h2 id="h-columns">What is in each column?</h2>
+    <p class="hint">AutoDelphiRF guessed from the column names. Correct anything it got wrong.</p>
+    <div id="column-form" class="field-grid"></div>
+
+    <fieldset class="inline-choice">
+      <legend>What does the value measure?</legend>
+      <label><input type="radio" name="value-type" value="count" checked>
+        <span><strong>A single reported value</strong> &mdash; a count, rate, percentage, or
+          already-calculated fraction</span></label>
+      <label><input type="radio" name="value-type" value="fraction">
+        <span><strong>A numerator and denominator</strong> &mdash; AutoDelphiRF will construct
+          the fraction</span></label>
+    </fieldset>
+
+    <div id="denominator-field" hidden></div>
+
+    <div class="actions">
+      <button id="diagnose-button" class="primary">Diagnose this archive</button>
+      <span id="diagnose-status" class="status-inline"></span>
+    </div>
+  </section>
+  </div>
+
+  <!-- 4. Diagnosis + the target-lag question -------------------------- -->
+  <div class="wizard-page" data-wizard-page="1" hidden>
+  <section class="card" id="card-diagnosis" hidden aria-labelledby="h-diagnosis">
+    <h2 id="h-diagnosis">What AutoDelphiRF found</h2>
+    <dl id="diagnosis-facts" class="facts"></dl>
+    <div id="diagnosis-notes"></div>
+
+    <div class="question" id="lag-question">
+      <h3 id="lag-question-title">How long until reported values are sufficiently stable?</h3>
+      <p class="question-body" id="lag-question-body"></p>
+
+      <figure class="viz-root" id="completion-figure">
+        <figcaption>
+          <span class="fig-title">Relative error by available target lag after the reference date</span>
+          <span class="fig-sub">Enter a lag that exists in the archive. The other columns
+            show its historical error distribution.</span>
+        </figcaption>
+        <div class="completion-explainer">
+          <strong>How to read this figure</strong>
+          <p><b>Relative error</b> compares the value available at a given lag with the most
+            mature value retained for the same historical record. A 1% error means the two
+            values differ by 1% of the mature value.</p>
+          <p><b>Percentiles</b> summarize that error across historical records. The median is
+            the middle record. If the 90th percentile is 1%, then 90% of records had no more
+            than 1% relative error at that lag.</p>
+        </div>
+        <div id="completion-chart" class="chart"></div>
+      </figure>
+
+      <div class="answers" id="lag-answers"></div>
+      <div class="custom-lag" id="custom-lag" hidden>
+        <label for="custom-lag-input">Use a target lag not listed in the table</label>
+        <div class="custom-lag-row">
+          <input type="number" id="custom-lag-input" min="1" step="1">
+          <button id="custom-lag-apply" class="primary">Use this target lag</button>
+        </div>
+        <p class="hint" id="custom-lag-note"></p>
+      </div>
+    </div>
+  </section>
+  </div>
+
+  <!-- 5. Retraining schedule ------------------------------------------ -->
+  <div class="wizard-page" data-wizard-page="2" hidden>
+  <section class="card" id="card-schedule" hidden aria-labelledby="h-schedule">
+    <h2 id="h-schedule">Recreate historical real-time forecasts</h2>
+
+    <figure class="rolling-concept" aria-labelledby="rolling-concept-title">
+      <figcaption id="rolling-concept-title">How rolling training and evaluation work</figcaption>
+      <div class="rolling-legend" aria-hidden="true">
+        <span class="training-key">Training window</span>
+        <span class="origin-key">Retraining origin (report date)</span>
+        <span class="testing-key">Evaluation window</span>
+      </div>
+      <div class="concept-axis" aria-hidden="true">
+        <span class="concept-unavailable" title="Target-lag values not yet available">
+          Target-lag values<br>not yet available</span>
+        <div class="concept-row">
+          <span class="concept-row-name">Origin 1</span>
+          <span class="concept-training first" title="Training window"></span>
+          <span class="concept-origin first"></span>
+          <span class="concept-testing first" title="Held-out evaluation window"></span>
+        </div>
+        <div class="concept-row">
+          <span class="concept-row-name">Origin 2</span>
+          <span class="concept-training next" title="Updated training window"></span>
+          <span class="concept-origin next"></span>
+          <span class="concept-testing next" title="Next held-out evaluation window"></span>
+        </div>
+        <div class="concept-gap" aria-hidden="true">&#8942;</div>
+        <div class="concept-row">
+          <span class="concept-row-name">Last origin</span>
+          <span class="concept-training last" title="Final training window"></span>
+          <span class="concept-origin last"></span>
+          <span class="concept-testing last" title="Final held-out evaluation window"></span>
+        </div>
+        <div class="concept-time"><span>Earlier</span><span>Calendar time</span><span>Later</span></div>
+      </div>
+    </figure>
+
+    <div class="rolling-explanation">
+      <p>At each report-date origin, the model trains only on reports available at that time and is
+        evaluated on later data. This prevents future-information leakage and recreates real-time
+        revision forecasting.</p>
+      <p>Revision patterns usually do not change every day, so the model can be retrained less often
+        than new reports arrive. Choosing the retraining interval balances faster adaptation against
+        computational cost.</p>
+    </div>
+
+    <div class="field-grid">
+      <label>Training window (days)
+        <input type="number" id="training-days" min="30" step="1" value="180">
+        <span class="hint">Default: 180 days</span>
+      </label>
+      <label>Retrain every (days)
+        <input type="number" id="retrain-days" min="1" max="3650" step="1">
+        <span class="hint" id="retrain-days-hint"></span>
+      </label>
+      <label>First report-date retraining origin
+        <input type="date" id="first-origin-date">
+        <span class="hint" id="first-origin-hint"></span>
+      </label>
+    </div>
+
+    <div id="schedule-preview" aria-live="polite"></div>
+
+    <div class="actions">
+      <button id="schedule-reset" class="secondary">Back to the defaults</button>
+      <button id="schedule-continue" class="primary">Use this schedule</button>
+    </div>
+  </section>
+
+  <!-- 6. Methods ------------------------------------------------------ -->
+  <section class="card" id="card-methods" hidden aria-labelledby="h-methods">
+    <h2 id="h-methods">Which methods should run?</h2>
+    <p class="hint">The defaults are the smallest run that answers &ldquo;is routing worth
+      anything on my data&rdquo;. The rest fit forests and take substantially longer.</p>
+    <div id="layer-list" class="layer-list"></div>
+
+    <details class="advanced">
+      <summary>Advanced settings</summary>
+      <div class="field-grid">
+        <label>Skip locations with fewer rows than
+          <input type="number" id="min-location-rows" min="1" step="1" value="100">
+        </label>
+        <label>Triangle format
+          <select id="triangle-format">
+            <option value="parquet">Parquet</option>
+            <option value="csv">CSV (no Arrow needed)</option>
+          </select>
+        </label>
+      </div>
+    </details>
+
+    <div class="actions">
+      <button id="run-button" class="primary large">Run the experiment</button>
+      <span id="run-status" class="status-inline"></span>
+    </div>
+  </section>
+
+  <!-- 7. Run ---------------------------------------------------------- -->
+  <section class="card" id="card-run" hidden aria-labelledby="h-run">
+    <h2 id="h-run">Retraining</h2>
+    <div class="run-header">
+      <span id="run-state" class="badge">starting</span>
+      <span id="run-elapsed" class="hint"></span>
+      <button id="stop-run" class="secondary" hidden>Stop</button>
+      <button id="resume-run" class="secondary" hidden>Resume</button>
+    </div>
+    <div id="run-progress" hidden>
+      <div class="progress-bar"><div class="progress-fill" id="run-fill"></div></div>
+      <p class="hint" id="run-progress-text"></p>
+    </div>
+    <pre id="run-log" class="log" aria-live="polite" aria-label="Run log"></pre>
+    <div id="run-result" hidden></div>
+  </section>
+  </div>
+
+  <!-- 8. Results -------------------------------------------------------- -->
+  <div class="wizard-page" data-wizard-page="3" hidden>
+  <section class="card" id="card-results" hidden aria-labelledby="h-results">
+    <h2 id="h-results">Evaluate results</h2>
+    <p class="section-intro">Scores are expressed in the indicator's original units.
+      Each line is the median location-level
+      score; the shaded band spans the 10th to 90th percentiles across locations.</p>
+    <div class="score-definitions" aria-label="Evaluation score definitions">
+      <article>
+        <h3>Absolute error (AE)</h3>
+        <p>The distance between the point nowcast and the later target value, measured in the
+          indicator's original units. Lower is better.</p>
+        <div class="score-equation">
+          <math display="block"
+                aria-label="Absolute error equals the absolute value of the prediction minus the target">
+            <mrow>
+              <mi mathvariant="normal">AE</mi><mo>=</mo>
+              <mo>|</mo><mover accent="true"><mi>y</mi><mo>ˆ</mo></mover><mo>−</mo><mi>y</mi><mo>|</mo>
+            </mrow>
+          </math>
+        </div>
+        <p class="equation-key"><var>ŷ</var> is the point nowcast and <var>y</var> is the target value.</p>
+      </article>
+      <article>
+        <h3>Weighted interval score (WIS)</h3>
+        <p>Evaluates the full probabilistic nowcast across all predicted quantiles. It penalizes
+          quantiles that are far from the target, with a larger penalty when the target falls on
+          the wrong side of a quantile. Lower is better.</p>
+        <div class="score-equation">
+          <math display="block"
+                aria-label="Weighted interval score equals two divided by K times the sum of quantile losses">
+            <mrow>
+              <mi mathvariant="normal">WIS</mi><mo>=</mo>
+              <mfrac><mn>2</mn><mi>K</mi></mfrac>
+              <munderover>
+                <mo>∑</mo>
+                <mrow><mi>k</mi><mo>=</mo><mn>1</mn></mrow>
+                <mi>K</mi>
+              </munderover>
+              <msub><mi>ρ</mi><msub><mi>τ</mi><mi>k</mi></msub></msub>
+              <mo>(</mo>
+              <mi>y</mi><mo>−</mo>
+              <msub>
+                <mover accent="true"><mi>q</mi><mo>ˆ</mo></mover>
+                <msub><mi>τ</mi><mi>k</mi></msub>
+              </msub>
+              <mo>)</mo>
+            </mrow>
+          </math>
+        </div>
+        <p class="equation-key"><var>q̂</var><sub>τ</sub> is the estimated predictive quantile at probability
+          <var>τ</var>, <var>y</var> is the target, and <var>K</var> is the number of predicted quantiles.
+          Here, ρ<sub>τ</sub> is the standard quantile-loss function.</p>
+      </article>
+    </div>
+    <div id="results-message"></div>
+    <div class="evaluation-toolbar">
+      <span class="evaluation-toolbar-label">Score shown in every figure</span>
+      <div class="metric-switch" role="group" aria-label="Evaluation score">
+        <button type="button" class="active" data-result-metric="ae">AE</button>
+        <button type="button" data-result-metric="wis">WIS</button>
+      </div>
+    </div>
+    <div class="lag-score-grid" id="lag-score-grid" hidden>
+      <figure class="result-figure">
+        <figcaption><span class="fig-title" id="lag-score-title">AE over reporting lags</span>
+          <span class="fig-sub">Median across locations; band spans the 10th–90th percentiles. Lower is better.</span></figcaption>
+        <div id="lag-score-chart" class="result-chart"></div>
+      </figure>
+      <figure class="result-figure" id="location-score-figure">
+        <figcaption><span class="fig-title" id="location-score-title">AE by location at early reporting lags</span>
+          <span class="fig-sub">All locations are included. Bars show the median across matched cases with reporting lag ≤14 days. Whiskers span the 10th–90th percentiles. Lower is better. Scroll horizontally when needed.</span></figcaption>
+        <div id="location-score-chart" class="result-chart location-score-chart"></div>
+      </figure>
+    </div>
+    <section class="early-lag-section" id="early-lag-section" hidden>
+      <div class="early-lag-heading">
+        <div><h3>Performance over report-date origins</h3>
+          <p>The earliest well-supported reporting lag and the first well-supported lag at or
+            beyond day 7. Each must retain at least 80% of the best available origin and
+            location coverage. Bands show the 10th–90th
+            percentiles across locations at each origin.</p></div>
+      </div>
+      <div class="early-lag-grid" id="early-lag-grid"></div>
+    </section>
+  </section>
+  </div>
+
+</main>
+
+<footer class="wrap footer">
+  <p>Preprocessing is performed by
+    <a href="https://github.com/cmu-delphi/DelphiRF">DelphiRF</a>.
+    This standalone preview uses synthetic data and does not connect to a local process.</p>
+</footer>
+
+<div id="js-failure" class="js-failure" role="alert" hidden></div>
+
+
+<script>
+(() => {
+  'use strict';
+  const availableLags = Array.from({length: 366}, (_, lag) => lag);
+  const completionCurve = {};
+  const completionBand = {};
+  availableLags.forEach((lag) => {
+    const median = 0.002 + 0.23 * Math.exp(-lag / 22);
+    completionCurve[lag] = median;
+    completionBand[lag] = {
+      q10: median * 0.43,
+      q60: median * 1.18,
+      q75: median * 1.46,
+      q90: median * 2.05,
+      q95: median * 2.55,
+    };
+  });
+
+  const diagnosis = {
+    n_rows: 2292957,
+    n_locations: 56,
+    reference_date_min: '2020-08-08',
+    reference_date_max: '2025-07-04',
+    report_date_min: '2020-08-12',
+    report_date_max: '2025-07-11',
+    reference_axis_resolution: 'weekly',
+    report_axis_resolution: 'daily',
+    training_window_days: 180,
+    notes: [],
+    available_target_lags: availableLags,
+    target_lag_completion_curve: completionCurve,
+    target_lag_completion_band: completionBand,
+    target_lag_suggested_range: {lower: 28, upper: 98},
+    retraining: {
+      retrain_days: 7,
+      default_retrain_days: 7,
+      first_origin: '2023-01-07',
+      default_first_origin_offset_days: 180,
+      temporal_resolution: 'weekly',
+      report_date_min: '2020-08-12',
+      report_date_max: '2025-07-11',
+      first_origin: '2023-01-07',
+      last_origin: '2025-06-28',
+      n_origins: 130,
+    },
+  };
+
+  const layers = [
+    {name: 'baseline_null', default: true, expensive: false,
+      description: 'Carry the latest reported value forward.'},
+    {name: 'delphirf', default: true, expensive: true,
+      description: 'AutoDelphiRF primary method.'},
+    {name: 'naive_delphirf', default: true, expensive: true,
+      description: 'Location-specific DelphiRF.'},
+    {name: 'global_delphirf', default: true, expensive: true,
+      description: 'One pooled DelphiRF model.'},
+    {name: 'red', default: false, expensive: false,
+      description: 'Revision-pattern matching.'},
+  ];
+
+  const methods = ['baseline_null', 'delphirf', 'naive_delphirf', 'global_delphirf'];
+  const methodFactor = {baseline_null: 1, delphirf: 0.66, naive_delphirf: 0.78, global_delphirf: 0.73};
+  const lags = [1, 4, 7, 11, 14, 21, 28];
+  const locations = [
+    'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA',
+    'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD',
+    'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ',
+    'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC',
+    'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY',
+    'DC', 'PR', 'VI', 'GU', 'AS', 'MP'
+  ];
+  const origins = ['2024-01-06', '2024-02-03', '2024-03-02', '2024-03-30', '2024-04-27',
+    '2024-05-25', '2024-06-22', '2024-07-20', '2024-08-17', '2024-09-14'];
+  const web_metrics_by_lag = [];
+  const web_metrics_by_location = [];
+  const web_metrics_by_origin_lag = [];
+
+  ['ae', 'wis'].forEach((metric) => {
+    const metricFactor = metric === 'wis' ? 1.34 : 1;
+    methods.forEach((method, methodIndex) => {
+      lags.forEach((lag) => {
+        const value = metricFactor * methodFactor[method] * (44 * Math.exp(-lag / 15) + 8);
+        web_metrics_by_lag.push({metric, method, lag, n_locations: locations.length,
+          median: value, q10: value * 0.63, q90: value * 1.48});
+      });
+      locations.forEach((geo_value, locationIndex) => {
+        const value = metricFactor * methodFactor[method] * (17 + locationIndex * 2.7);
+        web_metrics_by_location.push({metric, method, geo_value, n: 180 + locationIndex * 8,
+          median: value, q10: value * 0.58, q90: value * 1.52, maximum_lag: 14});
+      });
+      [4, 11].forEach((lag) => {
+        origins.forEach((cutoff, originIndex) => {
+          const seasonal = 1 + 0.18 * Math.sin((originIndex + methodIndex) * 0.9);
+          const value = metricFactor * methodFactor[method] * (lag === 4 ? 34 : 22) * seasonal;
+          web_metrics_by_origin_lag.push({metric, method, lag, cutoff, n_locations: locations.length,
+            median: value, q10: value * 0.62, q90: value * 1.46});
+        });
+      });
+    });
+  });
+
+  const request = {
+    reference_col: 'reference_date', report_col: 'report_date', geo_col: 'location',
+    value_cols: ['value'], value_type: 'count', target_lag: 28,
+    confirm_target_lag: false, retrain_days: 7, first_origin_date: '2023-01-07',
+    training_days: 180, min_location_rows: 100, triangle_format: 'parquet',
+    layers: methods,
+  };
+  const archive = {
+    filename: 'synthetic_surveillance_archive.csv', size_bytes: 184320000,
+    columns: ['location', 'reference_date', 'report_date', 'value'],
+    guesses: {geo: 'location', reference: 'reference_date', report: 'report_date', value: 'value'},
+  };
+  const status = {
+    state: 'done', stage: 'complete', elapsed_seconds: 4832,
+    origins_done: 130, origins_total: 130, remaining_seconds: 0,
+    log: ['Static preview: synthetic example archive', 'Pre-forecast diagnosis complete',
+      '130 rolling retrainings complete', 'Evaluation tables ready'],
+    session: {archive, diagnosis, last_request: request},
+  };
+  const schedule = {retrain_days: 7, n_origins: 130,
+    first_origin: '2023-01-07', last_origin: '2025-06-28'};
+  const results = {tables: {web_metrics_by_lag, web_metrics_by_location, web_metrics_by_origin_lag}};
+
+  window.AUTODELPHIRF_DEMO_API = async (path, options = {}) => {
+    if (path === '/api/environment') return {
+      preprocessing: true, delphirf: true,
+      detail: 'static interface preview using synthetic example data',
+      build: {version: 'demo', branch: 'static preview', commit: null},
+    };
+    if (path === '/api/status') return status;
+    if (path === '/api/diagnose') return diagnosis;
+    if (path === '/api/schedule') return schedule;
+    if (path === '/api/layers') return {layers};
+    if (path === '/api/results') return results;
+    if (path === '/api/run' || path === '/api/stop' || path === '/api/resume') {
+      throw new Error('This static design preview does not run experiments.');
+    }
+    throw new Error(`No static demo response is defined for ${path}.`);
+  };
+
+  window.selectDemoStage = (event, button) => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    const selected = button.dataset.wizardStage;
+    document.querySelectorAll('[data-wizard-page]').forEach((page) => {
+      page.hidden = page.dataset.wizardPage !== selected;
+    });
+    document.querySelectorAll('[data-wizard-stage]').forEach((candidate) => {
+      if (candidate.dataset.wizardStage === selected) candidate.setAttribute('aria-current', 'step');
+      else candidate.removeAttribute('aria-current');
+    });
+    window.scrollTo({top: 0, behavior: 'smooth'});
+    return false;
+  };
+
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-wizard-stage]');
+    if (!button) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    const selected = button.dataset.wizardStage;
+    document.querySelectorAll('[data-wizard-page]').forEach((page) => {
+      page.hidden = page.dataset.wizardPage !== selected;
+    });
+    document.querySelectorAll('[data-wizard-stage]').forEach((candidate) => {
+      if (candidate.dataset.wizardStage === selected) {
+        candidate.setAttribute('aria-current', 'step');
+      } else {
+        candidate.removeAttribute('aria-current');
+      }
+    });
+    window.scrollTo({top: 0, behavior: 'smooth'});
+  }, true);
+
+  window.addEventListener('DOMContentLoaded', () => {
+    const input = document.getElementById('file-input');
+    if (input) input.disabled = true;
+    const result = document.getElementById('upload-result');
+    if (result) result.insertAdjacentHTML('beforeend',
+      '<div class="notice warn"><strong>Static preview:</strong> upload is disabled. Use the workflow above to inspect the completed synthetic example.</div>');
+  });
+})();
+</script>
+<script>
+/* AutoDelphiRF local UI.
+ *
+ * One dataset, six steps, one question that genuinely needs answering (the
+ * target lag L). Vanilla JS on purpose: this page is served by a local
+ * process that may have no internet access, so nothing is fetched from a CDN.
+ */
+'use strict';
+
+const TOKEN = document.body.dataset.token;
+const state = {
+  columns: [],
+  diagnosis: null,
+  answeredLag: null,        // the L the user settled on
+  confirmLag: false,        // retained in the request schema for compatibility
+  environment: null,        // R/DelphiRF readiness, as reported at startup
+  schedule: null,           // the retraining calendar last previewed by the server
+  results: null,            // the finished run's summary, as /api/results returned it
+  polling: null,
+  unlockedStage: 0,         // later workflow pages stay gated until prior work succeeds
+  currentStage: 0,
+};
+
+/* --- plumbing --------------------------------------------------------- */
+
+async function api(path, {method = 'GET', body = null, raw = false} = {}) {
+  // The documentation demo supplies an in-page, read-only API fixture so the
+  // same interface can be reviewed without starting the local web service.
+  // Production pages do not define this hook and continue to use fetch below.
+  if (typeof window.AUTODELPHIRF_DEMO_API === 'function') {
+    return window.AUTODELPHIRF_DEMO_API(path, {method, body, raw});
+  }
+  const headers = {'X-AutoDelphiRF-Token': TOKEN};
+  if (body && !raw) headers['Content-Type'] = 'application/json';
+  const response = await fetch(path, {
+    method,
+    headers,
+    body: raw ? body : (body ? JSON.stringify(body) : null),
+  });
+  const payload = await response.json().catch(() => ({error: `HTTP ${response.status}`}));
+  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+  return payload;
+}
+
+const $ = (id) => document.getElementById(id);
+
+function show(id) { $(id).hidden = false; }
+
+function renderWizard() {
+  document.querySelectorAll('[data-wizard-page]').forEach((page) => {
+    page.hidden = Number(page.dataset.wizardPage) !== state.currentStage;
+  });
+  document.querySelectorAll('[data-wizard-stage]').forEach((button) => {
+    const stage = Number(button.dataset.wizardStage);
+    button.disabled = stage > state.unlockedStage;
+    button.classList.toggle('completed', stage < state.unlockedStage);
+    if (stage === state.currentStage) button.setAttribute('aria-current', 'step');
+    else button.removeAttribute('aria-current');
+  });
+}
+
+function unlockStage(stage) {
+  state.unlockedStage = Math.max(state.unlockedStage, stage);
+  renderWizard();
+}
+
+function goToStage(stage) {
+  if (stage > state.unlockedStage) return;
+  state.currentStage = stage;
+  renderWizard();
+  const heading = document.querySelector(`[data-wizard-page="${stage}"] h2`);
+  if (heading) {
+    heading.tabIndex = -1;
+    heading.focus({preventScroll: true});
+  }
+  window.scrollTo({top: 0, behavior: 'smooth'});
+}
+
+function initWizard() {
+  document.querySelectorAll('[data-wizard-stage]').forEach((button) => {
+    button.addEventListener('click', () => goToStage(Number(button.dataset.wizardStage)));
+  });
+  renderWizard();
+}
+
+function notice(kind, html) {
+  return `<div class="notice ${kind}">${html}</div>`;
+}
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"']/g, (c) => (
+    {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB'];
+  let value = bytes / 1024;
+  let index = 0;
+  while (value >= 1024 && index < units.length - 1) { value /= 1024; index += 1; }
+  return `${value.toFixed(value < 10 ? 1 : 0)} ${units[index]}`;
+}
+
+/* Nothing on this page is worth debugging from a blank screen. An uncaught
+ * error used to leave a control that simply did nothing, with the message
+ * parked in whichever status line the handler happened to know about --
+ * often one scrolled far off-screen. Failures are shown here instead. */
+function showFailure(message) {
+  const banner = $('js-failure');
+  banner.hidden = false;
+  banner.innerHTML = `<strong>The page hit an error.</strong>
+    <code>${escapeHtml(String(message))}</code>
+    <span class="hint">Nothing was lost. Reload to start over, and report this line.</span>`;
+}
+
+function clearFailure() {
+  $('js-failure').hidden = true;
+}
+
+function scrollIntoView(id) {
+  $(id).scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
+/* --- 1. environment --------------------------------------------------- */
+
+async function loadEnvironment() {
+  const body = $('environment-body');
+  try {
+    const report = await api('/api/environment');
+    state.environment = report;
+    if (report.preprocessing) {
+      body.innerHTML = `<span class="pill good">Ready</span>
+        <span>Preprocessing, the latest-value reference, and revision-pattern matching are ready &mdash;
+        ${escapeHtml(report.detail)}.</span>`;
+      if (!report.delphirf) {
+        body.insertAdjacentHTML('afterend', notice('warn',
+          `The installed DelphiRF model package still needs updating. You can run
+           the latest-value reference and revision-pattern matching now; DelphiRF methods
+           remain unavailable until you reinstall DelphiRF as the README describes and
+           reload this page.`));
+      }
+    } else {
+      body.innerHTML = `<span class="pill warn">Diagnosis only</span>
+        <span>${escapeHtml(report.detail)}</span>`;
+      body.insertAdjacentHTML('afterend', notice('warn',
+        `You can still drop an archive and see the full diagnosis. Building a prepared
+         triangle needs R and DelphiRF:<br>
+         <code>Rscript -e 'remotes::install_github("cmu-delphi/DelphiRF@refactor-clean")'</code><br>
+         then reload this page.`));
+    }
+    if (report.build) {
+      const source = [report.build.branch, report.build.commit].filter(Boolean).join(' @ ');
+      body.insertAdjacentHTML('beforeend', `<div class="hint">AutoDelphiRF
+        ${escapeHtml(report.build.version)}${source ? ` (${escapeHtml(source)})` : ''}</div>`);
+    }
+  } catch (error) {
+    body.innerHTML = `<span class="pill bad">Error</span>
+      <span>${escapeHtml(error.message)}</span>`;
+  }
+}
+
+/* --- 2. upload -------------------------------------------------------- */
+
+function initDropzone() {
+  const zone = $('dropzone');
+  const input = $('file-input');
+
+  zone.addEventListener('click', () => input.click());
+  zone.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); input.click(); }
+  });
+  input.addEventListener('change', () => {
+    if (input.files.length) upload(input.files[0]);
+  });
+
+  ['dragenter', 'dragover'].forEach((name) => zone.addEventListener(name, (event) => {
+    event.preventDefault();
+    zone.classList.add('dragging');
+  }));
+  ['dragleave', 'drop'].forEach((name) => zone.addEventListener(name, (event) => {
+    event.preventDefault();
+    if (name === 'dragleave' && zone.contains(event.relatedTarget)) return;
+    zone.classList.remove('dragging');
+  }));
+  zone.addEventListener('drop', (event) => {
+    const file = event.dataTransfer.files[0];
+    if (file) upload(file);
+  });
+
+  // Dropping anywhere else on the page should not make the browser navigate
+  // to the file, which looks like the app silently losing the upload.
+  window.addEventListener('dragover', (event) => event.preventDefault());
+  window.addEventListener('drop', (event) => event.preventDefault());
+}
+
+function upload(file) {
+  const result = $('upload-result');
+  const progress = $('upload-progress');
+  const fill = $('upload-fill');
+  result.hidden = true;
+  progress.hidden = false;
+  fill.style.width = '0%';
+  $('upload-progress-text').textContent = `Sending ${escapeHtml(file.name)}…`;
+
+  // XMLHttpRequest rather than fetch: it reports upload progress, which
+  // matters for a multi-hundred-megabyte archive.
+  const request = new XMLHttpRequest();
+  request.open('POST', `/api/upload?name=${encodeURIComponent(file.name)}`);
+  request.setRequestHeader('X-AutoDelphiRF-Token', TOKEN);
+  request.upload.addEventListener('progress', (event) => {
+    if (event.lengthComputable) {
+      const percent = (event.loaded / event.total) * 100;
+      fill.style.width = `${percent}%`;
+      if (percent >= 100) $('upload-progress-text').textContent = 'Reading the archive…';
+    }
+  });
+  request.addEventListener('load', () => {
+    progress.hidden = true;
+    let payload;
+    try { payload = JSON.parse(request.responseText); } catch { payload = {}; }
+    if (request.status >= 400) {
+      result.hidden = false;
+      result.innerHTML = notice('bad', escapeHtml(payload.error || `HTTP ${request.status}`));
+      return;
+    }
+    onUploaded(payload, file);
+  });
+  request.addEventListener('error', () => {
+    progress.hidden = true;
+    result.hidden = false;
+    result.innerHTML = notice('bad', 'The upload failed. Is <code>autodelphirf web</code> still running?');
+  });
+  request.send(file);
+}
+
+function onUploaded(payload, file) {
+  state.columns = payload.columns;
+  const zone = $('dropzone');
+  zone.classList.add('has-file');
+  zone.querySelector('.drop-title').textContent = file.name;
+  zone.querySelector('.drop-sub').textContent = 'Click to choose a different file';
+
+  const result = $('upload-result');
+  result.hidden = false;
+  result.innerHTML = notice('good',
+    `Read <strong>${escapeHtml(payload.filename)}</strong> (${formatBytes(payload.size_bytes)})
+     with ${payload.columns.length} columns.`);
+
+  buildColumnForm(payload.guesses);
+  show('card-columns');
+  scrollIntoView('card-columns');
+}
+
+/* --- 3. columns ------------------------------------------------------- */
+
+function columnSelect(id, label, selected, {allowNone = false} = {}) {
+  const options = state.columns.map((column) =>
+    `<option value="${escapeHtml(column)}"${column === selected ? ' selected' : ''}>
+       ${escapeHtml(column)}</option>`).join('');
+  const none = allowNone
+    ? `<option value=""${selected ? '' : ' selected'}>— none (single location) —</option>`
+    : '';
+  return `<label for="${id}">${label}<select id="${id}">${none}${options}</select></label>`;
+}
+
+function buildColumnForm(guesses) {
+  $('column-form').innerHTML = [
+    columnSelect('col-reference', 'Reference date <span class="hint">when it happened</span>',
+                 guesses.reference),
+    columnSelect('col-report', 'Report date <span class="hint">when it was published</span>',
+                 guesses.report),
+    columnSelect('col-value', 'Value', guesses.value),
+    columnSelect('col-geo', 'Location', guesses.geo, {allowNone: true}),
+  ].join('');
+
+  document.querySelectorAll('input[name="value-type"]').forEach((radio) => {
+    radio.addEventListener('change', onValueTypeChange);
+  });
+  // Wrapped, not passed directly: as a listener runDiagnosis would receive the
+  // click event as its `userTargetLag`, and an Event serialises to `{}`, which
+  // the server then tries to read as a number. Assigning onclick rather than
+  // adding a listener also keeps a second upload from stacking handlers.
+  $('diagnose-button').onclick = () => runDiagnosis();
+}
+
+function onValueTypeChange() {
+  const fraction = document.querySelector('input[name="value-type"]:checked').value === 'fraction';
+  const field = $('denominator-field');
+  field.hidden = !fraction;
+  if (fraction && !field.innerHTML) {
+    field.innerHTML = `<div class="field-grid">${
+      columnSelect('col-denominator', 'Denominator column', null)}</div>`;
+    const valueLabel = document.querySelector('label[for="col-value"]');
+    if (valueLabel) valueLabel.childNodes[0].textContent = 'Numerator column';
+  }
+  if (!fraction) {
+    const valueLabel = document.querySelector('label[for="col-value"]');
+    if (valueLabel) valueLabel.childNodes[0].textContent = 'Value';
+  }
+}
+
+function currentMapping() {
+  const valueType = document.querySelector('input[name="value-type"]:checked').value;
+  const valueCols = [$('col-value').value];
+  if (valueType === 'fraction') {
+    const denominator = $('col-denominator');
+    if (!denominator || !denominator.value) {
+      throw new Error('Choose a denominator column for a rate or share.');
+    }
+    valueCols.push(denominator.value);
+  }
+  return {
+    reference_col: $('col-reference').value,
+    report_col: $('col-report').value,
+    geo_col: $('col-geo').value || null,
+    value_cols: valueCols,
+    value_type: valueType,
+  };
+}
+
+async function runDiagnosis(userTargetLag = null) {
+  const button = $('diagnose-button');
+  const status = $('diagnose-status');
+  button.disabled = true;
+  clearFailure();
+  status.innerHTML = '<span class="spinner"></span> Diagnosing the revision process…';
+  try {
+    const mapping = currentMapping();
+    if (userTargetLag != null) mapping.target_lag = userTargetLag;
+    state.diagnosis = await api('/api/diagnose', {method: 'POST', body: mapping});
+    status.textContent = '';
+    renderDiagnosis(state.diagnosis, userTargetLag);
+    show('card-diagnosis');
+    unlockStage(1);
+    goToStage(1);
+    // A re-diagnosis is an answer to the target-lag question, so scroll to the
+    // Keep the decision control visible after a diagnosis refresh.
+    if (userTargetLag != null) scrollIntoView('lag-answers');
+  } catch (error) {
+    status.innerHTML = `<span class="pill bad">${escapeHtml(error.message)}</span>`;
+    // The custom-value box is the other place this is triggered from, and it
+    // is nowhere near `diagnose-status`; say it where the click happened too.
+    if (userTargetLag != null) {
+      $('custom-lag-note').textContent = `Could not re-diagnose: ${error.message}`;
+      showFailure(error.message);
+    }
+  } finally {
+    button.disabled = false;
+  }
+}
+
+/* --- 4. diagnosis and the target-lag question ------------------------- */
+
+function fact(term, value, explanation = '') {
+  const help = explanation ? `<details class="term-help">
+    <summary aria-label="Explain ${escapeHtml(term)}">?</summary>
+    <span>${escapeHtml(explanation)}</span>
+  </details>` : '';
+  return `<div><dt>${term}${help}</dt><dd>${value}</dd></div>`;
+}
+
+function renderDiagnosis(report, userTargetLag) {
+  $('diagnosis-facts').innerHTML = [
+    fact('Rows', report.n_rows.toLocaleString(),
+         'Raw archive rows retained after invalid and duplicate records are removed.'),
+    fact('Locations', report.n_locations.toLocaleString(),
+         'Distinct surveillance locations or reporting units in the archive.'),
+    fact('Reference dates', `${report.reference_date_min} → ${report.reference_date_max}`,
+         'The date range of the events or surveillance periods being measured.'),
+    fact('Report dates', `${report.report_date_min} → ${report.report_date_max}`,
+         'The date range over which values were released or updated.'),
+    fact('Reference-date cadence', report.reference_axis_resolution,
+         'How often new measured events or surveillance periods occur.'),
+    fact('Report-date cadence', report.report_axis_resolution,
+         'How often reports or updates arrive in the archive.'),
+  ].join('');
+  $('training-days').value = report.training_window_days || 180;
+
+  const notes = (report.notes || []).map((note) => notice('warn', escapeHtml(note))).join('');
+  $('diagnosis-notes').innerHTML = notes;
+
+  drawCompletionCurve(report);
+  renderLagQuestion(report, userTargetLag);
+  if (report.retraining) initSchedule(report.retraining);
+}
+
+function renderLagQuestion(report, userTargetLag) {
+  const range = report.target_lag_suggested_range || {};
+  const body = $('lag-question-body');
+  const answers = $('lag-answers');
+  const custom = $('custom-lag');
+
+  body.innerHTML = `<dl class="lag-definitions">
+      <div><dt>Target lag</dt><dd>The maturity point, measured in days after the reference date,
+        used to define training outcomes.</dd></div>
+      <div><dt>Reporting lag</dt><dd>How old an observation was when a nowcast was made: the number
+        of days between its reference date and report date.</dd></div>
+    </dl>
+    <p>In real time, the finalized value is unavailable, and we cannot know exactly
+    when reporting will be complete. Choosing a target lag is therefore a compromise.</p>
+    <ol class="lag-tradeoffs">
+      <li><strong>Accuracy.</strong> A lag that is too short can define targets that are still far
+        from their eventual values.</li>
+      <li><strong>Timeliness.</strong> A lag that is too long removes the newest reports from model
+        training. That lost revision history matters most when reporting patterns change abruptly.</li>
+    </ol>
+    <p>Use the figure and table to judge the trade-off, then choose the target lag yourself.
+    AutoDelphiRF will use your value exactly as entered.</p>`;
+  answers.innerHTML = '';
+  custom.hidden = true;
+  if (userTargetLag != null) $('custom-lag-input').value = userTargetLag;
+  $('custom-lag-note').textContent = 'A target lag must be selected before the analysis can continue.';
+  $('custom-lag-apply').onclick = () => {
+    const value = Number($('custom-lag-input').value);
+    if (!Number.isFinite(value) || value < 1) {
+      $('custom-lag-note').textContent = 'Enter a whole number of days.';
+      return;
+    }
+    acceptLag(value, false);
+  };
+}
+
+function acceptLag(lag, confirm) {
+  state.answeredLag = lag;
+  state.confirmLag = confirm;
+  show('card-schedule');
+  loadLayers().then(() => {
+    show('card-methods');
+    unlockStage(2);
+    goToStage(2);
+  }).catch((error) => showFailure(error.message));
+}
+
+/* --- 5. the retraining schedule --------------------------------------- */
+
+function initSchedule(retraining) {
+  // Prefilled from the diagnosis, then previewed by the server on every
+  // change so the origin count shown is the one the run will use.
+  $('retrain-days').value = retraining.retrain_days;
+  $('first-origin-date').value = retraining.first_origin;
+  $('retrain-days-hint').textContent =
+    `default ${retraining.default_retrain_days} for a ${retraining.temporal_resolution} stream`;
+  $('first-origin-hint').textContent =
+    `default ${retraining.default_first_origin_offset_days} days into the archive, `
+    + `whose report-date range is ${retraining.report_date_min} to ${retraining.report_date_max}`;
+  renderSchedule(retraining);
+
+  $('retrain-days').oninput = previewSchedule;
+  $('first-origin-date').onchange = previewSchedule;
+  $('training-days').oninput = () => {
+    if (state.schedule) renderSchedule(state.schedule);
+  };
+  $('schedule-reset').onclick = () => {
+    $('training-days').value = state.diagnosis.training_window_days || 180;
+    $('retrain-days').value = retraining.default_retrain_days;
+    $('first-origin-date').value = retraining.first_origin;
+    previewSchedule();
+  };
+  $('schedule-continue').onclick = () => {
+    loadLayers().then(() => {
+      show('card-methods');
+      unlockStage(2);
+      goToStage(2);
+    });
+  };
+}
+
+let schedulePending = null;
+
+async function previewSchedule() {
+  const body = {
+    retrain_days: $('retrain-days').value || null,
+    first_origin_date: $('first-origin-date').value || null,
+  };
+  // Typing "140" passes through "1" and "14"; only the last answer counts.
+  const token = {};
+  schedulePending = token;
+  try {
+    const preview = await api('/api/schedule', {method: 'POST', body});
+    if (schedulePending !== token) return;
+    // The resolved values are reported in the preview below, never written
+    // back into the fields: a response landing mid-keystroke would otherwise
+    // overwrite the digits still being typed.
+    renderSchedule(preview);
+  } catch (error) {
+    if (schedulePending !== token) return;
+    state.schedule = null;
+    $('schedule-preview').innerHTML = notice('bad', escapeHtml(error.message));
+    $('schedule-continue').disabled = true;
+  }
+}
+
+function renderSchedule(preview) {
+  state.schedule = preview;
+  $('schedule-continue').disabled = false;
+  const origins = preview.n_origins;
+  // Every origin refits every ticked method, so the count is the single
+  // number that decides how long the run takes. Said plainly, and loudly
+  // once it is large enough to matter.
+  const cost = origins > 120
+    ? notice('warn', `That is <strong>${origins}</strong> retrainings. Every ticked method is
+        refitted at each one, so a run this long is an overnight job rather than a coffee
+        break. A longer interval, or a later first report-date origin, shortens it.`)
+    : '';
+  const trainingDays = Number($('training-days').value) || 180;
+  $('schedule-preview').innerHTML = `
+    <div class="schedule-summary">
+      <strong>${trainingDays}-day training window</strong>
+      <span>Retrain every ${preview.retrain_days} days</span>
+      <span>${origins} report-date rolling fits</span>
+      <span>Report-date origins: ${preview.first_origin} to ${preview.last_origin}</span>
+    </div>${cost}`;
+}
+
+/* --- the completion curve --------------------------------------------- */
+
+function drawCompletionCurve(report) {
+  const curve = report.target_lag_completion_curve || {};
+  const band = report.target_lag_completion_band || {};
+  const allPoints = Object.keys(curve)
+    .map((lag) => ({
+      lag: Number(lag),
+      error: Number(curve[lag]),
+      q10: Number((band[lag] || {}).q10),
+      q60: Number((band[lag] || {}).q60),
+      q75: Number((band[lag] || {}).q75),
+      q90: Number((band[lag] || {}).q90),
+      q95: Number((band[lag] || {}).q95),
+    }))
+    .filter((point) => Number.isFinite(point.lag) && Number.isFinite(point.error))
+    .sort((a, b) => a.lag - b.lag);
+  const points = allPoints.filter((point) => point.lag >= 0 && point.lag <= 365);
+
+  const container = $('completion-chart');
+  if (!points.length) {
+    container.innerHTML = `<p class="hint">No candidate target lags could be evaluated.</p>`;
+    return;
+  }
+  const range = report.target_lag_suggested_range || {};
+  const availableLags = (report.available_target_lags || allPoints.map((point) => point.lag))
+    .map(Number).filter((lag) => Number.isInteger(lag) && lag >= 1).sort((a, b) => a - b);
+  const availableSet = new Set(availableLags);
+  const initial = points.find((point) => point.lag === Number(range.lower)) || points[0];
+
+  const width = 680;
+  const height = 318;
+  const pad = {top: 44, right: 22, bottom: 48, left: 76};
+  const plotWidth = width - pad.left - pad.right;
+  const plotHeight = height - pad.top - pad.bottom;
+  const minLag = 0;
+  const maxLag = 365;
+  const lagSpan = Math.max(1, maxLag - minLag);
+  const finiteErrors = points.flatMap((point) =>
+    [point.error, point.q60, point.q75, point.q90, point.q95].filter(Number.isFinite));
+  const maxError = Math.max(0.10, ...finiteErrors) * 1.06;
+  const x = (lag) => pad.left + ((lag - minLag) / lagSpan) * plotWidth;
+  const y = (error) => pad.top + plotHeight - (error / maxError) * plotHeight;
+  const bottom = pad.top + plotHeight;
+  const hasSuggestedRange = range.lower != null && range.upper != null
+    && Number.isFinite(Number(range.lower)) && Number.isFinite(Number(range.upper))
+    && Number(range.lower) >= minLag && Number(range.lower) <= maxLag
+    && Number(range.upper) >= minLag && Number(range.upper) <= maxLag;
+  const suggestedStart = hasSuggestedRange
+    ? Math.max(minLag, Math.min(maxLag, Math.min(Number(range.lower), Number(range.upper)))) : null;
+  const suggestedEnd = hasSuggestedRange
+    ? Math.max(minLag, Math.min(maxLag, Math.max(Number(range.lower), Number(range.upper)))) : null;
+  const suggestedLabelX = hasSuggestedRange
+    ? Math.max(pad.left + 64, Math.min(width - pad.right - 64,
+      (x(suggestedStart) + x(suggestedEnd)) / 2)) : null;
+  const suggestedFill = hasSuggestedRange ? `
+    <rect x="${x(suggestedStart).toFixed(1)}" y="${pad.top}"
+          width="${Math.max(1, x(suggestedEnd) - x(suggestedStart)).toFixed(1)}"
+          height="${plotHeight}" class="completion-suggested-area"/>` : '';
+  const suggestedMarkers = hasSuggestedRange ? `
+    <line x1="${x(suggestedStart).toFixed(1)}" x2="${x(suggestedStart).toFixed(1)}"
+          y1="${pad.top}" y2="${bottom}" class="completion-suggested-boundary"/>
+    <line x1="${x(suggestedEnd).toFixed(1)}" x2="${x(suggestedEnd).toFixed(1)}"
+          y1="${pad.top}" y2="${bottom}" class="completion-suggested-boundary"/>
+    <path d="M${x(suggestedStart).toFixed(1)},${pad.top - 4}
+             V${pad.top - 9} H${x(suggestedEnd).toFixed(1)} V${pad.top - 4}"
+          class="completion-suggested-bracket"/>
+    <text x="${suggestedLabelX.toFixed(1)}" y="${pad.top - 15}"
+          text-anchor="middle" class="completion-suggested-label">Suggested lag range</text>
+    <text x="${(x(suggestedStart) + 7).toFixed(1)}" y="${pad.top + 7}"
+          transform="rotate(90 ${(x(suggestedStart) + 7).toFixed(1)} ${pad.top + 7})"
+          class="completion-suggested-lag-label">${suggestedStart} days</text>
+    <text x="${(x(suggestedEnd) + 7).toFixed(1)}" y="${pad.top + 7}"
+          transform="rotate(90 ${(x(suggestedEnd) + 7).toFixed(1)} ${pad.top + 7})"
+          class="completion-suggested-lag-label">${suggestedEnd} days</text>` : '';
+  const percentilePath = (key) => {
+    const valid = points.filter((point) => Number.isFinite(point[key]));
+    if (!valid.length) return '';
+    return `M${x(valid[0].lag).toFixed(1)},${bottom.toFixed(1)} `
+      + valid.map((point) =>
+        `L${x(point.lag).toFixed(1)},${y(point[key]).toFixed(1)}`).join(' ')
+      + ` L${x(valid[valid.length - 1].lag).toFixed(1)},${bottom.toFixed(1)} Z`;
+  };
+  const medianLine = points.map((point, index) =>
+    `${index ? 'L' : 'M'}${x(point.lag).toFixed(1)},${y(point.error).toFixed(1)}`).join(' ');
+  const yTicks = Array.from({length: 5}, (_, index) => (maxError * index) / 4);
+  const grid = yTicks.map((tick) => `
+    <line x1="${pad.left}" x2="${width - pad.right}" y1="${y(tick).toFixed(1)}"
+          y2="${y(tick).toFixed(1)}" class="completion-gridline"/>
+    <text x="${pad.left - 8}" y="${(y(tick) + 4).toFixed(1)}" text-anchor="end"
+          class="completion-axis-label">${(tick * 100).toFixed(0)}%</text>`).join('');
+  const xTicks = [0, 60, 120, 180, 240, 300, 365];
+  const xLabels = xTicks.map((lag) => `
+    <text x="${x(lag).toFixed(1)}" y="${height - 23}" text-anchor="middle"
+          class="completion-axis-label">${lag}</text>`).join('');
+  const toleranceLines = [0.01, 0.10].filter((value) => value <= maxError).map((value) => `
+    <line x1="${pad.left}" x2="${width - pad.right}" y1="${y(value).toFixed(1)}"
+          y2="${y(value).toFixed(1)}" class="completion-tolerance"/>
+    <text x="${width - pad.right - 4}" y="${(y(value) - 5).toFixed(1)}" text-anchor="end"
+          class="completion-tolerance-label">${(value * 100).toFixed(0)}%</text>`).join('');
+
+  container.innerHTML = `
+    <div class="completion-legend" aria-label="Percentile layers">
+      <span class="median">Median</span><span class="q60">60th percentile</span>
+      <span class="q75">75th percentile</span><span class="q90">90th percentile</span>
+      <span class="q95">95th percentile</span>
+    </div>
+    <div class="completion-plot">
+      <svg viewBox="0 0 ${width} ${height}" role="img"
+           aria-label="Relative error percentiles by available target lag. Move across the figure to inspect a lag in the table below.">
+        ${suggestedFill}
+        ${grid}
+        ${toleranceLines}
+        <path d="${percentilePath('q95')}" class="completion-band q95"/>
+        <path d="${percentilePath('q90')}" class="completion-band q90"/>
+        <path d="${percentilePath('q75')}" class="completion-band q75"/>
+        <path d="${percentilePath('q60')}" class="completion-band q60"/>
+        <path d="${medianLine}" class="completion-median"/>
+        ${suggestedMarkers}
+        <line x1="${pad.left}" x2="${width - pad.right}" y1="${bottom}" y2="${bottom}"
+              class="completion-axis"/>
+        ${xLabels}
+        <text x="${pad.left + plotWidth / 2}" y="${height - 2}" text-anchor="middle"
+              class="completion-axis-title">Target lag (days after reference date)</text>
+        <text x="18" y="${pad.top + plotHeight / 2}" text-anchor="middle"
+              transform="rotate(-90 18 ${pad.top + plotHeight / 2})"
+              class="completion-axis-title">Relative error (%)</text>
+        <g class="completion-guide" aria-hidden="true">
+          <line y1="${pad.top}" y2="${bottom}"/>
+          ${['median', 'q60', 'q75', 'q90', 'q95'].map((key) =>
+            `<circle data-guide-point="${key}" r="4"/>`).join('')}
+        </g>
+        <rect x="${pad.left}" y="${pad.top}" width="${plotWidth}" height="${plotHeight}"
+              class="completion-hit-area" tabindex="0"
+              aria-label="Use the target-lag selector below for keyboard exploration"/>
+      </svg>
+    </div>
+    <div class="percentile-explorer" role="group" aria-label="Relative error by available target lag">
+      <label class="lag-selector">Target lag, in days after the reference date
+        <input type="number" id="completion-lag-input" min="1" step="1"
+               value="${initial.lag}" inputmode="numeric">
+        <span class="lag-area-status" id="completion-area-status"></span>
+        <button type="button" id="completion-use-lag" class="primary compact">Use this lag</button>
+      </label>
+      ${['median', 'q60', 'q75', 'q90', 'q95'].map((key) => `
+        <div class="percentile-cell" data-percentile-cell="${key}">
+          <span>${key === 'median' ? 'Median' : `${key.slice(1)}th percentile`}</span>
+          <strong>—</strong>
+          <small></small>
+        </div>`).join('')}
+    </div>`;
+
+  const describeTolerance = (value) => {
+    if (!Number.isFinite(value)) return {label: 'unavailable', level: 'unknown'};
+    if (value <= 0.01 || Math.abs(value - 0.01) < 1e-8) {
+      return {label: 'Within 1% error', level: 'within-one'};
+    }
+    if (value <= 0.10 || Math.abs(value - 0.10) < 1e-8) {
+      return {label: 'Within 10% error', level: 'within-ten'};
+    }
+    return {label: 'Above 10% error', level: 'above-ten'};
+  };
+  const updateGuide = (point) => {
+    const guide = container.querySelector('.completion-guide');
+    const displayed = point.lag >= minLag && point.lag <= maxLag;
+    guide.style.display = displayed ? '' : 'none';
+    if (!displayed) return;
+    const guideX = x(point.lag);
+    guide.querySelector('line').setAttribute('x1', guideX.toFixed(1));
+    guide.querySelector('line').setAttribute('x2', guideX.toFixed(1));
+    const values = {median: point.error, q60: point.q60, q75: point.q75,
+                    q90: point.q90, q95: point.q95};
+    Object.entries(values).forEach(([key, value]) => {
+      const marker = guide.querySelector(`[data-guide-point="${key}"]`);
+      marker.hidden = !Number.isFinite(value);
+      if (Number.isFinite(value)) {
+        marker.setAttribute('cx', guideX.toFixed(1));
+        marker.setAttribute('cy', y(value).toFixed(1));
+      }
+    });
+  };
+  const renderPoint = (point, {syncInput = true, context = ''} = {}) => {
+    const values = {median: point.error, q60: point.q60, q75: point.q75,
+                    q90: point.q90, q95: point.q95};
+    Object.entries(values).forEach(([key, value]) => {
+      const cell = container.querySelector(`[data-percentile-cell="${key}"]`);
+      const tolerance = describeTolerance(value);
+      cell.className = `percentile-cell ${tolerance.level}`;
+      cell.querySelector('strong').textContent = Number.isFinite(value)
+        ? `${(value * 100).toFixed(1)}%` : '—';
+      cell.querySelector('small').textContent = tolerance.label;
+    });
+    $('completion-area-status').textContent = point.lag > maxLag
+      ? 'This available lag is outside the displayed 0–365 day range.' : context;
+    if (syncInput) $('completion-lag-input').value = point.lag;
+    $('custom-lag-input').value = point.lag;
+    $('custom-lag-note').textContent =
+      `Review the error distribution for ${point.lag} days, then confirm to continue.`;
+    updateGuide(point);
+  };
+  const lagInput = $('completion-lag-input');
+  lagInput.addEventListener('input', () => {
+    const requested = Number(lagInput.value);
+    const valid = Number.isInteger(requested) && requested >= 1;
+    $('completion-use-lag').disabled = !valid;
+    if (!valid) {
+      $('completion-area-status').textContent = 'Enter a positive whole number.';
+      return;
+    }
+    if (availableSet.has(requested)) {
+      const exact = allPoints.find((point) => point.lag === requested);
+      if (exact) {
+        renderPoint(exact, {syncInput: false});
+        return;
+      }
+      $('completion-use-lag').disabled = true;
+      $('completion-area-status').textContent =
+        `Lag ${requested} exists, but its diagnostic percentages are unavailable. Re-run diagnosis.`;
+      return;
+    }
+    $('completion-use-lag').disabled = true;
+    const lowerLags = availableLags.filter((lag) => lag < requested);
+    const below = lowerLags[lowerLags.length - 1];
+    const above = availableLags.find((lag) => lag > requested);
+    const neighbours = [below, above].filter((lag) => lag != null).map((lag) => `${lag} days`);
+    $('completion-area-status').textContent = neighbours.length
+      ? `No data exist at lag ${requested}. Nearest available: ${neighbours.join(' and ')}.`
+      : `No data exist at lag ${requested}.`;
+  });
+  $('completion-use-lag').addEventListener('click', () => {
+    const requested = Number(lagInput.value);
+    if (Number.isInteger(requested) && requested >= 1 && availableSet.has(requested)) {
+      acceptLag(requested, false);
+    }
+  });
+  const hitArea = container.querySelector('.completion-hit-area');
+  const pointFromPointer = (event) => {
+    const box = hitArea.getBoundingClientRect();
+    const svgX = pad.left + ((event.clientX - box.left) / Math.max(1, box.width)) * plotWidth;
+    return points.reduce((closest, point) =>
+      Math.abs(x(point.lag) - svgX) < Math.abs(x(closest.lag) - svgX) ? point : closest,
+    points[0]);
+  };
+  hitArea.addEventListener('pointermove', (event) => renderPoint(pointFromPointer(event)));
+  hitArea.addEventListener('pointerdown', (event) => renderPoint(pointFromPointer(event)));
+  renderPoint(initial);
+}
+
+/* --- 5. methods ------------------------------------------------------- */
+
+let layersLoaded = false;
+
+const METHOD_LABELS = {
+  baseline_null: 'Latest reported value',
+  red: 'Revision-pattern matching',
+  delphirf: 'RevRoute-DelphiRF',
+  naive_delphirf: 'Naive DelphiRF',
+  similarity_weighted_delphirf: 'Similarity-weighted DelphiRF',
+  global_delphirf: 'Global DelphiRF',
+};
+
+const METHOD_DESCRIPTIONS = {
+  baseline_null: 'No adjustment. Carries the currently available value forward as the nowcast.',
+  delphirf: 'The primary AutoDelphiRF method. It automatically decides which reporting lags and locations can share information.',
+  naive_delphirf: 'Fits locations separately; small reporting lags are modeled separately and larger reporting lags are grouped.',
+  global_delphirf: 'Uses one model that combines all locations and reporting lags.',
+  red: 'Finds historical observations with similar revision patterns. Primarily intended for sparse reporting histories, such as weekly data.',
+};
+
+const WEB_HIDDEN_METHODS = new Set(['similarity_weighted_delphirf']);
+
+function methodLabel(name) {
+  return METHOD_LABELS[name] || String(name).replace(/_/g, ' ');
+}
+
+function comparisonLabel(comparison) {
+  return String(comparison).split(' - ').map(methodLabel).join(' compared with ');
+}
+
+async function loadLayers() {
+  if (layersLoaded) return;
+  const {layers} = await api('/api/layers');
+  $('layer-list').innerHTML = layers.filter((layer) => !WEB_HIDDEN_METHODS.has(layer.name)).map((layer) => `
+    <label class="layer">
+      <input type="checkbox" value="${escapeHtml(layer.name)}"${layer.default ? ' checked' : ''}>
+      <span>
+        <span class="layer-name">${escapeHtml(methodLabel(layer.name))}</span><br>
+        <span class="layer-desc">${escapeHtml(METHOD_DESCRIPTIONS[layer.name] || layer.description)}</span>
+        ${layer.expensive ? '<br><span class="layer-cost">Fits a model — slower</span>' : ''}
+      </span>
+    </label>`).join('');
+  $('run-button').addEventListener('click', startRun);
+  layersLoaded = true;
+}
+
+/* --- 6. run ----------------------------------------------------------- */
+
+async function startRun() {
+  const button = $('run-button');
+  const status = $('run-status');
+  const layers = [...document.querySelectorAll('#layer-list input:checked')]
+    .map((input) => input.value);
+  if (!layers.length) {
+    status.innerHTML = '<span class="pill bad">Choose at least one method.</span>';
+    return;
+  }
+  // Preprocessing is the first thing a run does and the first thing that fails
+  // without DelphiRF. The environment card says so at startup, but a warning
+  // five steps up the page is not a warning by the time you get here: refuse
+  // now, with the fix, rather than after the schedule and methods are set.
+  const delphiMethods = new Set([
+    'delphirf', 'naive_delphirf', 'similarity_weighted_delphirf', 'global_delphirf'
+  ]);
+  const needsDelphiModel = layers.some((layer) => delphiMethods.has(layer));
+  const preprocessingReady = state.environment &&
+    (state.environment.preprocessing ?? state.environment.delphirf);
+  if (state.environment && (!preprocessingReady || (needsDelphiModel && !state.environment.delphirf))) {
+    status.innerHTML = '';
+    $('run-result').hidden = true;
+    show('card-run');
+    $('run-log').textContent = '';
+    $('run-state').textContent = 'blocked';
+    $('run-state').className = 'badge failed';
+    $('run-result').hidden = false;
+    $('run-result').innerHTML = notice('bad',
+      `<strong>${needsDelphiModel ? 'The selected DelphiRF model is not ready.'
+                                  : 'DelphiRF preprocessing is not ready.'}</strong><br>
+       ${escapeHtml(state.environment.detail)}<br>
+       ${needsDelphiModel
+         ? 'Choose “Latest reported value” and/or “Revision-pattern matching” for now, or reinstall DelphiRF as the README describes.'
+         : 'Install DelphiRF in R as the README describes.'}<br>
+       <span class="hint">Your archive, target lag and schedule are unaffected &mdash; this
+       check runs when the page loads, so reload the page after reinstalling DelphiRF.</span>`);
+    goToStage(2);
+    return;
+  }
+
+  button.disabled = true;
+  status.innerHTML = '<span class="spinner"></span> Starting…';
+
+  try {
+    const request = {
+      ...currentMapping(),
+      layers,
+      target_lag: state.answeredLag,
+      confirm_target_lag: state.confirmLag,
+      retrain_days: Number($('retrain-days').value) || null,
+      first_origin_date: $('first-origin-date').value || null,
+      min_location_rows: Number($('min-location-rows').value) || 100,
+      triangle_format: $('triangle-format').value,
+    };
+    const trainingDays = Number($('training-days').value);
+    if (Number.isFinite(trainingDays) && trainingDays > 0) request.training_days = trainingDays;
+
+    await api('/api/run', {method: 'POST', body: request});
+    status.textContent = '';
+    show('card-run');
+    goToStage(2);
+    pollStatus();
+  } catch (error) {
+    button.disabled = false;
+    status.innerHTML = `<span class="pill bad">${escapeHtml(error.message)}</span>`;
+  }
+}
+
+function pollStatus() {
+  if (state.polling) clearInterval(state.polling);
+  const tick = async () => {
+    let snapshot;
+    try {
+      snapshot = await api('/api/status');
+    } catch (error) {
+      $('run-state').textContent = 'connection lost';
+      $('run-state').className = 'badge failed';
+      clearInterval(state.polling);
+      return;
+    }
+    renderRun(snapshot);
+    if (['done', 'failed', 'stopped'].includes(snapshot.state)) {
+      clearInterval(state.polling);
+      state.polling = null;
+      $('run-button').disabled = false;
+    }
+  };
+  tick();
+  state.polling = setInterval(tick, 1200);
+}
+
+async function stopRun() {
+  $('stop-run').disabled = true;
+  try {
+    await api('/api/stop', {method: 'POST', body: {}});
+    pollStatus();
+  } catch (error) {
+    showFailure(error.message);
+  }
+}
+
+async function resumeRun() {
+  $('resume-run').disabled = true;
+  try {
+    await api('/api/resume', {method: 'POST', body: {}});
+    pollStatus();
+  } catch (error) {
+    $('resume-run').disabled = false;
+    showFailure(error.message);
+  }
+}
+
+async function restoreLastRun() {
+  try {
+    const snapshot = await api('/api/status');
+    const saved = snapshot.session || {};
+    const request = saved.last_request;
+    if (saved.archive) {
+      onUploaded(saved.archive, {name: saved.archive.filename});
+    }
+    if (request) {
+      const valueType = request.value_type || 'count';
+      const radio = document.querySelector(`input[name="value-type"][value="${valueType}"]`);
+      if (radio) radio.checked = true;
+      onValueTypeChange();
+      const assignments = {
+        'col-reference': request.reference_col,
+        'col-report': request.report_col,
+        'col-value': (request.value_cols || [])[0],
+        'col-denominator': (request.value_cols || [])[1],
+        'col-geo': request.geo_col || '',
+      };
+      Object.entries(assignments).forEach(([id, value]) => {
+        const element = $(id);
+        if (element && value != null) element.value = value;
+      });
+    }
+    if (saved.diagnosis) {
+      state.diagnosis = saved.diagnosis;
+      renderDiagnosis(saved.diagnosis, request ? request.target_lag : null);
+      show('card-diagnosis');
+      unlockStage(1);
+    }
+    if (request && saved.diagnosis) {
+      state.answeredLag = Number(request.target_lag);
+      state.confirmLag = Boolean(request.confirm_target_lag);
+      show('card-schedule');
+      if (request.retrain_days) $('retrain-days').value = request.retrain_days;
+      if (request.first_origin_date) $('first-origin-date').value = request.first_origin_date;
+      await previewSchedule();
+      await loadLayers();
+      document.querySelectorAll('#layer-list input').forEach((input) => {
+        input.checked = (request.layers || []).includes(input.value);
+      });
+      if (request.training_days) $('training-days').value = request.training_days;
+      if (request.min_location_rows) $('min-location-rows').value = request.min_location_rows;
+      if (request.triangle_format) $('triangle-format').value = request.triangle_format;
+      show('card-methods');
+      unlockStage(2);
+    }
+    if (snapshot.state === 'idle') return;
+    show('card-run');
+    unlockStage(2);
+    goToStage(2);
+    renderRun(snapshot);
+    if (snapshot.state === 'running') pollStatus();
+  } catch (_) {
+    // The environment card reports connection failures. With no prior run,
+    // recovery has nothing useful to add.
+  }
+}
+
+function renderRun(snapshot) {
+  const badge = $('run-state');
+  badge.textContent = snapshot.state === 'running'
+    ? (snapshot.stage || 'running') : snapshot.state;
+  badge.className = `badge ${snapshot.state}`;
+  $('run-elapsed').textContent = snapshot.elapsed_seconds
+    ? `${formatDuration(snapshot.elapsed_seconds)} elapsed` : '';
+  renderProgress(snapshot);
+  $('stop-run').hidden = snapshot.state !== 'running';
+  $('stop-run').disabled = snapshot.stage === 'stopping';
+  $('resume-run').hidden = snapshot.state !== 'stopped';
+  $('resume-run').disabled = false;
+
+  const log = $('run-log');
+  const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 30;
+  log.textContent = snapshot.log.join('\n');
+  if (atBottom) log.scrollTop = log.scrollHeight;
+
+  const result = $('run-result');
+  if (snapshot.state === 'done') {
+    result.hidden = false;
+    result.innerHTML = notice('good',
+      `Finished in ${formatDuration(snapshot.elapsed_seconds)}.`);
+    loadResults();
+  } else if (snapshot.state === 'failed') {
+    result.hidden = false;
+    result.innerHTML = notice('bad',
+      `<strong>The run failed.</strong><br>${escapeHtml(snapshot.error)}<br>
+       <span class="hint">The full traceback is in the terminal running
+       <code>autodelphirf web</code>.</span>`);
+  } else if (snapshot.state === 'stopped') {
+    result.hidden = false;
+    result.innerHTML = notice('warn',
+      `<strong>The experiment was stopped.</strong><br>
+       Resume restarts it with the same saved settings. Partial fitted results are not reused.`);
+  } else {
+    result.hidden = true;
+  }
+}
+
+function formatDuration(seconds) {
+  const total = Math.round(seconds || 0);
+  if (total < 60) return `${total}s`;
+  const minutes = Math.floor(total / 60);
+  if (minutes < 60) return `${minutes}m ${String(total % 60).padStart(2, '0')}s`;
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
+}
+
+function renderProgress(snapshot) {
+  const wrap = $('run-progress');
+  const {origins_done: done, origins_total: total} = snapshot;
+  if (!total || snapshot.state === 'failed') {
+    wrap.hidden = true;
+    return;
+  }
+  wrap.hidden = false;
+  const share = Math.min(1, done / total);
+  $('run-fill').style.width = `${(share * 100).toFixed(1)}%`;
+  const remaining = snapshot.remaining_seconds != null
+    ? ` &middot; about ${escapeHtml(formatDuration(snapshot.remaining_seconds))} left`
+    : '';
+  $('run-progress-text').innerHTML = snapshot.state === 'done'
+    ? `${total} retrainings complete`
+    : `Retraining ${done} of ${total}${remaining}`;
+}
+
+/* --- 8. results -------------------------------------------------------- */
+
+async function loadResults() {
+  let results;
+  try {
+    results = await api('/api/results');
+  } catch (error) {
+    $('results-message').innerHTML = notice('warn',
+      `The run finished, but its tables could not be read: ${escapeHtml(error.message)}`);
+    show('card-results');
+    unlockStage(3);
+    goToStage(3);
+    return;
+  }
+  state.results = results;
+  const tables = results.tables || {};
+  renderLagEvaluation(tables.web_metrics_by_lag || []);
+  renderLocationEvaluation(tables.web_metrics_by_location || []);
+  renderEarlyLagEvaluation(tables.web_metrics_by_origin_lag || []);
+  show('card-results');
+  unlockStage(3);
+  goToStage(3);
+}
+
+const SERIES_SLOTS = 8;
+let resultTimeMetric = 'ae';
+let resultLagRows = [];
+let resultLocationRows = [];
+let resultOriginRows = [];
+
+function metricRows(rows, metric) {
+  return rows.filter((row) => row.metric === metric
+    && Number.isFinite(row.median) && Number.isFinite(row.q10) && Number.isFinite(row.q90));
+}
+
+function renderLagEvaluation(rows) {
+  const usable = rows.filter((row) => Number(row.n_locations) > 0);
+  resultLagRows = usable;
+  if (!usable.length) {
+    $('lag-score-grid').hidden = true;
+    $('results-message').innerHTML = notice('warn',
+      'No location-level evaluation table was written for this run.');
+    return;
+  }
+  $('results-message').innerHTML = '';
+  $('lag-score-grid').hidden = false;
+  bindResultMetricSwitch();
+  drawLagEvaluation();
+}
+
+function renderEarlyLagEvaluation(rows) {
+  const section = $('early-lag-section');
+  resultOriginRows = rows;
+  if (!rows.length) {
+    section.hidden = true;
+    return;
+  }
+  section.hidden = false;
+  bindResultMetricSwitch();
+  drawEarlyLagCharts();
+}
+
+function renderLocationEvaluation(rows) {
+  resultLocationRows = rows.filter((row) => Number(row.n) > 0
+    && Number.isFinite(Number(row.median))
+    && Number.isFinite(Number(row.q10))
+    && Number.isFinite(Number(row.q90)));
+  drawLocationEvaluation();
+}
+
+function bindResultMetricSwitch() {
+  document.querySelectorAll('[data-result-metric]').forEach((button) => {
+    button.onclick = () => {
+      resultTimeMetric = button.dataset.resultMetric;
+      document.querySelectorAll('[data-result-metric]').forEach((candidate) =>
+        candidate.classList.toggle('active', candidate.dataset.resultMetric === resultTimeMetric));
+      drawLagEvaluation();
+      drawLocationEvaluation();
+      drawEarlyLagCharts();
+    };
+  });
+}
+
+function drawLocationEvaluation() {
+  const container = $('location-score-chart');
+  if (!container) return;
+  const isWis = resultTimeMetric === 'wis';
+  $('location-score-title').textContent =
+    `${isWis ? 'WIS' : 'AE'} by location at early reporting lags`;
+  const rows = resultLocationRows.filter((row) => row.metric === resultTimeMetric);
+  if (!rows.length) {
+    container.innerHTML = `<p class="hint empty-chart">No ${isWis ? 'WIS' : 'AE'} location summary is available. Re-run post-assessment with the current version to create it.</p>`;
+    return;
+  }
+  drawLocationBarChart('location-score-chart', rows, {
+    yLabel: isWis ? 'Median WIS' : 'Median AE',
+  });
+}
+
+function drawLagEvaluation() {
+  if (!resultLagRows.length) return;
+  const isWis = resultTimeMetric === 'wis';
+  $('lag-score-title').textContent = `${isWis ? 'WIS' : 'AE'} over reporting lags`;
+  drawQuantileBandChart('lag-score-chart', metricRows(resultLagRows, resultTimeMetric), {
+    xField: 'lag', xLabel: 'Reporting lag (days)',
+    yLabel: isWis ? 'WIS' : 'AE', xKind: 'number',
+  });
+}
+
+function drawEarlyLagCharts() {
+  const container = $('early-lag-grid');
+  if (!container || !resultOriginRows.length) return;
+  const eligible = metricRows(resultOriginRows, resultTimeMetric);
+  if (!eligible.length) {
+    container.innerHTML = `<p class="hint">WIS is unavailable because the selected methods did not issue predictive distributions.</p>`;
+    return;
+  }
+  const allLags = [...new Set(eligible.map((row) => Number(row.lag)))]
+    .filter(Number.isFinite).sort((a, b) => a - b).slice(0, 2);
+  const selectedRows = eligible.filter((row) => allLags.includes(Number(row.lag)));
+  const observedMaximum = Math.max(...selectedRows.flatMap((row) =>
+    [Number(row.q90), Number(row.median)]), 0) || 1;
+  const sharedYAxis = niceAxis(observedMaximum);
+  const sharedXKeys = [...new Set(selectedRows.map((row) => row.cutoff))].sort();
+  container.innerHTML = allLags.map((lag, index) => `
+    <figure class="result-figure early-lag-figure">
+      <figcaption><span class="fig-title">Lag ${escapeHtml(String(lag))} days</span>
+        <span class="fig-sub">${resultTimeMetric === 'wis' ? 'WIS' : 'AE'} · lower is better</span></figcaption>
+      <div class="result-chart" id="early-lag-chart-${index}"></div>
+    </figure>`).join('');
+  allLags.forEach((lag, index) => drawQuantileBandChart(
+    `early-lag-chart-${index}`, eligible.filter((row) => Number(row.lag) === lag), {
+      xField: 'cutoff', xLabel: 'report-date origin',
+      yLabel: resultTimeMetric === 'wis' ? 'WIS' : 'AE', xKind: 'date',
+      compact: true, yMax: sharedYAxis.maximum, yTicks: sharedYAxis.ticks,
+      xKeys: sharedXKeys,
+    }));
+}
+
+function niceAxis(observedMaximum, tickCount = 5) {
+  const maximum = Number.isFinite(observedMaximum) && observedMaximum > 0
+    ? observedMaximum : 1;
+  const roughStep = maximum / Math.max(1, tickCount - 1);
+  const power = 10 ** Math.floor(Math.log10(roughStep));
+  const normalized = roughStep / power;
+  const factor = [1, 2, 2.5, 5, 10].find((candidate) => candidate >= normalized) || 10;
+  const step = factor * power;
+  const niceMaximum = step * Math.ceil(maximum / step);
+  const ticks = Array.from({length: Math.round(niceMaximum / step) + 1},
+    (_, index) => index * step);
+  return {maximum: niceMaximum, ticks};
+}
+
+function drawLocationBarChart(containerId, rows, options) {
+  const container = $(containerId);
+  const methods = [...new Set(rows.map((row) => row.method))].slice(0, SERIES_SLOTS);
+  const locations = [...new Set(rows.map((row) => String(row.geo_value)))];
+  const nullMedians = new Map(rows.filter((row) => row.method === 'baseline_null')
+    .map((row) => [String(row.geo_value), Number(row.median)]));
+  const locationMedians = new Map(locations.map((location) => {
+    const values = rows.filter((row) => String(row.geo_value) === location)
+      .map((row) => Number(row.median)).filter(Number.isFinite);
+    return [location, values.reduce((sum, value) => sum + value, 0) / values.length];
+  }));
+  locations.sort((a, b) => (nullMedians.get(b) ?? locationMedians.get(b))
+    - (nullMedians.get(a) ?? locationMedians.get(a)) || a.localeCompare(b));
+
+  const observedMaximum = Math.max(...rows.map((row) => Number(row.q90)), 0) || 1;
+  const yAxis = niceAxis(observedMaximum);
+  const width = Math.max(720, locations.length * Math.max(50, methods.length * 15 + 18));
+  const height = 350;
+  const pad = {top: 14, right: 18, bottom: 82, left: 76};
+  const plotWidth = width - pad.left - pad.right;
+  const plotHeight = height - pad.top - pad.bottom;
+  const groupWidth = plotWidth / Math.max(1, locations.length);
+  const barWidth = Math.min(13, Math.max(5, (groupWidth - 10) / Math.max(1, methods.length)));
+  const occupiedWidth = barWidth * methods.length;
+  const y = (value) => pad.top + plotHeight
+    - Math.max(0, Number(value)) / yAxis.maximum * plotHeight;
+  const lookup = new Map(rows.map((row) =>
+    [`${String(row.geo_value)}\u0000${row.method}`, row]));
+
+  const grid = yAxis.ticks.map((tick) => `<line x1="${pad.left}" x2="${width - pad.right}"
+      y1="${y(tick).toFixed(1)}" y2="${y(tick).toFixed(1)}" stroke="var(--border)"/>
+    <text x="${pad.left - 10}" y="${(y(tick) + 5).toFixed(1)}" text-anchor="end"
+      font-size="15" font-weight="550" fill="var(--text-primary)">${compactNumber(tick)}</text>`).join('');
+  const bars = locations.flatMap((location, locationIndex) => methods.map((method, methodIndex) => {
+    const row = lookup.get(`${location}\u0000${method}`);
+    if (!row) return '';
+    const median = Number(row.median);
+    const q10 = Number(row.q10);
+    const q90 = Number(row.q90);
+    const center = pad.left + locationIndex * groupWidth + groupWidth / 2
+      - occupiedWidth / 2 + methodIndex * barWidth + barWidth / 2;
+    const top = y(median);
+    const bottom = y(0);
+    const errorTop = y(q90);
+    const errorBottom = y(q10);
+    const color = `var(--series-${methodIndex + 1})`;
+    const detail = `${methodLabel(method)} · ${location}: median ${compactNumber(median)}, 10th–90th percentile ${compactNumber(q10)}–${compactNumber(q90)}, n=${row.n}`;
+    return `<g><title>${escapeHtml(detail)}</title>
+      <rect x="${(center - barWidth / 2 + 1).toFixed(1)}" y="${top.toFixed(1)}"
+        width="${Math.max(2, barWidth - 2).toFixed(1)}" height="${Math.max(0, bottom - top).toFixed(1)}"
+        fill="${color}" opacity="0.82"/>
+      <line x1="${center.toFixed(1)}" x2="${center.toFixed(1)}" y1="${errorTop.toFixed(1)}"
+        y2="${errorBottom.toFixed(1)}" stroke="var(--text-primary)" stroke-width="1.2"/>
+      <line x1="${(center - 4).toFixed(1)}" x2="${(center + 4).toFixed(1)}"
+        y1="${errorTop.toFixed(1)}" y2="${errorTop.toFixed(1)}" stroke="var(--text-primary)" stroke-width="1.2"/>
+      <line x1="${(center - 4).toFixed(1)}" x2="${(center + 4).toFixed(1)}"
+        y1="${errorBottom.toFixed(1)}" y2="${errorBottom.toFixed(1)}" stroke="var(--text-primary)" stroke-width="1.2"/>
+    </g>`;
+  })).join('');
+  const xLabels = locations.map((location, index) => {
+    const x = pad.left + index * groupWidth + groupWidth / 2;
+    return `<text x="${x.toFixed(1)}" y="${height - pad.bottom + 18}" text-anchor="end"
+      transform="rotate(-55 ${x.toFixed(1)} ${height - pad.bottom + 18})"
+      font-size="13" font-weight="550" fill="var(--text-primary)">${escapeHtml(location)}</text>`;
+  }).join('');
+  const legend = methods.map((method, index) => `<li><span class="swatch" style="background:var(--series-${index + 1})"></span>
+    ${escapeHtml(methodLabel(method))}</li>`).join('');
+  container.innerHTML = `<ul class="legend">${legend}</ul>
+    <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img"
+      aria-label="${escapeHtml(options.yLabel)} by location for reporting lags through 14 days">
+      ${grid}${bars}${xLabels}
+      <line x1="${pad.left}" x2="${width - pad.right}" y1="${pad.top + plotHeight}"
+        y2="${pad.top + plotHeight}" stroke="var(--border-strong)"/>
+      <text x="20" y="${pad.top + plotHeight / 2}" text-anchor="middle"
+        transform="rotate(-90 20 ${pad.top + plotHeight / 2})"
+        font-size="16" font-weight="600" fill="var(--text-primary)">${escapeHtml(options.yLabel)}</text>
+    </svg>`;
+}
+
+function drawQuantileBandChart(containerId, rows, options) {
+  const container = $(containerId);
+  if (!rows.length) {
+    container.innerHTML = '<p class="hint empty-chart">No eligible values.</p>';
+    return;
+  }
+  const width = 960;
+  const height = options.compact ? 225 : 350;
+  const pad = {top: 14, right: 20, bottom: 52, left: 88};
+  const plotWidth = width - pad.left - pad.right;
+  const plotHeight = height - pad.top - pad.bottom;
+  const keys = options.xKeys || [...new Set(rows.map((row) => row[options.xField]))]
+    .sort(options.xKind === 'number' ? (a, b) => Number(a) - Number(b) : undefined);
+  const methods = [...new Set(rows.map((row) => row.method))];
+  const keyIndex = new Map(keys.map((key, index) => [key, index]));
+  const series = methods.slice(0, SERIES_SLOTS).map((method, index) => ({
+    method, color: `var(--series-${index + 1})`,
+    points: rows.filter((row) => row.method === method)
+      .sort((a, b) => keyIndex.get(a[options.xField]) - keyIndex.get(b[options.xField])),
+  })).filter((entry) => entry.points.length);
+  const observedMaximum = Math.max(...rows.flatMap((row) =>
+    [Number(row.q90), Number(row.median)]), 0) || 1;
+  const yAxis = Number.isFinite(options.yMax)
+    ? {maximum: options.yMax, ticks: options.yTicks || niceAxis(options.yMax).ticks}
+    : niceAxis(observedMaximum);
+  const maximum = yAxis.maximum;
+  const x = (key) => pad.left + (keys.length === 1 ? plotWidth / 2
+    : keyIndex.get(key) / (keys.length - 1) * plotWidth);
+  const y = (value) => pad.top + plotHeight - Number(value) / maximum * plotHeight;
+  const ticks = yAxis.ticks;
+  const grid = ticks.map((tick) => `<line x1="${pad.left}" x2="${width - pad.right}"
+      y1="${y(tick).toFixed(1)}" y2="${y(tick).toFixed(1)}" stroke="var(--border)"/>
+    <text x="${pad.left - 12}" y="${(y(tick) + 5).toFixed(1)}" text-anchor="end"
+      font-size="15" font-weight="550" fill="var(--text-primary)">${compactNumber(tick)}</text>`).join('');
+  const shapes = series.map((entry) => {
+    const upper = entry.points.map((point) => `${x(point[options.xField]).toFixed(1)},${y(point.q90).toFixed(1)}`);
+    const lower = [...entry.points].reverse().map((point) => `${x(point[options.xField]).toFixed(1)},${y(point.q10).toFixed(1)}`);
+    const median = entry.points.map((point, index) => `${index ? 'L' : 'M'}${x(point[options.xField]).toFixed(1)},${y(point.median).toFixed(1)}`).join(' ');
+    return `<polygon points="${upper.concat(lower).join(' ')}" fill="${entry.color}" opacity="0.13"/>
+      <path d="${median}" fill="none" stroke="${entry.color}" stroke-width="2"
+        stroke-linejoin="round" stroke-linecap="round"/>`;
+  }).join('');
+  const labelCount = options.compact ? 4 : 6;
+  const labelIndexes = new Set([0, keys.length - 1]);
+  const step = Math.max(1, Math.ceil((keys.length - 1) / (labelCount - 1)));
+  for (let index = 0; index < keys.length; index += step) labelIndexes.add(index);
+  const xLabels = [...labelIndexes].filter((index) => index >= 0).sort((a, b) => a - b)
+    .map((index) => {
+      const raw = String(keys[index]);
+      const label = options.xKind === 'date' ? raw.slice(0, 7) : raw;
+      return `<text x="${x(keys[index]).toFixed(1)}" y="${height - 22}" text-anchor="middle"
+        font-size="15" font-weight="550" fill="var(--text-primary)">${escapeHtml(label)}</text>`;
+    }).join('');
+  const legend = series.map((entry) => `<li><span class="swatch" style="background:${entry.color}"></span>
+    ${escapeHtml(methodLabel(entry.method))}</li>`).join('');
+  container.innerHTML = `<ul class="legend">${legend}</ul>
+    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(options.yLabel)} by ${escapeHtml(options.xLabel)}">
+      ${grid}${shapes}
+      <line x1="${pad.left}" x2="${width - pad.right}" y1="${pad.top + plotHeight}"
+        y2="${pad.top + plotHeight}" stroke="var(--border-strong)"/>
+      ${xLabels}
+      <text x="${pad.left + plotWidth / 2}" y="${height - 2}" text-anchor="middle"
+        font-size="16" font-weight="600" fill="var(--text-primary)">${escapeHtml(options.xLabel)}</text>
+      <text x="20" y="${pad.top + plotHeight / 2}" text-anchor="middle"
+        transform="rotate(-90 20 ${pad.top + plotHeight / 2})"
+        font-size="16" font-weight="600" fill="var(--text-primary)">${escapeHtml(options.yLabel)}</text>
+    </svg>`;
+}
+
+function compactNumber(value) {
+  // Axis ticks on a count scale: toPrecision alone turns 1100 into "1.10e+3".
+  const magnitude = Math.abs(value);
+  if (magnitude >= 1e9) return `${(value / 1e9).toFixed(1)}B`;
+  if (magnitude >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
+  if (magnitude >= 1e4) return `${Math.round(value / 1e3)}k`;
+  if (magnitude >= 1e3) return `${(value / 1e3).toFixed(1)}k`;
+  if (magnitude >= 1) {
+    const digits = magnitude >= 100 || Number.isInteger(value) ? 0 : 1;
+    return value.toFixed(digits).replace(/\.0$/, '');
+  }
+  return value === 0 ? '0' : value.toPrecision(2);
+}
+
+/* --- go --------------------------------------------------------------- */
+
+window.addEventListener('error', (event) => showFailure(
+  `${event.message} (${event.filename || 'app.js'}:${event.lineno})`));
+window.addEventListener('unhandledrejection', (event) => showFailure(
+  (event.reason && event.reason.message) || String(event.reason)));
+
+loadEnvironment();
+initWizard();
+initDropzone();
+$('stop-run').addEventListener('click', stopRun);
+$('resume-run').addEventListener('click', resumeRun);
+restoreLastRun();
+
+</script>
+</body>
+</html>

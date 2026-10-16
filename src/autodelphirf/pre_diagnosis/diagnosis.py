@@ -169,10 +169,11 @@ diagnose = diagnose_prepared_data
 # ---------------------------------------------------------------------------
 # Target-lag diagnosis
 # ---------------------------------------------------------------------------
-# Defaults of the frozen selection rule. The recommended target lag L is the
-# EARLIEST cadence-aligned lag at which at least ``completion_rate`` of
-# location--reference pairs sit within ``relative_error`` of that episode's
-# latest available value. Episodes with less than ``min_followup_days`` of
+# Defaults of the target-lag evidence rule. The suggested area runs from the
+# earliest cadence-aligned lag at which ``completion_rate`` of records are
+# within 10% relative error to the earliest lag at which that share is within
+# 1%. It is evidence for a user's decision, never an automatic selection.
+# Episodes with less than ``min_followup_days`` of
 # follow-up are excluded so a series without enough later observations cannot
 # be treated as finalized. The rule is evidence about the data; it never overrides a user's
 # declared choice (see ``resolve_target_lag``).
@@ -183,7 +184,7 @@ diagnose = diagnose_prepared_data
 # as-of value. ``min_followup_days`` and ``max_first_lag`` remain available for
 # a caller who wants a population held fixed across lags, but they DISCARD
 # provided data, so they are off unless asked for.
-TARGET_LAG_RULE = {"completion_rate": 0.90, "relative_error": 0.05,
+TARGET_LAG_RULE = {"completion_rate": 0.90, "relative_error": 0.01,
                    "min_followup_days": 0, "cadence_days": 7, "max_lag": None,
                    "max_first_lag": None}
 
@@ -196,12 +197,11 @@ def diagnose_target_lag(prepared: pd.DataFrame, *, value_column: str = "value_7d
                         max_lag: int | None = None,
                         max_first_lag: int | None = TARGET_LAG_RULE["max_first_lag"],
                         extra_lags=(), selection_cutoff=None) -> dict:
-    """Recommend target lag L from the observed revision process.
+    """Describe a target-lag decision range from the observed revision process.
 
-    Returns the selected lag, the per-lag completion evidence behind it, and a
-    status string. Selects the earliest cadence-aligned lag where at least
-    ``completion_rate`` of tasks have relative discrepancy from their latest
-    historical value no greater than ``relative_error``.
+    Returns per-lag completion evidence and the two boundaries where at least
+    ``completion_rate`` of records are within 10% and 1% relative error. It
+    never selects a target lag.
 
     The comparator is each episode's latest available value in the supplied
     archive -- not an assumed final truth -- so a triangle truncated near its
@@ -223,7 +223,7 @@ def diagnose_target_lag(prepared: pd.DataFrame, *, value_column: str = "value_7d
         return {"selected_target_lag": None, "status": "no rows before the selection cutoff",
                 "rule": {}, "completion": []}
     frame = frame.sort_values(keys + ["report_date"])
-    # Only episodes with enough later observations can inform the recommendation.
+    # Only episodes with enough later observations can inform the decision range.
     span = frame.groupby(keys, observed=True).lag.agg(["min", "max"])
     eligible_index = span if not min_followup_days else span[span["max"] >= min_followup_days]
     # ...and only episodes ALSO observed from early on can be compared across
@@ -274,7 +274,7 @@ def diagnose_target_lag(prepared: pd.DataFrame, *, value_column: str = "value_7d
     # release at or BEFORE l, carried forward -- not a release dated exactly l.
     # Matching l exactly evaluated only the episodes that happened to publish
     # on that very day, which on a Wed/Fri reporter is ~1.4% of episodes and
-    # produced a recommendation from a 96-row sliver. Forward filling gives every
+    # produced evidence from a 96-row sliver. Forward filling gives every
     # eligible episode an as-of value at every candidate lag.
     # Explicit key works on the older pandas release still used by the
     # packaged test environment, where ``how="cross"`` incorrectly attempts
@@ -295,63 +295,49 @@ def diagnose_target_lag(prepared: pd.DataFrame, *, value_column: str = "value_7d
         values = group.rel_error.replace([np.inf, -np.inf], np.nan).dropna()
         within = ((values <= relative_error) |
                   np.isclose(values, relative_error, rtol=1e-6, atol=1e-8))
+        within_guidance = ((values <= 0.10) |
+                           np.isclose(values, 0.10, rtol=1e-6, atol=1e-8))
         completion.append({
             "lag": int(lag), "pairs": int(len(values)),
             "within_tolerance_rate": float(np.mean(within)) if len(values) else None,
+            "within_1pct_rate": float(np.mean(within)) if len(values) else None,
+            "within_10pct_rate": float(np.mean(within_guidance)) if len(values) else None,
+            "q60_relative_error": float(values.quantile(0.60)) if len(values) else None,
+            "q75_relative_error": float(values.quantile(0.75)) if len(values) else None,
+            "q90_relative_error": float(values.quantile(0.90)) if len(values) else None,
+            "q95_relative_error": float(values.quantile(0.95)) if len(values) else None,
             "median_relative_error": float(values.median()) if len(values) else None})
-    eligible = [c for c in completion
-                if c["lag"] in selectable
-                and c["within_tolerance_rate"] is not None
-                and c["within_tolerance_rate"] >= completion_rate]
+    selectable_rows = [c for c in completion if c["lag"] in selectable]
+    lower_rows = [c for c in selectable_rows if c["within_10pct_rate"] is not None
+                  and c["within_10pct_rate"] >= completion_rate]
+    upper_rows = [c for c in selectable_rows if c["within_1pct_rate"] is not None
+                  and c["within_1pct_rate"] >= completion_rate]
+    suggested_range = {"lower": lower_rows[0]["lag"] if lower_rows else None,
+                       "upper": upper_rows[0]["lag"] if upper_rows else None,
+                       "completion_rate": completion_rate,
+                       "lower_relative_error": 0.10,
+                       "upper_relative_error": relative_error}
     rule = {"completion_rate": completion_rate, "relative_error": relative_error,
             "min_followup_days": min_followup_days, "cadence_days": cadence_days,
             "max_first_lag": max_first_lag,
             "reported_only_lags": reportable,
             "max_lag_examined": ceiling, "pairs_used": int(len(eligible_pairs)),
             "selection_cutoff": None if selection_cutoff is None else str(pd.Timestamp(selection_cutoff).date())}
-    if not eligible:
-        return {"selected_target_lag": None,
-                "status": "no cadence-aligned lag reached the completion-rate criterion",
-                "rule": rule, "completion": completion}
-    first = eligible[0]
-    return {"selected_target_lag": int(first["lag"]),
-            "status": (f"earliest lag on a {cadence_days}-day cadence where at least "
-                       f"{completion_rate:.0%} of tasks have relative discrepancy "
-                       f"<= {relative_error:.0%}"),
-            "within_tolerance_rate": first["within_tolerance_rate"],
-            "median_relative_error": first["median_relative_error"],
+    return {"selected_target_lag": None,
+            "suggested_target_lag_range": suggested_range,
+            "status": (f"decision range where at least {completion_rate:.0%} of records "
+                       "are within 10% to 1% relative error"),
             "rule": rule, "completion": completion}
 
 
 def resolve_target_lag(diagnosed: dict, user_target_lag: int | None,
                        confirmed: bool, dataset: str) -> tuple[int, str]:
-    """Decide which target lag a run uses, and record why.
-
-    The user's declared choice always wins, but never silently: when it
-    disagrees with the diagnosis the run stops until the choice is explicitly
-    confirmed, so nobody adopts a target lag without having seen the recommended
-    one. With no declared choice the diagnosed value is used.
-    """
-    suggested = diagnosed.get("selected_target_lag")
+    """Use the user's declared target lag exactly; never infer one."""
     if user_target_lag is None:
-        if suggested is None:
-            raise ValueError(
-                f"dataset '{dataset}' has no target_lag in its params file and the "
-                f"diagnosis could not select one ({diagnosed.get('status')}). State a "
-                "target_lag explicitly.")
-        return int(suggested), f"diagnosed ({diagnosed.get('status')})"
-    user_target_lag = int(user_target_lag)
-    if suggested is None:
-        return user_target_lag, "user choice (diagnosis unavailable)"
-    if user_target_lag == suggested:
-        return user_target_lag, "user choice (matches diagnosis)"
-    if not confirmed:
         raise ValueError(
-            f"dataset '{dataset}' declares target_lag={user_target_lag} but the "
-            f"recommended target lag is {suggested} ({diagnosed.get('status')}). Set "
-            f"\"confirmed\": true for this dataset in the target-lag params file to "
-            "proceed with your own choice, or remove target_lag to use the diagnosed one.")
-    return user_target_lag, f"user choice, confirmed over diagnosed {suggested}"
+            f"dataset '{dataset}' has no target_lag. Review the diagnostic range and "
+            "state the final target_lag explicitly before running.")
+    return int(user_target_lag), "explicit user choice"
 
 
 def raw_archive_for_diagnosis(dataset: str, manifest_path):

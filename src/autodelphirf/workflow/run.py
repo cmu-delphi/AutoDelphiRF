@@ -483,6 +483,30 @@ def forecast_time_assessment(history: pd.DataFrame, newly_issued: pd.DataFrame,
     return {"calibration": calibrated, "reliability": reliability}
 
 
+def write_runtime_tables(output: Path, timing: pd.DataFrame, params: dict, config: DatasetConfig,
+                         requested_delphirf, delphirf_seconds: float) -> pd.DataFrame:
+    """Write per-origin and per-method runtime tables; return the per-method table."""
+    timing.to_csv(output / "runtime_by_origin.csv", index=False)
+    shared_columns = ["training_selection_seconds", "route_build_seconds", "red_prediction_seconds",
+                      "residual_history_seconds"]
+    shared_seconds = float(timing[[c for c in shared_columns if c in timing]].sum().sum())
+    runtime_rows = [{"method": "baseline_null", "timing_status": "fresh", "shared_seconds": 0.,
+                     "incremental_seconds": 0., "standalone_total_seconds": 0.}]
+    if params["include_red"]:
+        runtime_rows.append({"method": "red", "timing_status": "fresh", "shared_seconds": shared_seconds,
+                             "incremental_seconds": 0., "standalone_total_seconds": shared_seconds})
+    for method in config.comparator_methods:
+        fresh = method in requested_delphirf
+        runtime_rows.append({"method": method,
+            "timing_status": "fresh installed DelphiRF fit" if fresh else "prediction import; model-fit runtime unavailable",
+            "shared_seconds": 0. if fresh else np.nan,
+            "incremental_seconds": delphirf_seconds if fresh else np.nan,
+            "standalone_total_seconds": delphirf_seconds if fresh else np.nan})
+    runtime = pd.DataFrame(runtime_rows)
+    runtime.to_csv(output / "runtime_by_method.csv", index=False)
+    return runtime
+
+
 def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_stop=None,
                  *, model_mode: str = "train", incremental_update: bool = False,
                  post_assessment: bool = True) -> dict:
@@ -790,6 +814,7 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
         # The run has recorded its deployment origin, so a later update needs
         # the issued forecasts too; the ledger is part of the predictions.
         ledger = append_forecast_ledger(long, output)
+        write_runtime_tables(output, timing, params, config, requested_delphirf, delphirf_seconds)
         manifest = {"dataset": config.name, "cases": len(wide),
                     "origins": int(wide.cutoff.nunique()),
                     "methods": list(config.prediction_layers), "evaluation_scale": "reporting",
@@ -797,6 +822,7 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
                     "wall_seconds": perf_counter() - started, "method_params": params,
                     "delphirf_provenance": delphirf_provenance, "model_mode": model_mode,
                     "post_assessment": False, "forecast_ledger": ledger,
+                    "delphirf_seconds": delphirf_seconds,
                     "skipped_locations": skipped_locations.to_dict("records")}
         (output / "run_manifest.json").write_text(json.dumps(manifest, indent=2, default=str))
         pd.DataFrame(pipeline_timings).to_csv(output / "runtime_pipeline_stages.csv", index=False)
@@ -841,24 +867,8 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
     for name, frame in reliability_outputs.items():
         if name.startswith(("v1_", "v2_", "v3_", "v4_")) and frame is not None and not frame.empty:
             frame.to_csv(output / f"{name}.csv", index=False)
-    timing.to_csv(output / "runtime_by_origin.csv", index=False)
-    shared_columns = ["training_selection_seconds", "route_build_seconds", "red_prediction_seconds",
-                      "residual_history_seconds"]
-    shared_seconds = float(timing[[c for c in shared_columns if c in timing]].sum().sum())
-    runtime_rows = [{"method": "baseline_null", "timing_status": "fresh", "shared_seconds": 0.,
-                     "incremental_seconds": 0., "standalone_total_seconds": 0.}]
-    if params["include_red"]:
-        runtime_rows.append({"method": "red", "timing_status": "fresh", "shared_seconds": shared_seconds,
-                             "incremental_seconds": 0., "standalone_total_seconds": shared_seconds})
-    for method in config.comparator_methods:
-        fresh = method in requested_delphirf
-        runtime_rows.append({"method": method,
-            "timing_status": "fresh installed DelphiRF fit" if fresh else "prediction import; model-fit runtime unavailable",
-            "shared_seconds": 0. if fresh else np.nan,
-            "incremental_seconds": delphirf_seconds if fresh else np.nan,
-            "standalone_total_seconds": delphirf_seconds if fresh else np.nan})
-    runtime = pd.DataFrame(runtime_rows)
-    runtime.to_csv(output / "runtime_by_method.csv", index=False)
+    runtime = write_runtime_tables(output, timing, params, config, requested_delphirf,
+                                   delphirf_seconds)
     manifest = {"dataset": config.name, "cases": len(wide), "origins": int(wide.cutoff.nunique()),
                 "methods": list(config.prediction_layers), "evaluation_scale": "reporting",
                 "working_scale": config.working_scale, "wall_seconds": perf_counter() - started,

@@ -604,7 +604,22 @@ collect_predictions <- function(result, alignment_candidates, test_meta, method,
 out <- list()
 fold_ids <- if (is.na(only_fold)) seq_len(nrow(schedule)) else only_fold
 
+# Wall-clock fitting time per retraining origin. A fold may end early with
+# `next`, so each fold is closed when the next one starts (and after the loop).
+fold_timings <- list()
+open_fold <- NULL
+close_fold <- function() {
+  if (is.null(open_fold)) return(invisible())
+  fold_timings[[length(fold_timings) + 1L]] <<- data.frame(
+    fold = if ("fold_id" %in% names(schedule)) schedule$fold_id[[open_fold$fold]] else open_fold$fold,
+    cutoff = as.Date(schedule$test_date[[open_fold$fold]]),
+    seconds = proc.time()[["elapsed"]] - open_fold$started)
+  open_fold <<- NULL
+}
+
 for (fold in fold_ids) {
+  close_fold()
+  open_fold <- list(fold = fold, started = proc.time()[["elapsed"]])
   cutoff <- schedule$test_date[[fold]]
   next_cutoff <- if ("testing_days" %in% names(schedule) &&
                      is.finite(schedule$testing_days[[fold]])) {
@@ -760,6 +775,11 @@ for (fold in fold_ids) {
   }
   message("DelphiRF comparators: fold ", fold, "/", nrow(schedule), " complete")
 }
+close_fold()
+fold_timing_table <- if (length(fold_timings)) rbindlist(fold_timings) else
+  data.table(fold = integer(), cutoff = as.Date(character()), seconds = numeric())
+fold_timing_path <- paste0(output_path, ".fold_seconds.csv")
+fwrite(fold_timing_table, fold_timing_path)
 
 if (!length(out) && !unresolved_only) {
   stop("No comparator predictions were produced -- check the schedule and prepared data.")
@@ -826,6 +846,8 @@ jsonlite::write_json(list(
   dropped_test_row_count = nrow(dropped_table),
   dropped_test_rows_by_reason = as.list(table(dropped_table$reason)),
   dropped_test_rows_file = dropped_path,
+  fitting_seconds_total = sum(fold_timing_table$seconds),
+  fold_seconds_file = fold_timing_path,
   weekday_groups = weekday_groups,
   calendar_indicators_constant_in_triangle = I(constant_calendar_in_triangle),
   effective_base_params = model_params(as.data.frame(all_data)),

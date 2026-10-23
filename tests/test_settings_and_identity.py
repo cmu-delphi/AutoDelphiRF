@@ -300,6 +300,11 @@ def test_no_post_assessment_writes_evaluated_predictions_and_stops(tmp_path):
     # Ready for a later `autodelphirf update`: deployment origin and issued forecasts.
     assert (results / "deployment_state.json").is_file()
     assert (results / "forecast_ledger.csv.gz").is_file()
+    # Runtime is recorded even without post-assessment.
+    assert {"runtime_by_origin.csv", "runtime_by_method.csv"} <= {p.name for p in results.iterdir()}
+    folds = read_csv(results / "_delphirf_predictions.csv.gz.fold_seconds.csv")
+    assert len(folds) == manifest["origins"] and (folds.seconds >= 0).all()
+    assert manifest["delphirf_seconds"] > 0
     # Test rows DelphiRF could not forecast are listed next to the fit failures.
     dropped = read_csv(results / "_delphirf_predictions.csv.gz.dropped_test_rows.csv")
     assert {"method", "cutoff", "geo_value", "reference_date", "report_date", "lag",

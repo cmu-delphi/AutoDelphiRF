@@ -104,9 +104,10 @@ def test_optional_paths_resolve_when_set(tmp_path):
 def test_defaults_match_the_documented_contract(tmp_path):
     config = load_dataset_config(write_config(tmp_path / "d.json"))
     assert config.schedule_file == "test_dates.csv"
-    assert config.include_genuine_events_only is True
+    assert config.genuine_training is True
+    assert config.genuine_testing is True
     assert config.uncertainty_layer is True
-    assert config.value_transform is None      # derived from the triangle, not declared
+    assert config.working_scale is None      # derived from the triangle, not declared
     assert config.initial_lag is None
     assert config.comparator_method_column == "method"
     assert config.comparator_prediction_column == "prediction"
@@ -114,20 +115,27 @@ def test_defaults_match_the_documented_contract(tmp_path):
     assert config.revision_profile is None
 
 
-def test_input_columns_inherit_the_packaged_schema(tmp_path):
-    """A config naming no columns still gets the full canonical mapping."""
-    config = load_dataset_config(write_config(tmp_path / "d.json"))
-    assert config.input_columns["geo_value"] == "geo_value"
-    assert config.input_columns["as_of_value"] == "log_value_7dav"
+def test_genuine_training_and_testing_are_independent(tmp_path):
+    config = load_dataset_config(write_config(
+        tmp_path / "d.json", genuine_training=False, genuine_testing=True))
+    assert config.genuine_training is False
+    assert config.genuine_testing is True
 
 
-def test_input_columns_override_only_the_named_field(tmp_path):
-    """Partial mappings are the documented usage; they must not blank the rest."""
-    path = write_config(tmp_path / "d.json", input_columns={"geo_value": "location_id"})
-    config = load_dataset_config(path)
-    assert config.input_columns["geo_value"] == "location_id"
-    assert config.input_columns["report_date"] == "report_date"
-    assert config.input_columns["as_of_value"] == "log_value_7dav"
+def test_removed_combined_genuine_option_is_rejected(tmp_path):
+    with pytest.raises(ValueError, match="has been removed"):
+        load_dataset_config(write_config(
+            tmp_path / "d.json", include_genuine_events_only=True))
+
+
+@pytest.mark.parametrize("field", ["genuine_training", "genuine_testing"])
+def test_genuine_options_must_be_boolean(tmp_path, field):
+    with pytest.raises(ValueError, match=field):
+        load_dataset_config(write_config(tmp_path / "d.json", **{field: "true"}))
+
+
+
+
 
 
 def test_unknown_keys_are_ignored_so_comments_are_possible(tmp_path):
@@ -162,15 +170,13 @@ def test_uncertainty_layer_can_be_switched_off(tmp_path):
     assert config.uncertainty_layer is False
 
 
-def test_the_shipped_template_is_itself_loadable(tmp_path):
-    """`autodelphirf init` writes this file; it must load once paths are filled in."""
-    from autodelphirf.core.resources import resource_path
 
-    template = json.loads(resource_path("prepared_dataset_template.json").read_text())
-    template["prepared_dir"] = "input"
-    template["output_dir"] = "out"
-    path = tmp_path / "from_template.json"
-    path.write_text(json.dumps(template))
-    config = load_dataset_config(path)
-    assert config.name == template["name"]
-    assert config.prediction_layers
+def test_working_scale_uses_delphirf_names(tmp_path):
+    for scale in ("log_value", "log_ratio"):
+        assert load_dataset_config(write_config(tmp_path / f"{scale}.json",
+                                                working_scale=scale)).working_scale == scale
+    with pytest.raises(ValueError, match="working_scale must be 'log_value' or 'log_ratio'"):
+        load_dataset_config(write_config(tmp_path / "bad.json", working_scale="log1p"))
+    # The former field name is rejected with a message that says what to do.
+    with pytest.raises(ValueError, match="renamed to 'working_scale'"):
+        load_dataset_config(write_config(tmp_path / "old.json", value_transform="log1p"))

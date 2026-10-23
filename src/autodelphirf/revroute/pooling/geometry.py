@@ -5,18 +5,29 @@ from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
-from scipy.cluster.hierarchy import fcluster, linkage
-from scipy.spatial.distance import squareform
 
 
-def _mad_scale(x):
+def _robust_scale(x):
+    """Median centre and a scale for one process feature across tasks.
+
+    The scale is the MAD; when the MAD is zero, the IQR; when that is zero
+    too but the feature still varies, its range. A feature with no range is
+    constant across tasks and the scale is None: it carries no distance and is
+    left out, rather than entering the distance in its raw units.
+    """
     x = np.asarray(x, float)
     x = x[np.isfinite(x)]
     if not len(x):
-        return 0., 1.
+        return 0., None
     centre = float(np.median(x))
     mad = float(np.median(np.abs(x - centre)))
-    return centre, mad if np.isfinite(mad) and mad > 0 else 1.
+    if mad > 0:
+        return centre, mad
+    q1, q3 = np.quantile(x, [.25, .75])
+    if q3 - q1 > 0:
+        return centre, float(q3 - q1)
+    spread = float(x.max() - x.min())
+    return centre, (spread if spread > 0 else None)
 
 
 def _positive_median(x):
@@ -217,43 +228,22 @@ class TaskGeometry:
 
 
 
-def _merge_heights(tree: np.ndarray) -> np.ndarray:
-    return np.asarray(tree, dtype=float)[:, 2][::-1]
-
-
-def _relative_merge_gaps(heights: np.ndarray, k_gap: int, epsilon: float = 1e-12) -> np.ndarray:
-    gaps = np.full(max(int(k_gap) - 1, 0), np.nan)
-    for index in range(len(gaps)):
-        k = index + 2
-        if k - 1 >= len(heights):
-            break
-        upper, lower = heights[k - 2], heights[k - 1]
-        gaps[index] = (upper - lower) / (lower + epsilon)
-    return gaps
-
-
-def _candidate_cuts(gaps: np.ndarray) -> tuple[list[int], float]:
-    finite = np.asarray(gaps, dtype=float)
-    valid = finite[np.isfinite(finite)]
-    if len(valid) < 4:
-        return [], np.nan
-    q1, q3 = np.quantile(valid, .25), np.quantile(valid, .75)
-    fence = float(q3 + 1.5 * (q3 - q1))
-    return [i + 2 for i, value in enumerate(finite) if np.isfinite(value) and value > fence], fence
-
 def build_task_geometry(training: pd.DataFrame, target_lag: int, *,
                         target_column="log_value_target_7dav",
                         value_column="log_value_7dav", baseline_column=None,
-                        k_max_per_location=18, train_genuine_events_only=True,
+                        train_genuine_events_only=True,
                         episode_cache: EpisodeSummaryCache | None = None,
                         geometry_n_jobs: int = 1,
-                        distance_backend: str = "scalar"):
-    """Build all three finite task components from completed revision history only.
+                        distance_backend: str = "prototypes"):
+    """Build the three task prototypes from completed revision history only.
 
-    ``distance_backend="prototypes"`` stops after constructing the observable
-    task summaries used by RevRoute's sparse search. ``"scalar"`` remains as
-    a compact diagnostic implementation of the full distance matrix.
+    The prototypes feed RevRoute's calibrated sparse search and coherence-
+    preserving pooling (``clustering.sparse_task_pooling``); no dense
+    all-pairs distance matrix is built.
     """
+    if distance_backend != "prototypes":
+        raise ValueError(f"unknown distance_backend: {distance_backend!r}; RevRoute builds "
+                         "task prototypes only")
     target_lag = int(target_lag)
     required = {"geo_value", "reference_date", "report_date", "lag", value_column, target_column}
     if required.difference(training.columns):
@@ -278,7 +268,6 @@ def build_task_geometry(training: pd.DataFrame, target_lag: int, *,
         requests.append((episode_key, frame.lag.to_numpy(float),
                          frame[value_column].to_numpy(float), frame._day.to_numpy(np.int64),
                          float(target_value), target_lag))
-    before_hits, before_misses = cache.hits, cache.misses
     cache.populate(requests, n_jobs=geometry_n_jobs)
     tasks, rowsets, raw_profiles, trajectories, stages = [], [], [], [], []
     for (geo, lag), frame in cases.groupby(["geo_value", "lag"], observed=True, sort=True):
@@ -311,50 +300,20 @@ def build_task_geometry(training: pd.DataFrame, target_lag: int, *,
     if not tasks:
         return None
     raw_profiles = np.vstack(raw_profiles)
-    centres, scales = zip(*[_mad_scale(raw_profiles[:, j]) for j in range(5)])
-    profiles = (raw_profiles - np.asarray(centres)) / np.asarray(scales)
+    scaled = [_robust_scale(raw_profiles[:, j]) for j in range(raw_profiles.shape[1])]
+    kept = [j for j, (_, scale) in enumerate(scaled) if scale is not None]
+    if kept:
+        profiles = np.column_stack([(raw_profiles[:, j] - scaled[j][0]) / scaled[j][1]
+                                    for j in kept])
+    else:
+        # Every process feature is constant across tasks: no process distance.
+        profiles = np.zeros((len(raw_profiles), 1))
     n = len(tasks)
-    if distance_backend == "prototypes":
-        # RR-DelphiRF3 needs the three prototypes but must NOT build a dense
-        # all-pairs matrix: its scales, threshold and pools are all defined on
-        # a sparse queried subset (spec Sec. "Combined task dissimilarity and
-        # sparse calibration"). Returning prototypes only is what makes the
-        # sparse search worth doing; materialising n^2 first would defeat it.
-        return TaskGeometry(tasks, rowsets, profiles, trajectories,
-                            np.asarray(stages), {}, np.empty((0, 0)), None,
-                            np.array([]), [], 0, np.zeros(n, int))
-    stage = np.abs(np.asarray(stages)[:, None] - np.asarray(stages)[None, :])
-    if distance_backend == "scalar":
-        proc = np.linalg.norm(profiles[:, None, :] - profiles[None, :, :], axis=2)
-        curve = np.zeros((n, n))
-        for i in range(n):
-            for j in range(i + 1, n):
-                h = min(len(trajectories[i]), len(trajectories[j]))
-                curve[i, j] = curve[j, i] = np.sqrt(np.mean(
-                    (trajectories[i][:h] - trajectories[j][:h]) ** 2))
-    else:
-        raise ValueError(f"unknown distance_backend: {distance_backend!r}")
-    component_scales = {"proc": _positive_median(proc), "curve": _positive_median(curve),
-                        "stage": _positive_median(stage)}
-    distance = np.sqrt((proc/component_scales["proc"])**2 +
-                       (curve/component_scales["curve"])**2 +
-                       (stage/component_scales["stage"])**2)
-    np.fill_diagonal(distance, 0.)
-    if n == 1:
-        tree, gaps, candidates, selected_k, labels = None, np.array([]), [], 1, np.ones(1, int)
-    else:
-        tree = linkage(squareform(distance, checks=False), method="average")
-        kmax = min(int(k_max_per_location) * cases.geo_value.nunique(), n)
-        gaps = _relative_merge_gaps(_merge_heights(tree), min(kmax, n - 1))
-        candidates, _ = _candidate_cuts(gaps)
-        selected_k = max(candidates) if candidates else 1
-        labels = fcluster(tree, t=selected_k, criterion="maxclust")
-    cache_stats = {"hits": cache.hits - before_hits, "misses": cache.misses - before_misses,
-                   "entries": len(cache._summaries), "n_jobs": int(geometry_n_jobs)}
-    return TaskGeometry(tasks, rowsets, profiles, trajectories, np.asarray(stages),
-                        component_scales, distance, tree, gaps, candidates,
-                        int(selected_k), np.asarray(labels, int) - 1, cache_stats)
-
+    # RevRoute's scales, threshold and pools are all defined on a sparse queried
+    # subset of task pairs, so only the prototypes are returned here.
+    return TaskGeometry(tasks, rowsets, profiles, trajectories,
+                        np.asarray(stages), {}, np.empty((0, 0)), None,
+                        np.array([]), [], 0, np.zeros(n, int))
 
 
 __all__ = ["EpisodeSummaryCache", "TaskGeometry", "build_task_geometry"]

@@ -144,7 +144,7 @@ async function loadEnvironment() {
       body.insertAdjacentHTML('afterend', notice('warn',
         `You can still drop an archive and see the full diagnosis. Building a prepared
          triangle needs R and DelphiRF:<br>
-         <code>Rscript -e 'remotes::install_github("cmu-delphi/DelphiRF@refactor-clean")'</code><br>
+         <code>Rscript -e 'install.packages(c("remotes","jsonlite","data.table","arrow")); remotes::install_github("cmu-delphi/DelphiRF@refactor-clean", dependencies=TRUE)'</code><br>
          then reload this page.`));
     }
     if (report.build) {
@@ -264,10 +264,14 @@ function columnSelect(id, label, selected, {allowNone = false} = {}) {
 
 function buildColumnForm(guesses) {
   $('column-form').innerHTML = [
-    columnSelect('col-reference', 'Reference date <span class="hint">when it happened</span>',
-                 guesses.reference),
-    columnSelect('col-report', 'Report date <span class="hint">when it was published</span>',
-                 guesses.report),
+    columnSelect('col-reference', `<span class="field-term">Reference date${termHelp(
+                   'Reference date',
+                   'When it happened: the date of the event or surveillance period the value measures.'
+                 )}</span>`, guesses.reference),
+    columnSelect('col-report', `<span class="field-term">Report date${termHelp(
+                   'Report date',
+                   'When it was published: the date this version of the value was released or updated.'
+                 )}</span>`, guesses.report),
     columnSelect('col-value', 'Value', guesses.value),
     columnSelect('col-geo', 'Location', guesses.geo, {allowNone: true}),
   ].join('');
@@ -350,11 +354,16 @@ async function runDiagnosis(userTargetLag = null) {
 
 /* --- 4. diagnosis and the target-lag question ------------------------- */
 
-function fact(term, value, explanation = '') {
-  const help = explanation ? `<details class="term-help">
+// A "?" button that reveals a one-sentence explanation of a term.
+function termHelp(term, explanation) {
+  return `<details class="term-help">
     <summary aria-label="Explain ${escapeHtml(term)}">?</summary>
     <span>${escapeHtml(explanation)}</span>
-  </details>` : '';
+  </details>`;
+}
+
+function fact(term, value, explanation = '') {
+  const help = explanation ? termHelp(term, explanation) : '';
   return `<div><dt>${term}${help}</dt><dd>${value}</dd></div>`;
 }
 
@@ -542,8 +551,8 @@ function drawCompletionCurve(report) {
   const initial = points.find((point) => point.lag === Number(range.lower)) || points[0];
 
   const width = 680;
-  const height = 318;
-  const pad = {top: 44, right: 22, bottom: 48, left: 76};
+  const height = 334;
+  const pad = {top: 44, right: 22, bottom: 64, left: 76};
   const plotWidth = width - pad.left - pad.right;
   const plotHeight = height - pad.top - pad.bottom;
   const minLag = 0;
@@ -604,7 +613,7 @@ function drawCompletionCurve(report) {
           class="completion-axis-label">${(tick * 100).toFixed(0)}%</text>`).join('');
   const xTicks = [0, 60, 120, 180, 240, 300, 365];
   const xLabels = xTicks.map((lag) => `
-    <text x="${x(lag).toFixed(1)}" y="${height - 23}" text-anchor="middle"
+    <text x="${x(lag).toFixed(1)}" y="${bottom + 25}" text-anchor="middle"
           class="completion-axis-label">${lag}</text>`).join('');
   const toleranceLines = [0.01, 0.10].filter((value) => value <= maxError).map((value) => `
     <line x1="${pad.left}" x2="${width - pad.right}" y1="${y(value).toFixed(1)}"
@@ -633,7 +642,7 @@ function drawCompletionCurve(report) {
         <line x1="${pad.left}" x2="${width - pad.right}" y1="${bottom}" y2="${bottom}"
               class="completion-axis"/>
         ${xLabels}
-        <text x="${pad.left + plotWidth / 2}" y="${height - 2}" text-anchor="middle"
+        <text x="${pad.left + plotWidth / 2}" y="${bottom + 50}" text-anchor="middle"
               class="completion-axis-title">Target lag (days after reference date)</text>
         <text x="18" y="${pad.top + plotHeight / 2}" text-anchor="middle"
               transform="rotate(-90 18 ${pad.top + plotHeight / 2})"
@@ -1062,6 +1071,7 @@ async function loadResults() {
   }
   state.results = results;
   const tables = results.tables || {};
+  renderSkippedLocations(tables.skipped_locations || []);
   renderLagEvaluation(tables.web_metrics_by_lag || []);
   renderLocationEvaluation(tables.web_metrics_by_location || []);
   renderEarlyLagEvaluation(tables.web_metrics_by_origin_lag || []);
@@ -1070,8 +1080,26 @@ async function loadResults() {
   goToStage(3);
 }
 
+// Locations preparation could not build are absent from every result, so the
+// page names them, with the reason, rather than letting them vanish.
+function renderSkippedLocations(rows) {
+  const box = $('skipped-locations');
+  if (!rows.length) {
+    box.hidden = true;
+    box.innerHTML = '';
+    return;
+  }
+  const items = rows.map((row) =>
+    `<li><strong>${escapeHtml(String(row.geo_value))}</strong>: ${escapeHtml(String(row.reason))}</li>`);
+  box.innerHTML = notice('warn',
+    `${rows.length} location${rows.length === 1 ? ' was' : 's were'} skipped during preparation `
+    + `and ${rows.length === 1 ? 'is' : 'are'} not forecast or evaluated:<ul>${items.join('')}</ul>`);
+  box.hidden = false;
+}
+
 const SERIES_SLOTS = 8;
 let resultTimeMetric = 'ae';
+let resultDisplayScale = 'percent';
 let resultLagRows = [];
 let resultLocationRows = [];
 let resultOriginRows = [];
@@ -1079,6 +1107,28 @@ let resultOriginRows = [];
 function metricRows(rows, metric) {
   return rows.filter((row) => row.metric === metric
     && Number.isFinite(row.median) && Number.isFinite(row.q10) && Number.isFinite(row.q90));
+}
+
+function activeResultMetric() {
+  return resultDisplayScale === 'percent' ? `${resultTimeMetric}_pct` : resultTimeMetric;
+}
+
+function resultMetricLabel() {
+  if (resultDisplayScale === 'percent') {
+    return resultTimeMetric === 'wis' ? 'Relative WIS (%)' : 'Relative error (%)';
+  }
+  return resultTimeMetric === 'wis' ? 'WIS' : 'AE';
+}
+
+function scaleMetricNames() {
+  return resultDisplayScale === 'percent' ? ['ae_pct', 'wis_pct'] : ['ae', 'wis'];
+}
+
+function sharedMetricAxis(rows) {
+  const names = new Set(scaleMetricNames());
+  const values = rows.filter((row) => names.has(row.metric)).flatMap((row) =>
+    [Number(row.q90), Number(row.median)]).filter(Number.isFinite);
+  return niceAxis(Math.max(...values, 0) || 1);
 }
 
 function renderLagEvaluation(rows) {
@@ -1127,59 +1177,72 @@ function bindResultMetricSwitch() {
       drawEarlyLagCharts();
     };
   });
+  document.querySelectorAll('[data-result-scale]').forEach((button) => {
+    button.onclick = () => {
+      resultDisplayScale = button.dataset.resultScale;
+      document.querySelectorAll('[data-result-scale]').forEach((candidate) =>
+        candidate.classList.toggle('active', candidate.dataset.resultScale === resultDisplayScale));
+      $('evaluation-scale-note').textContent = resultDisplayScale === 'percent'
+        ? 'Percentages show each error relative to the size of the later target value, so errors at locations of different sizes can be compared.'
+        : "Scores use the indicator's original reported units.";
+      drawLagEvaluation();
+      drawLocationEvaluation();
+      drawEarlyLagCharts();
+    };
+  });
 }
 
 function drawLocationEvaluation() {
   const container = $('location-score-chart');
   if (!container) return;
-  const isWis = resultTimeMetric === 'wis';
-  $('location-score-title').textContent =
-    `${isWis ? 'WIS' : 'AE'} by location at early reporting lags`;
-  const rows = resultLocationRows.filter((row) => row.metric === resultTimeMetric);
+  const label = resultMetricLabel();
+  $('location-score-title').textContent = `${label} by location at early reporting lags`;
+  const rows = resultLocationRows.filter((row) => row.metric === activeResultMetric());
   if (!rows.length) {
-    container.innerHTML = `<p class="hint empty-chart">No ${isWis ? 'WIS' : 'AE'} location summary is available. Re-run post-assessment with the current version to create it.</p>`;
+    container.innerHTML = `<p class="hint empty-chart">No ${label} location summary is available. Re-run post-assessment with the current version to create it.</p>`;
     return;
   }
+  const sharedYAxis = sharedMetricAxis(resultLocationRows);
   drawLocationBarChart('location-score-chart', rows, {
-    yLabel: isWis ? 'Median WIS' : 'Median AE',
+    yLabel: `Median ${label}`, yMax: sharedYAxis.maximum, yTicks: sharedYAxis.ticks,
   });
 }
 
 function drawLagEvaluation() {
   if (!resultLagRows.length) return;
-  const isWis = resultTimeMetric === 'wis';
-  $('lag-score-title').textContent = `${isWis ? 'WIS' : 'AE'} over reporting lags`;
-  drawQuantileBandChart('lag-score-chart', metricRows(resultLagRows, resultTimeMetric), {
+  const label = resultMetricLabel();
+  const sharedYAxis = sharedMetricAxis(resultLagRows);
+  $('lag-score-title').textContent = `${label} over reporting lags`;
+  drawQuantileBandChart('lag-score-chart', metricRows(resultLagRows, activeResultMetric()), {
     xField: 'lag', xLabel: 'Reporting lag (days)',
-    yLabel: isWis ? 'WIS' : 'AE', xKind: 'number',
+    yLabel: label, xKind: 'number', yMax: sharedYAxis.maximum, yTicks: sharedYAxis.ticks,
   });
 }
 
 function drawEarlyLagCharts() {
   const container = $('early-lag-grid');
   if (!container || !resultOriginRows.length) return;
-  const eligible = metricRows(resultOriginRows, resultTimeMetric);
+  const eligible = metricRows(resultOriginRows, activeResultMetric());
   if (!eligible.length) {
-    container.innerHTML = `<p class="hint">WIS is unavailable because the selected methods did not issue predictive distributions.</p>`;
+    container.innerHTML = `<p class="hint">${resultMetricLabel()} is unavailable for the selected methods.</p>`;
     return;
   }
   const allLags = [...new Set(eligible.map((row) => Number(row.lag)))]
     .filter(Number.isFinite).sort((a, b) => a - b).slice(0, 2);
   const selectedRows = eligible.filter((row) => allLags.includes(Number(row.lag)));
-  const observedMaximum = Math.max(...selectedRows.flatMap((row) =>
-    [Number(row.q90), Number(row.median)]), 0) || 1;
-  const sharedYAxis = niceAxis(observedMaximum);
+  const axisRows = resultOriginRows.filter((row) => allLags.includes(Number(row.lag)));
+  const sharedYAxis = sharedMetricAxis(axisRows);
   const sharedXKeys = [...new Set(selectedRows.map((row) => row.cutoff))].sort();
   container.innerHTML = allLags.map((lag, index) => `
     <figure class="result-figure early-lag-figure">
       <figcaption><span class="fig-title">Lag ${escapeHtml(String(lag))} days</span>
-        <span class="fig-sub">${resultTimeMetric === 'wis' ? 'WIS' : 'AE'} · lower is better</span></figcaption>
+        <span class="fig-sub">${resultMetricLabel()} · lower is better</span></figcaption>
       <div class="result-chart" id="early-lag-chart-${index}"></div>
     </figure>`).join('');
   allLags.forEach((lag, index) => drawQuantileBandChart(
     `early-lag-chart-${index}`, eligible.filter((row) => Number(row.lag) === lag), {
       xField: 'cutoff', xLabel: 'report-date origin',
-      yLabel: resultTimeMetric === 'wis' ? 'WIS' : 'AE', xKind: 'date',
+      yLabel: resultMetricLabel(), xKind: 'date',
       compact: true, yMax: sharedYAxis.maximum, yTicks: sharedYAxis.ticks,
       xKeys: sharedXKeys,
     }));
@@ -1214,7 +1277,9 @@ function drawLocationBarChart(containerId, rows, options) {
     - (nullMedians.get(a) ?? locationMedians.get(a)) || a.localeCompare(b));
 
   const observedMaximum = Math.max(...rows.map((row) => Number(row.q90)), 0) || 1;
-  const yAxis = niceAxis(observedMaximum);
+  const yAxis = Number.isFinite(options.yMax)
+    ? {maximum: options.yMax, ticks: options.yTicks || niceAxis(options.yMax).ticks}
+    : niceAxis(observedMaximum);
   const width = Math.max(720, locations.length * Math.max(50, methods.length * 15 + 18));
   const height = 350;
   const pad = {top: 14, right: 18, bottom: 82, left: 76};
@@ -1285,8 +1350,8 @@ function drawQuantileBandChart(containerId, rows, options) {
     return;
   }
   const width = 960;
-  const height = options.compact ? 225 : 350;
-  const pad = {top: 14, right: 20, bottom: 52, left: 88};
+  const height = options.compact ? 237 : 362;
+  const pad = {top: 14, right: 20, bottom: 64, left: 88};
   const plotWidth = width - pad.left - pad.right;
   const plotHeight = height - pad.top - pad.bottom;
   const keys = options.xKeys || [...new Set(rows.map((row) => row[options.xField]))]
@@ -1328,7 +1393,7 @@ function drawQuantileBandChart(containerId, rows, options) {
     .map((index) => {
       const raw = String(keys[index]);
       const label = options.xKind === 'date' ? raw.slice(0, 7) : raw;
-      return `<text x="${x(keys[index]).toFixed(1)}" y="${height - 22}" text-anchor="middle"
+      return `<text x="${x(keys[index]).toFixed(1)}" y="${pad.top + plotHeight + 30}" text-anchor="middle"
         font-size="15" font-weight="550" fill="var(--text-primary)">${escapeHtml(label)}</text>`;
     }).join('');
   const legend = series.map((entry) => `<li><span class="swatch" style="background:${entry.color}"></span>
@@ -1339,7 +1404,7 @@ function drawQuantileBandChart(containerId, rows, options) {
       <line x1="${pad.left}" x2="${width - pad.right}" y1="${pad.top + plotHeight}"
         y2="${pad.top + plotHeight}" stroke="var(--border-strong)"/>
       ${xLabels}
-      <text x="${pad.left + plotWidth / 2}" y="${height - 2}" text-anchor="middle"
+      <text x="${pad.left + plotWidth / 2}" y="${pad.top + plotHeight + 52}" text-anchor="middle"
         font-size="16" font-weight="600" fill="var(--text-primary)">${escapeHtml(options.xLabel)}</text>
       <text x="20" y="${pad.top + plotHeight / 2}" text-anchor="middle"
         transform="rotate(-90 20 ${pad.top + plotHeight / 2})"

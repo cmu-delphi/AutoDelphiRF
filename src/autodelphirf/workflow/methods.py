@@ -11,16 +11,30 @@ from ..models.revroute_delphirf import (PRIMARY_METHODS, PRIMARY_METHOD_ID,
 
 
 def train_requested_delphirf(config, prepared: pd.DataFrame, schedule: pd.DataFrame,
-                             methods: tuple[str, ...], output: Path):
+                             methods: tuple[str, ...], output: Path, *,
+                             model_dir: Path | None = None, model_mode: str = "train",
+                             issued_forecasts: Path | None = None,
+                             unresolved_only: bool = False):
     """Resolve requested model adapters, then execute one shared backend run."""
     unknown = set(methods).difference(DELPHIRF_METHODS)
     if unknown:
         raise ValueError(f"not DelphiRF methods: {sorted(unknown)}")
-    pools = (prepare_revroute_delphirf(prepared, schedule, output)
+    pool_options = ({"preserve_existing": True} if model_mode != "train" else {})
+    pools = (prepare_revroute_delphirf(prepared, schedule, output, **pool_options)
              if any(method in PRIMARY_METHODS for method in methods) else None)
+    persistence = {}
+    if model_dir is not None:
+        persistence["model_dir"] = model_dir
+    if model_mode != "train":
+        persistence["model_mode"] = model_mode
+    if issued_forecasts is not None:
+        persistence["issued_forecasts"] = issued_forecasts
+    if unresolved_only:
+        persistence["unresolved_only"] = True
     path, seconds, provenance = train_delphirf(
         config, prepared, schedule,
-        {method: DELPHIRF_METHODS[method] for method in methods}, output, pools=pools)
+        {method: DELPHIRF_METHODS[method] for method in methods}, output, pools=pools,
+        **persistence)
     if any(method in PRIMARY_METHODS for method in methods):
         provenance["primary_method_id"] = PRIMARY_METHOD_ID
     return path, seconds, provenance

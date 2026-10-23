@@ -42,12 +42,12 @@ def bootstrap(data: pd.DataFrame, subset: str, point_pairs: list[tuple[str, str]
     The reference date is the resampling unit: all rows sharing one reference
     date are resampled together, never independently.
     ``data`` must be a long prediction table with columns ``method``,
-    ``absolute_error``, ``wis``, and every column in ``key``.
+    ``absolute_error``, ``wis_reporting``, and every column in ``key``.
     """
     reps = DEFAULT_REPS if reps is None else reps
     rng = np.random.default_rng(seed)
     rows = []
-    for metric, pairs in (("absolute_error", point_pairs), ("wis", distribution_pairs)):
+    for metric, pairs in (("absolute_error", point_pairs), ("wis_reporting", distribution_pairs)):
         for left, right in pairs:
             pivot = data.pivot_table(index=key, columns="method", values=metric, aggfunc="first")
             if left not in pivot or right not in pivot:

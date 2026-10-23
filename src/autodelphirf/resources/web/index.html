@@ -271,9 +271,9 @@
   <div class="wizard-page" data-wizard-page="3" hidden>
   <section class="card" id="card-results" hidden aria-labelledby="h-results">
     <h2 id="h-results">Evaluate results</h2>
-    <p class="section-intro">Scores are expressed in the indicator's original units.
-      Each line is the median location-level
-      score; the shaded band spans the 10th to 90th percentiles across locations.</p>
+    <p class="section-intro">View scores in the indicator's reported units or as
+      target-relative percentages. Each line is the median location-level score; the shaded
+      band spans the 10th to 90th percentiles across locations.</p>
     <div class="score-definitions" aria-label="Evaluation score definitions">
       <article>
         <h3>Absolute error (AE)</h3>
@@ -323,13 +323,25 @@
       </article>
     </div>
     <div id="results-message"></div>
+    <div id="skipped-locations" hidden></div>
     <div class="evaluation-toolbar">
-      <span class="evaluation-toolbar-label">Score shown in every figure</span>
-      <div class="metric-switch" role="group" aria-label="Evaluation score">
-        <button type="button" class="active" data-result-metric="ae">AE</button>
-        <button type="button" data-result-metric="wis">WIS</button>
+      <span class="evaluation-toolbar-label">Applied to every figure</span>
+      <div class="evaluation-controls">
+        <div class="evaluation-choice"><span>Display</span>
+          <div class="metric-switch" role="group" aria-label="Evaluation display">
+            <button type="button" class="active" data-result-scale="percent">Relative error (%)</button>
+            <button type="button" data-result-scale="reported">Reported units</button>
+          </div>
+        </div>
+        <div class="evaluation-choice"><span>Score</span>
+          <div class="metric-switch" role="group" aria-label="Evaluation score">
+            <button type="button" class="active" data-result-metric="ae">AE</button>
+            <button type="button" data-result-metric="wis">WIS</button>
+          </div>
+        </div>
       </div>
     </div>
+    <p class="evaluation-scale-note" id="evaluation-scale-note">Percentages show each error relative to the size of the later target value, so errors at locations of different sizes can be compared.</p>
     <div class="lag-score-grid" id="lag-score-grid" hidden>
       <figure class="result-figure">
         <figcaption><span class="fig-title" id="lag-score-title">AE over reporting lags</span>

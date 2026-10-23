@@ -24,7 +24,9 @@ from conftest import archive_frame
 @pytest.fixture
 def archive_csv(tmp_path):
     path = tmp_path / "archive.csv"
-    archive_frame().to_csv(path, index=False)
+    # Episodes reach lag 70, so target-lag evidence has eligible episodes
+    # (largest lag of at least 60 days).
+    archive_frame(max_lag=70).to_csv(path, index=False)
     return path
 
 
@@ -119,7 +121,7 @@ def test_single_location_archive_is_diagnosed_not_rejected(tmp_path):
 
 def test_fraction_signals_are_diagnosed_on_the_ratio_not_the_numerator(tmp_path):
     """A rate's revision behaviour is the rate's, not its numerator's."""
-    frame = archive_frame(days=120, locations=("aa",))
+    frame = archive_frame(days=120, max_lag=70, locations=("aa",))
     # A numerator that never settles, over a denominator that tracks it: the
     # RATIO is stable from lag 0, so diagnosing the numerator alone would
     # report a long target lag where the modelled quantity needs a short one.
@@ -173,7 +175,7 @@ def test_a_user_target_lag_is_always_used_exactly(
 
 
 def test_target_lag_cannot_exceed_the_modelled_two_year_horizon(tmp_path, archive_csv):
-    with pytest.raises(PreparationError, match="between 0 and 730 days"):
+    with pytest.raises(PreparationError, match="between 1 and 730 days"):
         build_spec("d", archive_csv, tmp_path / "out", target_lag=731)
 
 
@@ -195,10 +197,11 @@ def test_weekly_streams_get_no_weekday_encoding(tmp_path, archive_csv):
 
 def test_weekday_groups_are_model_settings_not_preprocessing_arguments(tmp_path, archive_csv):
     spec = build_spec("d", archive_csv, tmp_path / "out",
-                      temporal_resol="daily", weekday_groups={"Weekend": ["Sat", "Sun"]},
+                      temporal_resol="daily", weekday_groups={"weekend": [6, 7]},
                       target_lag=21)
     payload = spec.to_r_spec()
-    assert payload["weekday_groups"] == {"Weekend": ["Sat", "Sun"]}
+    assert payload["weekday_groups"] == {"weekend": ["Sat", "Sun"]}
+    assert payload["weekday_groups_source"] == "manual"
     assert "onehot_weekdays" not in payload
 
 
@@ -218,13 +221,12 @@ def test_pre_diagnosis_chooses_model_groups_from_observed_report_weekdays(
 
 
 def test_weekday_groups_must_be_disjoint_and_leave_a_reference_day(tmp_path, archive_csv):
-    with pytest.raises(PreparationError, match="overlap"):
+    with pytest.raises(PreparationError, match="assigned to both"):
         build_spec("d", archive_csv, tmp_path / "out", temporal_resol="daily",
-                   weekday_groups={"A": ["Mon", "Tue"], "B": ["Tue"]}, target_lag=21)
+                   weekday_groups={"A": [1, 2], "B": [2]}, target_lag=21)
     with pytest.raises(PreparationError, match="reference category"):
         build_spec("d", archive_csv, tmp_path / "out", temporal_resol="daily",
-                   weekday_groups={day: [day] for day in
-                                   ("Mon", "Tue", "Wed", "Thurs", "Fri", "Sat", "Sun")},
+                   weekday_groups={f"day{day}": [day] for day in range(1, 8)},
                    target_lag=21)
 
 
@@ -250,10 +252,9 @@ def test_the_written_config_loads_and_points_at_the_triangle(tmp_path, archive_c
     assert config.name == "mine"
     assert config.prepared_dir == spec.output_dir
     assert config.prediction_layers == ("baseline_null", "red")
-    assert config.revision_profile == {
-        "weekday_groups": spec.weekday_groups,
-        "lag_terms": list(spec.lag_terms),
-    }
+    # The weekday groups and lag terms live only in preparation.json.
+    assert config.revision_profile is None
+    assert "revision_profile" not in json.loads(config_path.read_text())
 
 
 def test_generated_config_paths_are_relative_so_the_directory_can_be_moved(

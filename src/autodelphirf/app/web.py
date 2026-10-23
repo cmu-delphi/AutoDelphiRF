@@ -259,10 +259,14 @@ def environment_report() -> dict:
     script = (
         'suppressMessages(library(DelphiRF)); ns <- asNamespace("DelphiRF"); '
         'need <- c("ref_lag", "lagged_term_list", "value_type", "temporal_resol", '
-        '"smoothed", "target_lag_lower_tolerance", "target_lag_upper_tolerance"); '
+        '"smoothed", "revision_start_lag"); '
         'missing <- setdiff(need, names(formals(DelphiRF::data_preprocessing))); '
         'if (!"model_backend" %in% names(formals(DelphiRF::revision_forecast))) '
         'missing <- c(missing, "revision_forecast(model_backend)"); '
+        'if (!"working_scale" %in% names(formals(DelphiRF::revision_forecast))) '
+        'missing <- c(missing, "revision_forecast(working_scale)"); '
+        'if (!exists("create_weight_anchors", envir = ns)) '
+        'missing <- c(missing, "create_weight_anchors()"); '
         'if ("onehot_weekdays" %in% names(formals(DelphiRF:::create_params_list))) '
         'missing <- c(missing, "create_params_list() without onehot_weekdays"); '
         'cat("version=", as.character(utils::packageVersion("DelphiRF")), "\\n", sep=""); '
@@ -311,6 +315,8 @@ RESULT_TABLES = {
     "revroute_pools": ("revroute_pool_summary.csv",),
     "_revroute_assignments": ("revroute_pools.csv",),
     "revroute_pool_profile": ("report/tables/rr_delphirf_cluster_profile.csv",),
+    # Locations preparation could not build: absent from every result below.
+    "skipped_locations": ("skipped_locations.csv",),
 }
 
 #: Rows of any one table sent to the page. A run with hundreds of retraining

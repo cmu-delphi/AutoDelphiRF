@@ -1,6 +1,6 @@
 """The ``autodelphirf`` command line.
 
-Six subcommands, in the order a new user meets them:
+Seven subcommands, in the order a new user meets them:
 
   ``autodelphirf diagnose``  read a raw archive and print what AutoDelphiRF would do
                          with it. Pure Python, no R, nothing written.
@@ -8,10 +8,13 @@ Six subcommands, in the order a new user meets them:
                          dataset JSON from a raw archive, by calling DelphiRF.
   ``autodelphirf run``       train, test, evaluate, and produce the final report.
                          Given ``--archive`` it prepares first; given ``--config``
-                         it runs an already-prepared dataset.
+                         it reruns a dataset that ``autodelphirf prepare`` built.
+  ``autodelphirf update``    ingest a later release of the same raw archive,
+                         reuse the frozen preparation contract and saved models,
+                         and append newly issued forecasts.
   ``autodelphirf assess``    rerun post-forecast assessment from saved predictions;
                          never fits a model.
-  ``autodelphirf init``      write a starter raw or prepared dataset JSON.
+  ``autodelphirf init``      write a starter raw-archive configuration JSON.
   ``autodelphirf web``       do all of the above in a browser: drag a file in and
                          answer the questions on a page.
 
@@ -29,16 +32,20 @@ explicit choice.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
 import sys
 
+import pandas as pd
+
 from .. import __version__
 from ..core.config import load_dataset_config
+from ..core.io import describe_skipped_locations, read_skipped_locations
 from ..pre_diagnosis.preparation import (DEFAULT_MIN_LOCATION_ROWS, DEFAULT_RETRAIN_DAYS,
                                          PreparationError, build_spec, diagnose_archive,
-                                         prepare_dataset)
+                                         iso_weekday_groups, prepare_dataset)
 from ..core.registry import DEFAULT_LAYERS, PREDICTION_LAYERS
 from ..core.resources import resource_path
 
@@ -96,8 +103,8 @@ def _load_raw_config(arguments: argparse.Namespace) -> argparse.Namespace:
         raise ValueError("raw dataset config preprocessing and retraining must be objects")
     preprocessing_fields = {
         "target_lag", "confirm_target_lag", "temporal_resolution", "lag_terms",
-        "training_days", "smoothed", "target_lag_lower_tolerance",
-        "target_lag_upper_tolerance", "min_location_rows", "triangle_format"}
+        "training_days", "smoothed", "smoothed_target", "weekday_groups",
+        "min_location_rows", "triangle_format"}
     retraining_fields = {"first_origin_date", "retrain_days", "start_date", "end_date"}
     if set(preprocessing).difference(preprocessing_fields):
         raise ValueError(f"unknown preprocessing fields: "
@@ -125,8 +132,10 @@ def _load_raw_config(arguments: argparse.Namespace) -> argparse.Namespace:
     arguments.lag_terms = preprocessing.get("lag_terms")
     arguments.training_days = preprocessing.get("training_days")
     arguments.smoothed = preprocessing.get("smoothed")
-    arguments.target_lag_lower_tolerance = preprocessing.get("target_lag_lower_tolerance", 0)
-    arguments.target_lag_upper_tolerance = preprocessing.get("target_lag_upper_tolerance", 0)
+    arguments.smoothed_target = preprocessing.get("smoothed_target")
+    # ISO weekday numbers per group (1 = Monday ... 7 = Sunday); null or absent
+    # means the groups are detected from the archive's report dates.
+    arguments.weekday_groups = preprocessing.get("weekday_groups")
     arguments.min_location_rows = preprocessing.get("min_location_rows", DEFAULT_MIN_LOCATION_ROWS)
     arguments.triangle_format = preprocessing.get("triangle_format", "parquet")
     arguments.first_origin_date = retraining.get("first_origin_date")
@@ -187,9 +196,16 @@ def preparation_options(include_archive: bool = True) -> argparse.ArgumentParser
     diagnosed.add_argument("--training-days", type=int,
                            help="rolling training window length in days")
     diagnosed.add_argument("--smoothed", dest="smoothed", action="store_true", default=None,
-                           help="model the 7-day trailing average")
+                           help="the archive values are already smoothed: DelphiRF does no "
+                                "further averaging and the target is the archive value")
+    diagnosed.add_argument("--smoothed-target", dest="smoothed_target", action="store_true",
+                           default=None,
+                           help="predict the 7-day-average target at lag L (for a fraction, the "
+                                "7-day mean numerator over the 7-day mean denominator) from "
+                                "the matching 7-day-average provisional value")
     diagnosed.add_argument("--no-smoothed", dest="smoothed", action="store_false",
-                           help="model the unsmoothed value")
+                           help="(default) predict the unsmoothed target value; a daily "
+                                "stream's features use 7-day trailing averages")
 
     calendar = parser.add_argument_group(
         "retraining calendar",
@@ -207,10 +223,6 @@ def preparation_options(include_archive: bool = True) -> argparse.ArgumentParser
     calendar.add_argument("--end-date", help="last test origin, YYYY-MM-DD")
 
     advanced = parser.add_argument_group("advanced")
-    advanced.add_argument("--target-lag-lower-tolerance", type=int, default=0, metavar="N",
-                          help="days before L at which a target may be read (default: 0)")
-    advanced.add_argument("--target-lag-upper-tolerance", type=int, default=0, metavar="N",
-                          help="days after L at which a target may be read (default: 0)")
     advanced.add_argument("--min-location-rows", type=int, default=DEFAULT_MIN_LOCATION_ROWS,
                           metavar="N",
                           help=f"skip locations with fewer archive rows "
@@ -247,14 +259,16 @@ def _spec_from_arguments(arguments: argparse.Namespace):
         reference_col=arguments.reference_col, report_col=arguments.report_col,
         value_cols=value_cols, geo_col=None if arguments.no_geo else arguments.geo_col,
         value_type=arguments.value_type, smoothed=arguments.smoothed,
+        smoothed_target=getattr(arguments, "smoothed_target", None),
         target_lag=arguments.target_lag, confirm_target_lag=arguments.confirm_target_lag,
         temporal_resol=arguments.temporal_resolution,
         lag_terms=lag_terms, training_days=arguments.training_days,
         testing_days=arguments.testing_days, first_origin_date=arguments.first_origin_date,
-        lower=arguments.target_lag_lower_tolerance,
-        upper=arguments.target_lag_upper_tolerance, start_date=arguments.start_date,
+        start_date=arguments.start_date,
         end_date=arguments.end_date, triangle_format=arguments.triangle_format,
-        min_location_rows=arguments.min_location_rows)
+        min_location_rows=arguments.min_location_rows,
+        weekday_groups=getattr(arguments, "weekday_groups", None),
+        as_of_date=getattr(arguments, "as_of_date", None))
 
 
 def _report_diagnosis(diagnosis: dict) -> None:
@@ -268,8 +282,11 @@ def _report_diagnosis(diagnosis: dict) -> None:
           f"report axis {diagnosis['report_axis_resolution']})")
     print(f"  feature lags        {diagnosis['reference_axis_feature_lags']}")
     bounds = diagnosis.get("target_lag_suggested_range") or {}
-    print(f"  suggested L area    {bounds.get('lower')} .. {bounds.get('upper')} days "
-          "(90% within 10% .. 1% relative error)")
+    if bounds.get("skipped"):
+        print("  suggested L area    skipped (target lag specified)")
+    else:
+        print(f"  suggested L area    {bounds.get('lower')} .. {bounds.get('upper')} days "
+              "(90% within 10% .. 1% relative error)")
     resolved = diagnosis.get("resolved_target_lag")
     print(f"  selected L          {resolved if resolved is not None else 'awaiting user decision'} "
           f"({diagnosis['target_lag_resolution']})")
@@ -311,6 +328,11 @@ def command_prepare(arguments: argparse.Namespace) -> int:
     print(f"\nBuilding prepared triangle in {spec.output_dir} (DelphiRF)\n")
     config_path = prepare_dataset(spec, prediction_layers=arguments.layers,
                                   config_path=Path(arguments.out) / f"{spec.name}.json")
+    skipped = read_skipped_locations(spec.output_dir)
+    if not skipped.empty:
+        print(f"\n{len(skipped)} location(s) were skipped during preparation and will not be "
+              "forecast or evaluated:")
+        print("\n".join(describe_skipped_locations(skipped)))
     print(f"\nWrote dataset config: {config_path}")
     print(f"Run it with: autodelphirf run --config {config_path}")
     return 0
@@ -318,7 +340,7 @@ def command_prepare(arguments: argparse.Namespace) -> int:
 
 def command_run(arguments: argparse.Namespace) -> int:
     # Imported here, not at module scope: `autodelphirf diagnose` and `--help`
-    # should not pay for pipeline's sklearn/matplotlib import chain.
+    # should not pay for the pipeline's scipy/matplotlib import chain.
     from ..workflow.run import run_pipeline
 
     if arguments.raw_config is not None:
@@ -337,12 +359,85 @@ def command_run(arguments: argparse.Namespace) -> int:
 
     config = load_dataset_config(config_file)
     print(f"\nRunning {config.name}: layers {list(config.prediction_layers)}\n")
-    summary = run_pipeline(config, diagnosis_only=arguments.diagnosis_only)
+    summary = run_pipeline(config, diagnosis_only=arguments.diagnosis_only,
+                           post_assessment=not arguments.no_post_assessment)
     if arguments.diagnosis_only:
         print(json.dumps(summary, indent=2, default=str))
         print(f"\nInput diagnosis written to {config.output_dir / 'diagnostics'}")
         return 0
+    if arguments.no_post_assessment:
+        print(f"\nDone. Evaluated predictions: {config.output_dir / 'predictions.csv.gz'} "
+              "(post-assessment skipped)")
+        return 0
     print(f"\nDone. Report: {config.output_dir / 'report' / 'report.html'}")
+    return 0
+
+
+def _apply_frozen_update_settings(arguments: argparse.Namespace) -> argparse.Namespace:
+    """Fill diagnosis-derived settings from the first successful preparation."""
+    preparation = Path(arguments.out) / arguments.name / "preparation.json"
+    contract = Path(arguments.out) / "results" / "analysis_contract.json"
+    if not preparation.is_file() or not contract.is_file():
+        raise FileNotFoundError(
+            "returning-user update needs an earlier completed run in the configured work_dir")
+    resolved = json.loads(preparation.read_text())["resolved_preprocessing"]
+    frozen = json.loads(contract.read_text())["settings"]
+    arguments.target_lag = int(frozen["ref_lag"])
+    arguments.confirm_target_lag = True
+    arguments.temporal_resolution = frozen["temporal_resol"]
+    arguments.lag_terms = tuple(frozen["lag_terms"])
+    arguments.training_days = int(frozen["training_days"])
+    arguments.smoothed = bool(frozen["smoothed"])
+    arguments.smoothed_target = str(frozen.get("target_column", "")).endswith("_7dav")
+    arguments.testing_days = int(frozen["testing_days"])
+    arguments.first_origin_date = resolved["start_date"]
+    arguments.start_date = None
+    arguments.end_date = None
+    # The frozen groups are reused exactly (in ISO numbers), keeping whether
+    # they were originally detected or chosen by the user.
+    arguments.weekday_groups = iso_weekday_groups(frozen.get("weekday_groups") or {})
+    arguments.weekday_groups_source = resolved.get("weekday_groups_source")
+    return arguments
+
+
+def command_update(arguments: argparse.Namespace) -> int:
+    """Refresh preparation and forecast state from a later archive release."""
+    from ..workflow.run import run_pipeline
+    from ..workflow.operational import raw_archive_state
+
+    arguments = _load_raw_config(arguments)
+    prepared_dir = Path(arguments.out) / arguments.name
+    contract = Path(arguments.out) / "results" / "analysis_contract.json"
+    initialized = (prepared_dir / "preparation.json").is_file() and contract.is_file()
+    if initialized:
+        arguments = _apply_frozen_update_settings(arguments)
+        preview = raw_archive_state(
+            prepared_dir, Path(arguments.out) / "results", commit=False)
+        if not preview["changed"] and arguments.as_of_date is None:
+            print("The raw archive is unchanged; models and forecasts are already current.")
+            return 0
+    if arguments.as_of_date is not None:
+        first_origin = arguments.first_origin_date
+        if first_origin is None:
+            raise PreparationError("--as-of-date requires a configured first_origin_date")
+        if pd.Timestamp(arguments.as_of_date) < pd.Timestamp(first_origin):
+            raise PreparationError("--as-of-date cannot precede the first retraining origin")
+        arguments.start_date = first_origin
+        arguments.end_date = arguments.as_of_date
+        arguments.first_origin_date = None
+    spec = _spec_from_arguments(arguments)
+    if getattr(arguments, "weekday_groups_source", None):
+        spec = replace(spec, weekday_groups_source=arguments.weekday_groups_source)
+    config_file = prepare_dataset(
+        spec, prediction_layers=arguments.layers,
+        config_path=Path(arguments.out) / f"{spec.name}.json")
+    config = load_dataset_config(config_file)
+    action = "Updating" if initialized else "Initializing real-time deployment for"
+    print(f"\n{action} {config.name} from {arguments.archive}\n")
+    summary = run_pipeline(config, model_mode=arguments.model_mode,
+                           incremental_update=True)
+    print(f"\nUpdate complete. Forecast ledger: "
+          f"{summary['forecast_ledger']['path']}")
     return 0
 
 
@@ -367,22 +462,13 @@ def command_init(arguments: argparse.Namespace) -> int:
     if destination.exists() and not arguments.force:
         print(f"{destination} already exists; pass --force to overwrite.", file=sys.stderr)
         return 1
-    resource = ("raw_dataset_template.json" if arguments.kind == "raw"
-                else "prepared_dataset_template.json")
-    template = json.loads(resource_path(resource).read_text())
+    template = json.loads(resource_path("raw_dataset_template.json").read_text())
     template["name"] = arguments.name
-    keys = (("archive",) if arguments.kind == "raw"
-            else ("prepared_dir", "output_dir"))
-    for key in keys:
-        template[key] = template[key].replace("your_dataset_name", arguments.name)
+    template["archive"] = template["archive"].replace("your_dataset_name", arguments.name)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(template, indent=2) + "\n")
-    if arguments.kind == "raw":
-        print(f"Wrote {destination}. Fill in the raw archive and column mapping, then:\n"
-              f"  autodelphirf diagnose --raw-config {destination}")
-    else:
-        print(f"Wrote {destination}. Fill in prepared_dir/output_dir, then:\n"
-              f"  autodelphirf run --config {destination} --diagnosis-only")
+    print(f"Wrote {destination}. Fill in the raw archive and column mapping, then:\n"
+          f"  autodelphirf diagnose --raw-config {destination}")
     return 0
 
 
@@ -418,11 +504,12 @@ def build_parser() -> argparse.ArgumentParser:
         "run", parents=[preparation_options(include_archive=False)],
         help="train, test, evaluate, and report; prepare the data first if needed",
         description="Run the rolling AutoDelphiRF pipeline. Pass --archive to go from a "
-                    "raw archive to a report in one command, or --config to run a dataset that "
-                    "is already prepared.")
+                    "raw archive to a report in one command, or --config to rerun a dataset that "
+                    "autodelphirf prepare built.")
     source = run.add_mutually_exclusive_group(required=True)
     source.add_argument("--config", type=Path, metavar="JSON",
-                        help="dataset config of an already-prepared dataset")
+                        help="dataset JSON written by autodelphirf prepare (a triangle built "
+                             "elsewhere is not supported)")
     source.add_argument("--archive", type=Path, metavar="CSV",
                         help="raw revision archive to prepare and then run")
     source.add_argument("--raw-config", type=Path, metavar="JSON",
@@ -432,7 +519,26 @@ def build_parser() -> argparse.ArgumentParser:
                           f"(default: {','.join(DEFAULT_LAYERS)})")
     run.add_argument("--diagnosis-only", action="store_true",
                      help="validate the input and stop before fitting anything")
+    run.add_argument("--no-post-assessment", action="store_true",
+                     help="fit, predict and evaluate, then stop before calibration, "
+                          "reliability, bootstrap and the report")
     run.set_defaults(handler=command_run)
+
+    update = subparsers.add_parser(
+        "update", parents=[preparation_options(include_archive=False)],
+        help="process a later release using the first run's frozen settings and saved models",
+        description="Run this for every new complete raw-archive release. Rebuild the prepared "
+                    "triangle, keep the first run's preprocessing choices, reuse the deployed "
+                    "models between retraining origins, fit a new model only when due, and "
+                    "append newly issued forecasts to the persistent ledger.")
+    update.add_argument("--raw-config", type=Path, required=True, metavar="JSON",
+                        help="the same raw configuration used for the first run")
+    update.add_argument("--as-of-date", metavar="YYYY-MM-DD",
+                        help="calendar date of this operational update; use it for a scheduled "
+                             "retraining date with no new raw release (ordinary release-driven "
+                             "updates infer the current horizon from the archive)")
+    update.set_defaults(model_mode="auto")
+    update.set_defaults(handler=command_update, layers=DEFAULT_LAYERS)
 
     assess = subparsers.add_parser(
         "assess", help="rerun assessment and reporting without fitting models",
@@ -465,13 +571,13 @@ def build_parser() -> argparse.ArgumentParser:
     web.set_defaults(handler=command_web)
 
     initialize = subparsers.add_parser(
-        "init", help="write a starter raw or prepared dataset JSON",
-        description="Write a configuration template to fill in by hand. Raw configurations "
-                    "can drive diagnosis, preparation, and a complete run; prepared "
-                    "configurations register a triangle built elsewhere.")
+        "init", help="write a starter raw-archive configuration JSON",
+        description="Write a raw-archive configuration template to fill in by hand. It can "
+                    "drive diagnosis, preparation, and a complete run.")
     initialize.add_argument("--name", required=True, help="dataset name")
-    initialize.add_argument("--kind", choices=("raw", "prepared"), default="prepared",
-                            help="configuration contract to write (default: prepared)")
+    initialize.add_argument("--kind", choices=("raw",), default="raw",
+                            help="configuration to write; only raw-archive configurations are "
+                                 "supported (default: raw)")
     initialize.add_argument("--output", type=Path, help="where to write it (default: <name>.json)")
     initialize.add_argument("--force", action="store_true", help="overwrite an existing file")
     initialize.set_defaults(handler=command_init)
@@ -496,9 +602,9 @@ def main(argv: list[str] | None = None) -> int:
                 "--archive", "--name", "--out", "--reference-col", "--report-col",
                 "--value-col", "--geo-col", "--no-geo", "--value-type", "--target-lag",
                 "--confirm-target-lag", "--temporal-resolution", "--lag-terms",
-                "--training-days", "--smoothed", "--no-smoothed", "--first-origin-date",
+                "--training-days", "--smoothed", "--smoothed-target", "--no-smoothed",
+                "--first-origin-date",
                 "--retrain-days", "--start-date", "--end-date",
-                "--target-lag-lower-tolerance", "--target-lag-upper-tolerance",
                 "--min-location-rows", "--triangle-format", "--methods", "--layers"}
             mixed = sorted({token.split("=", 1)[0] for token in supplied}.intersection(raw_options))
             if mixed:

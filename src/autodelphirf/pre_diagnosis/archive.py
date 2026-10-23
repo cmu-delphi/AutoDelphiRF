@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
@@ -44,6 +47,8 @@ class DiagnosisReport:
     training_window_days: int
     training_window_is_fixed_default: bool
     notes: tuple[str, ...] = field(default_factory=tuple)
+    #: Rows removed by each cleaning rule (see ``clean_raw_archive``).
+    cleaning: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {k: getattr(self, k) for k in self.__dataclass_fields__}
@@ -58,9 +63,10 @@ def resolve_target_lag(user_target_lag: int | None = None) -> dict:
     if user_target_lag is None:
         return {"resolved_target_lag": None, "target_lag_resolution": "awaiting_user_choice",
                 "target_lag_confirmation_prompt": "Choose a target lag before continuing."}
-    if not 0 <= int(user_target_lag) <= MAX_OBSERVED_LAG_DAYS:
+    if not 1 <= int(user_target_lag) <= MAX_OBSERVED_LAG_DAYS:
         raise ValueError(
-            f"target lag must be between 0 and {MAX_OBSERVED_LAG_DAYS} days")
+            f"target lag must be between 1 and {MAX_OBSERVED_LAG_DAYS} days: L > 0, so "
+            "there is at least one provisional release to forecast")
     return {"resolved_target_lag": int(user_target_lag),
             "target_lag_resolution": "user_choice",
             "target_lag_confirmation_prompt": None}
@@ -70,7 +76,7 @@ def _axis_resolution(dates: pd.Series) -> tuple[str, dict]:
     """finest-observed-cadence rule: daily if the axis visits more than one
     weekday, weekly if it is confined to a single weekday."""
     unique_dates = pd.to_datetime(pd.Series(dates.unique()))
-    weekdays = unique_dates.dt.dayofweek
+    weekdays = unique_dates.dt.day_of_week
     share = weekdays.value_counts(normalize=True).sort_index()
     share.index = [["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][i] for i in share.index]
     resolution = "daily" if weekdays.nunique() > 1 else "weekly"
@@ -103,13 +109,19 @@ def _target_lag_evidence(archive: pd.DataFrame, candidate_lags, late_observation
                          completion_rate: float) -> tuple[dict, dict, dict]:
     """Return a decision range and per-lag error evidence, never a chosen lag.
 
+    This runs once, on the whole archive, before any target lag is fixed. An
+    episode is eligible when its largest lag in the archive is at least
+    ``late_observation_floor_days``; its most recent value then stands in for
+    the finalized value. At a candidate lag ``a`` an eligible episode's value is
+    its most recent release at or before ``a``, or zero before its first
+    release, so every eligible episode is scored at every candidate lag and the
+    denominator is fixed.
+
     The archive is swept once in lag order. ``current`` holds the most recent
     value observed for every eligible episode, so moving to the next candidate
     lag only applies newly available rows. This avoids the former full-frame
     filter, groupby and two merges for every candidate lag.
     """
-    cutoff = archive.report_date.max()
-
     # The input is already sorted by episode then lag, so adjacent changes in
     # location/reference date define episode ids. This avoids constructing a
     # MultiIndex, which boxes every datetime and dominates large archives.
@@ -123,12 +135,11 @@ def _target_lag_evidence(archive: pd.DataFrame, candidate_lags, late_observation
     values = archive.value.to_numpy(dtype="float64", copy=False)
     lags = archive.lag.to_numpy(dtype="int64", copy=False)
 
+    # Rows are sorted by lag within an episode, so its last row holds both the
+    # most recent value and the largest lag observed in the archive.
     latest_by_episode = values[end_positions]
-    reference_dates = reference[start_positions]
-    cutoff_value = np.datetime64(cutoff.to_datetime64(), "ns")
-    episode_age_days = ((cutoff_value - reference_dates)
-                        .astype("timedelta64[D]").astype("int64"))
-    eligible_episode = episode_age_days >= late_observation_floor_days
+    largest_lag = lags[end_positions]
+    eligible_episode = largest_lag >= late_observation_floor_days
     eligible_ids = np.flatnonzero(eligible_episode)
 
     # Compact ids keep the state vector limited to eligible episodes. Rows
@@ -144,7 +155,9 @@ def _target_lag_evidence(archive: pd.DataFrame, candidate_lags, late_observation
     observed_lag = observed_lag[order]
     observed_value = observed_value[order]
 
-    current = np.full(len(eligible_ids), np.nan, dtype="float64")
+    # Zero before an episode's first release (Ch. 2: lags before the initial
+    # report are reports of zero); forward filled from each release onward.
+    current = np.zeros(len(eligible_ids), dtype="float64")
     latest = latest_by_episode[eligible_ids]
     candidate_lags = sorted({int(lag) for lag in candidate_lags})
     curve = {}
@@ -225,6 +238,84 @@ def _reference_axis_feature_lags(archive: pd.DataFrame) -> tuple[float, list]:
     return cadence, [cadence_days, 2 * cadence_days]
 
 
+#: The raw-archive contract shared by Python pre-diagnosis and R feature
+#: preparation (resources/raw_archive_contract.json). R rejects a version it
+#: does not implement.
+RAW_ARCHIVE_CONTRACT = json.loads(
+    (Path(__file__).resolve().parent.parent / "resources" / "raw_archive_contract.json")
+    .read_text())
+CLEANING_CONTRACT_VERSION = int(RAW_ARCHIVE_CONTRACT["contract_version"])
+assert RAW_ARCHIVE_CONTRACT["lag_horizon_days"] == MAX_OBSERVED_LAG_DAYS
+
+
+def calendar_dates(values: pd.Series) -> pd.Series:
+    """Read raw dates as the calendar date written at the start of each value.
+
+    ``2024-12-06`` and ``2024-12-06T00:00:00Z`` are both 6 December 2024: a
+    time of day or UTC offset after the date is ignored, never converted.
+    Anything else, including an impossible date, is missing. This is the
+    contract's date rule, which prepare_triangle.R applies identically.
+    """
+    text = values.astype("string").str.strip().str.extract(
+        r"^(\d{4}-\d{2}-\d{2})(?:$|[T ])", expand=False)
+    return pd.to_datetime(text, format="%Y-%m-%d", errors="coerce")
+
+
+def clean_raw_archive(archive: pd.DataFrame, *, lag_upper_bound: int = MAX_OBSERVED_LAG_DAYS,
+                      as_of_date=None) -> tuple[pd.DataFrame, dict]:
+    """Apply the shared raw-archive contract with one stage's scope.
+
+    ``archive`` has columns geo_value, reference_date, report_date and value
+    (for a numerator/denominator pair their ratio, missing when undefined);
+    rows without a valid location were removed before. In the contract's
+    order: both dates valid; reported on or before the effective as-of date
+    (``as_of_date`` when given, otherwise the latest valid report date); a
+    usable value; a non-negative lag; a lag of at most ``lag_upper_bound``;
+    and the last usable row per (location, reference date, report date) in
+    file order. Returns the retained rows and the audit counts.
+    """
+    archive = archive.copy()
+    archive["value"] = pd.to_numeric(archive.value, errors="coerce")
+    archive["reference_date"] = calendar_dates(archive.reference_date)
+    archive["report_date"] = calendar_dates(archive.report_date)
+    counts = {}
+
+    def keep(name, mask):
+        nonlocal archive
+        counts[name] = int((~mask).sum())
+        archive = archive[mask]
+
+    keep("invalid_date_rows", archive.reference_date.notna() & archive.report_date.notna())
+    latest_report = archive.report_date.max() if len(archive) else pd.NaT
+    effective = pd.Timestamp(as_of_date) if as_of_date is not None else latest_report
+    keep("future_report_rows", archive.report_date <= effective)
+    visible_report = archive.report_date.max() if len(archive) else pd.NaT
+    keep("unusable_value_rows", archive.value.notna())
+    keep("negative_lag_rows", archive.report_date >= archive.reference_date)
+    archive = archive.assign(
+        lag=(archive.report_date - archive.reference_date).dt.days.astype("int32"))
+    keep("over_lag_limit_rows", archive.lag <= int(lag_upper_bound))
+    keep("duplicate_rows_removed",
+         ~archive.duplicated(["geo_value", "reference_date", "report_date"], keep="last"))
+    counts["as_of"] = {
+        "effective_as_of_date": None if pd.isna(effective) else str(effective.date()),
+        "as_of_source": "explicit" if as_of_date is not None else "inferred",
+        "max_visible_report_date": None if pd.isna(visible_report) else str(visible_report.date())}
+    return archive.reset_index(drop=True), counts
+
+
+def raw_cleaning_audit(scope: str, *, input_rows: int, missing_location_rows: int,
+                       counts: dict, retained: pd.DataFrame, lag_upper_bound: int) -> dict:
+    """The structured record of what cleaning removed, in the shared format."""
+    counts = dict(counts)
+    as_of = counts.pop("as_of")
+    return {"scope": scope, "contract_version": CLEANING_CONTRACT_VERSION, **as_of,
+            "lag_upper_bound": int(lag_upper_bound), "input_rows": int(input_rows),
+            "missing_location_rows": int(missing_location_rows), **counts,
+            "retained_rows": int(len(retained)),
+            "retained_locations": int(retained.geo_value.nunique())}
+
+
 def diagnose_raw_archive(raw: pd.DataFrame, *, geo_value: str = "geo_value",
                          reference_date: str = "reference_date", report_date: str = "report_date",
                          value: str = "value", candidate_lags=None,
@@ -232,7 +323,8 @@ def diagnose_raw_archive(raw: pd.DataFrame, *, geo_value: str = "geo_value",
                          completion_rate: float = DEFAULT_COMPLETION_RATE,
                          late_observation_floor_days: int = DEFAULT_LATE_OBSERVATION_FLOOR_DAYS,
                          training_window_days: int | None = None,
-                         user_target_lag: int | None = None) -> DiagnosisReport:
+                         user_target_lag: int | None = None,
+                         as_of_date=None) -> DiagnosisReport:
     """Diagnose a raw revision archive and recommend RevRoute's preprocessing
     configuration. ``raw`` needs only the four semantic columns named by the
     keyword arguments.
@@ -253,23 +345,12 @@ def diagnose_raw_archive(raw: pd.DataFrame, *, geo_value: str = "geo_value",
     archive = raw[[geo_value, reference_date, report_date, value]].rename(columns={
         geo_value: "geo_value", reference_date: "reference_date",
         report_date: "report_date", value: "value"})
-    archive["geo_value"] = archive.geo_value.astype("category")
-    archive["value"] = pd.to_numeric(archive.value, errors="coerce", downcast="float")
-    archive["reference_date"] = pd.to_datetime(archive.reference_date)
-    archive["report_date"] = pd.to_datetime(archive.report_date)
-    archive = archive.dropna(subset=["geo_value", "reference_date", "report_date", "value"])
-    archive = archive[archive.report_date >= archive.reference_date]
-    archive["lag"] = (archive.report_date - archive.reference_date).dt.days.astype("int32")
-    # Very late updates are outside the modelled revision horizon. Keeping a
-    # single two-year bound here and at the R preparation boundary makes the
-    # diagnostic evidence and training population agree while leaving the
-    # uploaded source archive untouched.
-    archive = archive[archive.lag <= MAX_OBSERVED_LAG_DAYS]
+    archive, cleaning = clean_raw_archive(archive, as_of_date=as_of_date)
     if archive.empty:
         raise ValueError(
             f"raw archive has no usable observations with reporting lag between 0 and "
             f"{MAX_OBSERVED_LAG_DAYS} days")
-    archive = archive.drop_duplicates(["geo_value", "reference_date", "report_date"], keep="last")
+    archive["geo_value"] = archive.geo_value.astype("category")
     archive = archive.sort_values(["geo_value", "reference_date", "lag"]).reset_index(drop=True)
     # Diagnose every lag that is present in this archive. The web interface
     # uses these same lags as its valid target-lag choices, so no sparse
@@ -287,9 +368,16 @@ def diagnose_raw_archive(raw: pd.DataFrame, *, geo_value: str = "geo_value",
     report_gaps = _observed_report_gaps(archive)
     cadence, feature_lags = _reference_axis_feature_lags(archive)
 
-    target_lag_range, completion_curve, completion_band = _target_lag_evidence(
-        archive, candidate_lags, late_observation_floor_days, completion_threshold,
-        completion_rate)
+    if user_target_lag is None:
+        target_lag_range, completion_curve, completion_band = _target_lag_evidence(
+            archive, candidate_lags, late_observation_floor_days, completion_threshold,
+            completion_rate)
+    else:
+        # A specified target lag settles the question the evidence exists to
+        # inform, so the target-lag diagnosis is skipped.
+        target_lag_range = {"lower": None, "upper": None, "skipped": True,
+                            "reason": "target lag specified by the user"}
+        completion_curve, completion_band = {}, {}
     lag_resolution = resolve_target_lag(user_target_lag)
     window = DEFAULT_TRAINING_WINDOW_DAYS if training_window_days is None else int(training_window_days)
 
@@ -321,4 +409,5 @@ def diagnose_raw_archive(raw: pd.DataFrame, *, geo_value: str = "geo_value",
         target_lag_resolution=lag_resolution["target_lag_resolution"],
         target_lag_confirmation_prompt=lag_resolution["target_lag_confirmation_prompt"],
         training_window_days=window,
-        training_window_is_fixed_default=(training_window_days is None), notes=tuple(notes))
+        training_window_is_fixed_default=(training_window_days is None), notes=tuple(notes),
+        cleaning=cleaning)

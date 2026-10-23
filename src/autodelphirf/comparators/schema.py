@@ -4,6 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 import pandas as pd
 
+from ..core.io import read_csv
+
 # Same identifying-key set the workflow merges on.
 IDENTIFYING_KEYS = ["fold", "cutoff", "geo_value", "reference_date", "report_date", "target_date", "lag"]
 # The subset that must be present for rows to be uniquely identifiable even
@@ -30,7 +32,7 @@ def check_comparator_file(comparator_path, method_column: str, prediction_column
     if not path.exists():
         return [f"comparator_file does not exist: {path}"]
     try:
-        comparator = pd.read_csv(path)
+        comparator = read_csv(path)
     except Exception as exc:  # noqa: BLE001 -- surfaced as a validation issue, not a crash
         return [f"comparator_file could not be read as CSV ({path}): {exc}"]
 

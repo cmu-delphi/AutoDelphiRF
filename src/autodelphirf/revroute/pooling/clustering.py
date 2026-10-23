@@ -189,7 +189,8 @@ def cross_location_valley_search(geometry: SparseTaskGeometry, position: int,
     A direction whose first adjacent comparison does not improve on the centre
     is closed immediately. A descending direction is followed while it may
     still reach a lower valley, and closes only once two consecutive queried
-    distances exceed ``T_NN`` and neither improved the running minimum.
+    distances each exceed ``T_NN`` and fail to improve the running minimum. A
+    comparison that improves the minimum is never a miss, even above ``T_NN``.
     """
     geo, lag = geometry.tasks[position]
     for other_geo, stage_map in geometry.by_location.items():
@@ -210,34 +211,32 @@ def cross_location_valley_search(geometry: SparseTaskGeometry, position: int,
                 # Non-descending: closed immediately by the single-valley rule.
                 if not first < centre_distance:
                     continue
-                running = min(centre_distance, first)
-                previous_unsupported = first > threshold
+                # The first step improved on the centre, so it is not a miss.
+                running, previous_miss = first, False
                 cursor += step
                 while 0 <= cursor < len(stages):
                     value = geometry.distance(position, stage_map[stages[cursor]])
-                    improved = value < running
+                    miss = value > threshold and not value < running
                     running = min(running, value)
-                    unsupported = value > threshold
-                    if unsupported and previous_unsupported and not improved:
+                    if miss and previous_miss:
                         break
-                    previous_unsupported = unsupported
+                    previous_miss = miss
                     cursor += step
         else:
             # No centre: start at the nearest available comparison each side and
-            # apply the same two-consecutive-unsupported rule once a running
-            # minimum exists.
+            # apply the same two-consecutive-miss rule once a running minimum
+            # exists.
             below = [x for x in stages if x < int(lag)]
             above = [x for x in stages if x > int(lag)]
             for sequence in ([below[-1::-1]] if below else []) + ([above] if above else []):
-                running, previous_unsupported = np.inf, False
+                running, previous_miss = np.inf, False
                 for stage in sequence:
                     value = geometry.distance(position, stage_map[stage])
-                    improved = value < running
+                    miss = value > threshold and not value < running
                     running = min(running, value)
-                    unsupported = value > threshold
-                    if unsupported and previous_unsupported and not improved:
+                    if miss and previous_miss:
                         break
-                    previous_unsupported = unsupported
+                    previous_miss = miss
 
 
 def coherence_preserving_pools(geometry: SparseTaskGeometry, threshold: float) -> np.ndarray:

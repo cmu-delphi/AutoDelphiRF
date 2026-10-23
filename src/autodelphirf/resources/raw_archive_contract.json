@@ -1,0 +1,21 @@
+{
+  "contract_version": 2,
+  "purpose": "Rules by which Python pre-diagnosis and R feature preparation both interpret raw archive records, before applying their own stage-specific scope.",
+  "shared_rules": [
+    "Location identifiers are text; \"01\" and \"1\" are different locations.",
+    "Rows with a missing or blank location are removed (single-location mode assigns the configured location instead).",
+    "Reference and report dates are the calendar date written at the start of the value (YYYY-MM-DD); a following time of day or UTC offset, as in 2024-12-06T00:00:00Z, is ignored, never converted. Anything else is an invalid date.",
+    "The effective as-of date is the given as_of_date, otherwise the latest valid report date; rows reported after it are removed.",
+    "Values must be usable numbers; a numerator/denominator pair needs both, with a positive denominator.",
+    "Reporting lag is report_date - reference_date; negative lags are removed.",
+    "Lags beyond the stage's lag bound are removed; the global bound is lag_horizon_days.",
+    "Duplicate identity is (location, reference date, report date); among usable rows the last in file order is kept."
+  ],
+  "lag_horizon_days": 730,
+  "rule_order": ["missing_location", "invalid_date", "future_report", "unusable_value", "negative_lag", "over_lag_limit", "duplicate"],
+  "intentional_differences": [
+    "Python pre-diagnosis examines lags through lag_horizon_days.",
+    "R feature preparation uses the feature horizon min(target_lag + 100, lag_horizon_days).",
+    "R feature preparation additionally applies the experiment window and the minimum location size."
+  ]
+}

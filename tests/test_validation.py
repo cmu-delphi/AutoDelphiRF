@@ -26,7 +26,7 @@ def long_frame(losses: dict, lags=None):
             rows.append({"method": method, "fold": 1, "geo_value": "a",
                          "reference_date": pd.Timestamp("2024-01-01") + pd.Timedelta(days=index),
                          "report_date": pd.Timestamp("2024-01-02") + pd.Timedelta(days=index),
-                         "lag": lags[index], "absolute_error": value, "wis": value / 2})
+                         "lag": lags[index], "absolute_error": value, "wis_reporting": value / 2})
     return pd.DataFrame(rows)
 
 
@@ -169,7 +169,7 @@ def test_validation_never_refits_or_retunes():
 
 
 # ---------------------------------------------------------------------------
-# Three-axis post-prediction (RRDelphiRF_post_prediction_three_axis.tex)
+# Post-prediction validation of the historical assessments (Sec. 3.2.5)
 # ---------------------------------------------------------------------------
 
 
@@ -193,40 +193,7 @@ def test_opposed_objective_diagnostic_records_the_sign():
     assert "separate" in row.interpretation
 
 
-def test_v4_keeps_the_two_joint_displays_apart():
-    from autodelphirf.post_assessment.validation import three_axis_heatmaps
-    rng = np.random.default_rng(7)
-    n = 400
-    frame = pd.DataFrame({
-        "method": "m", "fold": 1, "lag": 3,
-        "q_error": rng.random(n), "f_harm": rng.random(n),
-        "realized_ae": rng.exponential(1., n),
-        "realized_regret": rng.normal(0, 1., n),
-        "process_shift_score": rng.random(n) * 5,
-    })
-    out = three_axis_heatmaps(frame, long=None, bins=3)
-    assert set(out) == {"difficulty_vs_process", "harm_vs_process"}
-    # Difficulty x process reports ERROR; harm x process reports HARM RATE.
-    assert "mean_ae" in out["difficulty_vs_process"].columns
-    assert "observed_harm_frequency" in out["harm_vs_process"].columns
-    assert "observed_harm_frequency" not in out["difficulty_vs_process"].columns
 
-
-def test_process_monitor_nondegeneracy_calls_a_flat_score_a_failure():
-    from autodelphirf.post_assessment.validation import process_monitor_nondegeneracy
-    flat = pd.DataFrame({"method": "m", "lag": 1, "process_shift_score": np.zeros(50),
-                         "process_state": "stable"})
-    assert bool(process_monitor_nondegeneracy(flat).monitor_degenerate.iloc[0])
-    assert "MONITOR FAILURE" in process_monitor_nondegeneracy(flat).verdict.iloc[0]
-    live = pd.DataFrame({"method": "m", "lag": 1,
-                         "process_shift_score": np.linspace(0, 5, 50),
-                         "process_state": "stable"})
-    assert not bool(process_monitor_nondegeneracy(live).monitor_degenerate.iloc[0])
-
-
-# ---------------------------------------------------------------------------
-# Final model-free spec: order statistics, descriptive f_harm, separate C_harm
-# ---------------------------------------------------------------------------
 
 def test_qerr_is_a_realized_order_statistic_not_an_interpolated_quantile():
     """q_eta^err = E_(k_eta(n)) with k_eta(n) = min{n, ceil((n+1) eta)}."""

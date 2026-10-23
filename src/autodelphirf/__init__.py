@@ -12,9 +12,8 @@ from .pre_diagnosis.archive import diagnose_raw_archive, resolve_target_lag
 from .core.io import load_prepared_triangles, triangle_files
 from .pre_diagnosis.preparation import (PreparationError, PreparationSpec, build_spec,
                                         prepare_dataset)
-from .core.resources import load_resource, resource_path, user_config_path
-from .core.defaults import (CALIBRATION_DEFAULTS, EVALUATION_DEFAULTS, PROCESS_DEFAULTS,
-                            RESIDUAL_DEFAULTS, ROUTING_DEFAULTS, RR_DELPHIRF_DEFAULTS,
+from .core.resources import load_resource, resource_path
+from .core.defaults import (CALIBRATION_DEFAULTS, EVALUATION_DEFAULTS, ROUTING_DEFAULTS,
                             VERSION)
 from .comparators.red_prediction import replay
 from .post_assessment.inference import bootstrap, primary_comparison_pairs
@@ -37,10 +36,9 @@ __all__ = [
     "diagnose_raw_archive", "resolve_target_lag",
     "load_prepared_triangles", "triangle_files",
     "PreparationError", "PreparationSpec", "build_spec", "prepare_dataset",
-    "load_resource", "resource_path", "user_config_path",
+    "load_resource", "resource_path",
     "PREDICTION_LAYERS", "register_prediction_layer",
-    "VERSION", "ROUTING_DEFAULTS", "RESIDUAL_DEFAULTS", "PROCESS_DEFAULTS",
-    "RR_DELPHIRF_DEFAULTS", "learn_task_pools", "DELPHIRF_METHODS",
+    "VERSION", "ROUTING_DEFAULTS", "learn_task_pools", "DELPHIRF_METHODS",
     "MODEL_METHODS", "PRIMARY_METHOD_ID", "train_delphirf",
     "CALIBRATION_DEFAULTS", "EVALUATION_DEFAULTS",
     "replay", "wis", "ROUTED_TAUS", "weighted_quantiles", "weighted_median",

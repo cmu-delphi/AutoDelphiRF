@@ -5,7 +5,19 @@ import json
 from pathlib import Path
 import os
 
-from .resources import load_resource
+
+
+def _working_scale_field(raw: dict) -> str | None:
+    """Read DelphiRF's ``working_scale`` from a dataset config."""
+    if "value_transform" in raw:
+        raise ValueError(
+            "dataset config field 'value_transform' was renamed to 'working_scale', with "
+            "DelphiRF's values 'log_value' or 'log_ratio'; rename it, or remove it so the "
+            "working scale is derived from the prepared triangle")
+    scale = raw.get("working_scale")
+    if scale is not None and scale not in ("log_value", "log_ratio"):
+        raise ValueError(f"working_scale must be 'log_value' or 'log_ratio', got {scale!r}")
+    return scale
 
 
 @dataclass(frozen=True)
@@ -14,11 +26,14 @@ class DatasetConfig:
     prepared_dir: Path
     output_dir: Path
     schedule_file: str
-    # None means "derive from the prepared triangle" (the normal case).
-    # A declared value is validated against the derived one, never trusted over it.
-    value_transform: str | None
+    # DelphiRF's working scale, "log_value" or "log_ratio". None means "derive
+    # from the prepared triangle" (the normal case); a declared value is
+    # validated against the derived one, never trusted over it.
+    working_scale: str | None
     initial_lag: int | None
-    include_genuine_events_only: bool
+    # Independent controls for DelphiRF model fitting and forecast cases.
+    genuine_training: bool
+    genuine_testing: bool
     prediction_layers: tuple[str, ...]
     comparator_file: Path | None
     comparator_columns: dict[str, str]
@@ -31,7 +46,6 @@ class DatasetConfig:
     # the historical behaviour and still the right one for a comparator file
     # that genuinely carries only a median.
     comparator_quantile_template: str | None
-    input_columns: dict[str, str]
     method_params: dict
     # Optional user-specified reporting calendar. When present it OVERRIDES
     # the diagnosis-derived profile; the derived values are still reported so
@@ -56,7 +70,6 @@ class DatasetConfig:
 def load_dataset_config(path: Path) -> DatasetConfig:
     path = Path(path).resolve()
     raw = json.loads(path.read_text())
-    schema = load_resource("prepared_triangle_schema.json")
     base = path.parent
     def resolve(value):
         if value is None:
@@ -72,11 +85,21 @@ def load_dataset_config(path: Path) -> DatasetConfig:
     if ("model_methods" in raw and "prediction_layers" in raw and
             tuple(raw["model_methods"]) != tuple(raw["prediction_layers"])):
         raise ValueError("model_methods and compatibility alias prediction_layers disagree")
+    if "include_genuine_events_only" in raw:
+        raise ValueError(
+            "include_genuine_events_only has been removed; set genuine_training and "
+            "genuine_testing explicitly")
+    genuine_training = raw.get("genuine_training", True)
+    genuine_testing = raw.get("genuine_testing", True)
+    for name, value in (("genuine_training", genuine_training),
+                        ("genuine_testing", genuine_testing)):
+        if not isinstance(value, bool):
+            raise ValueError(f"{name} must be true or false")
     return DatasetConfig(
         name=raw["name"], prepared_dir=resolve(raw["prepared_dir"]),
         output_dir=resolve(raw["output_dir"]), schedule_file=raw.get("schedule_file", "test_dates.csv"),
-        value_transform=raw.get("value_transform"), initial_lag=raw.get("initial_lag"),
-        include_genuine_events_only=raw.get("include_genuine_events_only", True),
+        working_scale=_working_scale_field(raw), initial_lag=raw.get("initial_lag"),
+        genuine_training=genuine_training, genuine_testing=genuine_testing,
         prediction_layers=tuple(raw.get("model_methods", raw.get("prediction_layers", ()))),
         comparator_file=resolve(raw.get("comparator_file")),
         comparator_columns=dict(raw.get("comparator_columns", {})),
@@ -84,7 +107,6 @@ def load_dataset_config(path: Path) -> DatasetConfig:
         comparator_prediction_column=raw.get("comparator_prediction_column", "prediction"),
         comparator_methods=dict(raw.get("comparator_methods", {})),
         comparator_quantile_template=raw.get("comparator_quantile_template"),
-        input_columns={**schema["columns"], **dict(raw.get("input_columns", {}))},
         method_params=dict(raw.get("method_params", {})),
         revision_profile=(dict(raw["revision_profile"]) if raw.get("revision_profile") else None),
         reliability_reference_file=resolve(raw.get("reliability_reference_file")),
@@ -116,9 +138,10 @@ def write_resolved_config(config: DatasetConfig, path: Path) -> Path:
         "prepared_dir": relative(config.prepared_dir),
         "output_dir": relative(config.output_dir),
         "schedule_file": config.schedule_file,
-        "value_transform": config.value_transform,
+        "working_scale": config.working_scale,
         "initial_lag": config.initial_lag,
-        "include_genuine_events_only": config.include_genuine_events_only,
+        "genuine_training": config.genuine_training,
+        "genuine_testing": config.genuine_testing,
         "model_methods": list(config.prediction_layers),
         "prediction_layers": list(config.prediction_layers),
         "comparator_file": relative(config.comparator_file),
@@ -127,9 +150,7 @@ def write_resolved_config(config: DatasetConfig, path: Path) -> Path:
         "comparator_prediction_column": config.comparator_prediction_column,
         "comparator_methods": config.comparator_methods,
         "comparator_quantile_template": config.comparator_quantile_template,
-        "input_columns": config.input_columns,
         "method_params": config.method_params,
-        "revision_profile": config.revision_profile,
         "reliability_reference_file": relative(config.reliability_reference_file),
         "uncertainty_layer": config.uncertainty_layer,
     }

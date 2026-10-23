@@ -23,7 +23,8 @@ def replay(cases: pd.DataFrame, prepared: pd.DataFrame, training_days: int | dic
            spline_basis: int = ROUTING_DEFAULTS["spline_basis"],
            spline_penalty: float = ROUTING_DEFAULTS["spline_penalty"],
            initial_lag: int | None = None, include_red: bool = False,
-           target_lag: int | None = None, **_) -> tuple[pd.DataFrame, pd.DataFrame]:
+           target_lag: int | None = None, target_column: str = "log_value_target",
+           **_) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Replay test windows, fitting RED only when explicitly requested."""
     if target_lag is None:
         raise ValueError("replay() requires the schedule's explicit target_lag")
@@ -45,7 +46,8 @@ def replay(cases: pd.DataFrame, prepared: pd.DataFrame, training_days: int | dic
             route = build_curve_routing(
                 training, int(target_lag), min_curve_episodes, gamma,
                 spline_method=spline_method, spline_basis=spline_basis,
-                spline_penalty=spline_penalty, initial_lag=initial_lag)
+                spline_penalty=spline_penalty, initial_lag=initial_lag,
+                target_column=target_column)
             rows = []
             for row_number, (_, case) in enumerate(test.iterrows()):
                 if should_stop and row_number % 100 == 0:

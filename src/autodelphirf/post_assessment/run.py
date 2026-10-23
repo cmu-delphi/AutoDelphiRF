@@ -12,6 +12,7 @@ import pandas as pd
 
 from .. import __version__
 from ..core.config import DatasetConfig, load_dataset_config, write_resolved_config
+from ..core.io import read_csv
 from ..workflow.run import run_reliability_and_calibration
 from .reporting import build_report
 
@@ -28,7 +29,7 @@ def sha256(path: Path) -> str:
 
 
 def _read_predictions(path: Path) -> pd.DataFrame:
-    frame = pd.read_csv(path)
+    frame = read_csv(path)
     for column in DATE_COLUMNS:
         if column in frame:
             frame[column] = pd.to_datetime(frame[column])
@@ -95,17 +96,27 @@ def assess_results(results_dir: Path, output_dir: Path | None = None) -> Path:
             raise ValueError(
                 "frozen reliability reference does not match assessment_inputs.json: "
                 f"{reliability_path}")
+    # Assessment scores only forecasts whose target exists, exactly as the run
+    # that produced these predictions did.
     long = _read_predictions(results / "predictions.csv.gz")
     wide = _read_predictions(results / "predictions_wide.csv.gz")
+    if "truth" in long:
+        long = long[long.truth.notna()].copy()
+    if "truth" in wide:
+        wide = wide[wide.truth.notna()].copy()
     outputs = run_reliability_and_calibration(long, config, wide=wide)
     save_assessment_outputs(outputs, output)
     runtime_path = results / "runtime_by_method.csv"
     runtime = pd.read_csv(runtime_path) if runtime_path.is_file() else None
+    skipped_path = results / "skipped_locations.csv"
+    skipped = read_csv(skipped_path) if skipped_path.is_file() else None
     build_report(long, output / "report", wide=wide, runtime=runtime,
+                 skipped_locations=skipped,
                  interval_calibration=outputs["interval_calibration"],
                  reliability=outputs["reliability"], bootstrap=outputs["bootstrap"],
                  validation={k: v for k, v in outputs.items()
-                             if k.startswith(("v1_", "v2_", "v3_", "v4_"))})
+                             if k.startswith(("v1_", "v2_", "v3_", "v4_"))},
+                 dataset_name=config.name)
     assessment_config = replace(config, output_dir=output)
     write_resolved_config(assessment_config, output / "resolved_config.json")
     inputs = {}
@@ -127,7 +138,7 @@ def assess_results(results_dir: Path, output_dir: Path | None = None) -> Path:
         "inputs": inputs,
         "rows": {"long": len(long), "wide": len(wide)},
         "methods": list(config.prediction_layers),
-        "value_transform": config.value_transform,
+        "working_scale": config.working_scale,
         "uncertainty_layer": config.uncertainty_layer,
     }
     (output / "assessment_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

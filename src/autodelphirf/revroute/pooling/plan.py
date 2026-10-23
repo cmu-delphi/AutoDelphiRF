@@ -12,16 +12,38 @@ import pandas as pd
 
 from .clustering import sparse_task_pooling
 from ...core.history import rolling_completed_training
+from ...core.defaults import provisional_column
+from ...core.io import read_csv
 
 
-def learn_task_pools(prepared: pd.DataFrame, schedule: pd.DataFrame, output: Path) -> Path:
-    """Learn RevRoute pools independently at every scheduled origin."""
+def learn_task_pools(prepared: pd.DataFrame, schedule: pd.DataFrame, output: Path,
+                     *, preserve_existing: bool = False) -> Path:
+    """Learn RevRoute pools independently at every scheduled origin.
+
+    Operational updates must retain the routing decision issued at an earlier
+    origin.  New raw releases can add test tasks to that origin, but they must
+    not silently relabel its pools and thereby attach an old model filename to
+    a different collection of tasks.
+    """
+    output = Path(output)
+    old = (read_csv(output, parse_dates=["cutoff"]) if preserve_existing and output.exists()
+           else pd.DataFrame())
+    summary_path = output.with_name("revroute_pool_summary.csv")
+    old_summary = (read_csv(summary_path, parse_dates=["cutoff"])
+                   if preserve_existing and summary_path.exists() else pd.DataFrame())
+    retained_cutoffs = set(pd.to_datetime(old.get("cutoff", pd.Series(dtype="datetime64[ns]"))))
     rows, summaries = [], []
     for position, item in enumerate(schedule.itertuples(index=False), start=1):
         cutoff = pd.Timestamp(item.test_date)
+        fold_id = int(getattr(item, "fold_id", position))
+        if cutoff in retained_cutoffs:
+            continue
         training = rolling_completed_training(prepared, cutoff, int(item.training_days))
+        # Trajectories and the stage term use the transformed releases Z_itl on
+        # the same smoothing level as the target Z*_it (Eqs. 3.5-3.6).
         built = sparse_task_pooling(
             training, int(item.target_lag), target_column=str(item.target_column),
+            value_column=provisional_column(item.target_column),
             train_genuine_events_only=True)
         if built is None:
             continue
@@ -34,7 +56,7 @@ def learn_task_pools(prepared: pd.DataFrame, schedule: pd.DataFrame, output: Pat
         pool_shape = task_frame.groupby("pool", observed=True).agg(
             locations=("geo_value", "nunique"), lags=("lag", "nunique"), tasks=("lag", "size"))
         summaries.append({
-            "fold": position, "cutoff": cutoff, "represented_tasks": represented_tasks,
+            "fold": fold_id, "cutoff": cutoff, "represented_tasks": represented_tasks,
             "pool_count": pool_count,
             "effective_pool_count": float(1.0 / (proportions ** 2).sum()),
             "pools_multi_location_pct": float(100 * pool_shape.locations.gt(1).mean()),
@@ -48,16 +70,20 @@ def learn_task_pools(prepared: pd.DataFrame, schedule: pd.DataFrame, output: Pat
             "small_pool_policy": "if <10 rows, expand to matching test lags; if still <10, use all fold rows with available target values",
             "fallback_is_engineering_extension": True})
         for (geo, lag), label in zip(geometry.tasks, labels):
-            rows.append({"fold": position, "cutoff": cutoff, "geo_value": str(geo),
+            rows.append({"fold": fold_id, "cutoff": cutoff, "geo_value": str(geo),
                          "lag": int(lag), "pool": int(label),
                          "threshold": float(threshold)})
     frame = pd.DataFrame(rows)
+    if not old.empty:
+        frame = pd.concat([old, frame], ignore_index=True)
     if frame.empty:
         raise ValueError("RevRoute could not learn any location-lag task pools")
-    output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    frame.to_csv(output, index=False)
-    pd.DataFrame(summaries).to_csv(output.with_name("revroute_pool_summary.csv"), index=False)
+    frame.sort_values(["fold", "geo_value", "lag"]).to_csv(output, index=False)
+    summary_frame = pd.DataFrame(summaries)
+    if not old_summary.empty:
+        summary_frame = pd.concat([old_summary, summary_frame], ignore_index=True)
+    summary_frame.sort_values("fold").to_csv(summary_path, index=False)
     return output
 
 

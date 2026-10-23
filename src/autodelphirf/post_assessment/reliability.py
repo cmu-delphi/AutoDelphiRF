@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from ..core.defaults import CALIBRATION_DEFAULTS, to_raw_scale
+from ..core.defaults import CALIBRATION_DEFAULTS, to_reporting_scale
 from ..comparators.red import ROUTED_TAUS
 from .scoring import wis
 
@@ -24,6 +24,33 @@ DEFAULT_HIGH_RISK_CUT = CALIBRATION_DEFAULTS.get("high_risk_cut", .9)
 #: Minimum positive-regret support before M_harm_eta is issued, and minimum
 #: pre-evaluation pairs before g_harm is fitted. Frozen before evaluation.
 DEFAULT_MIN_HARM_SUPPORT = 10
+
+
+def eligible_history(frame: pd.DataFrame, as_of) -> pd.DataFrame:
+    """Historical forecasts whose lag-L target exists by ``as_of`` (Sec. 3.2.5).
+
+    ``as_of`` is the report date of the forecast being assessed, and
+    ``target_date`` is ``t + L``: a forecast becomes history only once its
+    target lag has been reached, never on an earlier provisional value. Such a
+    forecast was necessarily issued before ``as_of``. Rows still without truth
+    carry no information and are excluded before the comparable-set search
+    counts support.
+    """
+    return frame[(frame.target_date <= as_of) & frame.truth.notna()]
+
+
+class _HistoryByDate:
+    """``eligible_history`` for many report dates: completed forecasts sorted
+    by target date once, so each report date selects a prefix."""
+
+    def __init__(self, frame: pd.DataFrame):
+        completed = frame[frame.truth.notna()]
+        self.ordered = completed.sort_values("target_date", kind="stable")
+        self.dates = self.ordered.target_date.to_numpy()
+
+    def at(self, as_of) -> pd.DataFrame:
+        end = int(np.searchsorted(self.dates, np.datetime64(pd.Timestamp(as_of)), side="right"))
+        return self.ordered.iloc[:end]
 
 
 def qhigher(values, q: float) -> float:
@@ -199,14 +226,21 @@ def stratum_offsets(selected: pd.DataFrame, taus: np.ndarray) -> np.ndarray:
 
 
 def enforce_non_crossing(quantiles: np.ndarray, median_index: int) -> np.ndarray:
-    """Clamp each side toward the calibrated median (numerical safeguard)."""
+    """Resolve quantile crossings outward from the median on both sides.
+
+    Endpoints are calibrated separately (Eq. 3.26), so neighbouring levels can
+    cross. Walking outward from the median, each lower quantile is at most its
+    inner neighbour and each upper quantile at least its inner neighbour. A
+    crossing therefore always moves the OUTER endpoint further out, widening
+    the wider interval and never narrowing a narrower one.
+    """
     out = np.asarray(quantiles, float).copy()
     if out.ndim == 1:
         out = out[None, :]
     lower = out[:, :median_index]
     if lower.shape[1]:
-        out[:, :median_index] = np.minimum(np.maximum.accumulate(lower, axis=1),
-                                           out[:, [median_index]])
+        inward_first = np.minimum(lower[:, ::-1], out[:, [median_index]])
+        out[:, :median_index] = np.minimum.accumulate(inward_first, axis=1)[:, ::-1]
     upper = out[:, median_index + 1:]
     if upper.shape[1]:
         out[:, median_index + 1:] = np.maximum(np.maximum.accumulate(upper, axis=1),
@@ -264,8 +298,8 @@ def calibrate(base: np.ndarray, row: pd.Series, history: pd.DataFrame, taus: np.
 
 def prospective_calibration(long: pd.DataFrame, methods: tuple[str, ...] | list[str], taus: np.ndarray = ROUTED_TAUS,
                             minimum: int | None = None, adjacent_lag_radius: int | None = None,
-                            value_transform: str | None = None) -> pd.DataFrame:
-    """Calibrate per fold/method from history with target values available by that fold's own cutoff.
+                            working_scale: str | None = None) -> pd.DataFrame:
+    """Calibrate each forecast from history whose targets exist by its own report date.
 
     ``long`` is a standardized long prediction table (see
     ``autodelphirf.workflow.run.standardize_predictions``) with columns
@@ -300,20 +334,21 @@ def prospective_calibration(long: pd.DataFrame, methods: tuple[str, ...] | list[
         subset = subset[subset.has_distribution]
     for method, data in subset.groupby("method", observed=True):
         has_working = ("truth_working" in data and all(c in data for c in work_columns))
-        transform = value_transform
-        if transform is None and "value_transform" in data:
-            values = data.value_transform.dropna().unique()
+        transform = working_scale
+        if transform is None and "working_scale" in data:
+            values = data.working_scale.dropna().unique()
             transform = values[0] if len(values) == 1 else None
         if has_working and transform is None:
-            raise ValueError("working-scale calibration requires one resolved value_transform")
+            raise ValueError("working-scale calibration requires one resolved working_scale")
         transform = transform or "identity"
         # One working-scale view of the whole method, built once rather than
         # copied per row.
         scale_columns = work_columns if has_working else raw_columns
         truth_column = "truth_working" if has_working else "truth"
-        for fold, test in data.groupby("fold", sort=True, observed=True):
-            cutoff = test.cutoff.iloc[0]
-            history = data[(data.cutoff < cutoff) & (data.target_date <= cutoff)]
+        completed = _HistoryByDate(data)
+        for (fold, issued), test in data.groupby(["fold", "report_date"], sort=True,
+                                                  observed=True):
+            history = completed.at(issued)
             strata = resolve_strata(test, history, minimum, adjacent_lag_radius)
             offsets, sources, counts = {}, {}, {}
             for key, (selected, source) in strata.items():
@@ -329,7 +364,7 @@ def prospective_calibration(long: pd.DataFrame, methods: tuple[str, ...] | list[
             offset_matrix = np.vstack([offsets[k] for k in keys])
             base = test[scale_columns].to_numpy(float)
             calibrated_working = enforce_non_crossing(base + offset_matrix, median_index)
-            calibrated = (to_raw_scale(calibrated_working, transform) if has_working
+            calibrated = (to_reporting_scale(calibrated_working, transform) if has_working
                           else calibrated_working)
             entry = test.copy()
             entry["calibration_source"] = [sources[k] for k in keys]
@@ -337,10 +372,9 @@ def prospective_calibration(long: pd.DataFrame, methods: tuple[str, ...] | list[
             for index, tau in enumerate(taus):
                 entry[f"cal_q{tau:g}"] = calibrated[:, index]
                 entry[f"cal_q{tau:g}_working"] = calibrated_working[:, index]
-            entry["cal_wis_raw"] = wis(calibrated, entry.truth.to_numpy(float))
+            entry["cal_wis_reporting"] = wis(calibrated, entry.truth.to_numpy(float))
             entry["cal_wis_working"] = wis(
                 calibrated_working, entry[truth_column].to_numpy(float))
-            entry["cal_wis"] = entry["cal_wis_raw"]
             frames.append(entry)
     return (pd.concat(frames, ignore_index=True) if frames
             else long.iloc[:0].copy())
@@ -483,21 +517,21 @@ def harm_severity_summary(history: pd.DataFrame, *, eta: float = DEFAULT_ETA,
 
 def build_reliability_reference(training_predictions: pd.DataFrame, *, eta: float = DEFAULT_ETA,
                                 min_history: int = 10, adjacent_lag_radius: int = 1,
-                                value_transform: str = "log1p", method: str | None = None,
+                                working_scale: str = "log_value", method: str | None = None,
                                 prediction_column: str | None = None,
                                 null_column: str | None = None) -> pd.DataFrame:
     """Build frozen q-error/q-regret references from inner rolling predictions.
 
     The input must be a separate pre-evaluation replay on the dataset's own
-    working scale; pass that dataset's ``value_transform`` so the errors below
-    are formed on the original reporting scale. It defaults to "log1p", which
+    working scale; pass that dataset's ``working_scale`` so the errors below
+    are formed on the original reporting scale. It defaults to "log_value", which
     is right for count and directly-supplied-rate datasets but WRONG for a
-    num/denom fraction triangle (those are "log"). Each inner case is summarized only from forecasts issued at
-    earlier cutoffs whose target values were available by its cutoff. The result must
+    num/denom fraction triangle (those are "log_ratio"). Each inner case is summarized only from forecasts
+    whose target values were available by its own report date. The result must
     be frozen before outer evaluation: build this from data
     that ends strictly before the outer evaluation window begins.
     """
-    required = {"cutoff", "target_date", "geo_value", "lag", "truth"}
+    required = {"cutoff", "report_date", "target_date", "geo_value", "lag", "truth"}
     missing = required.difference(training_predictions.columns)
     if missing:
         raise ValueError(f"reliability training predictions missing columns: {sorted(missing)}")
@@ -509,8 +543,8 @@ def build_reliability_reference(training_predictions: pd.DataFrame, *, eta: floa
             raise ValueError("method was supplied but training predictions have no method column")
         data = data[data.method.eq(method)].copy()
     if data.empty:
-        return pd.DataFrame(columns=["method", "cutoff", "geo_value", "lag", "case_n", "source",
-                                     "history_n", "q_error", "q_regret"])
+        return pd.DataFrame(columns=["method", "cutoff", "report_date", "geo_value", "lag",
+                                     "case_n", "source", "history_n", "q_error", "q_regret"])
     # Standardized long prediction archives are already on the raw reporting
     # scale.  Legacy replay-wide archives retain working-scale columns such as
     # ``red_prediction`` and ``Null`` and are inverse-transformed below.
@@ -526,19 +560,21 @@ def build_reliability_reference(training_predictions: pd.DataFrame, *, eta: floa
     # pandas propagates it through every filter unless explicitly cleared.
     data.attrs = {}
     data["cutoff"] = pd.to_datetime(data.cutoff)
+    data["report_date"] = pd.to_datetime(data.report_date)
     data["target_date"] = pd.to_datetime(data.target_date)
     standardized_raw = prediction_column == "prediction" and null_column == "provisional_value"
     truth_raw = (data.truth.astype(float) if standardized_raw
-                 else to_raw_scale(data.truth.astype(float), value_transform))
+                 else to_reporting_scale(data.truth.astype(float), working_scale))
     prediction_raw = (data[prediction_column].astype(float) if standardized_raw
-                      else to_raw_scale(data[prediction_column].astype(float), value_transform))
+                      else to_reporting_scale(data[prediction_column].astype(float), working_scale))
     null_raw = (data[null_column].astype(float) if standardized_raw
-                else to_raw_scale(data[null_column].astype(float), value_transform))
+                else to_reporting_scale(data[null_column].astype(float), working_scale))
     data["rr_ae"] = np.abs(truth_raw - prediction_raw)
     data["null_ae"] = np.abs(truth_raw - null_raw)
     rows = []
-    for cutoff, current in data.groupby("cutoff", sort=True, observed=True):
-        available_history = data[(data.cutoff < cutoff) & (data.target_date <= cutoff)]
+    completed = _HistoryByDate(data)
+    for issued, current in data.groupby("report_date", sort=True, observed=True):
+        available_history = completed.at(issued)
         cases = current.groupby(["geo_value", "lag"], observed=True).size().rename("case_n").reset_index()
         for _, case in cases.iterrows():
             candidates = [
@@ -561,13 +597,14 @@ def build_reliability_reference(training_predictions: pd.DataFrame, *, eta: floa
                 continue
             regret = selected.rr_ae.to_numpy(float) - selected.null_ae.to_numpy(float)
             rows.append({"method": method if method is not None else (data.method.iloc[0] if "method" in data else None),
-                         "cutoff": cutoff, "geo_value": case.geo_value,
+                         "cutoff": current.cutoff.iloc[0], "report_date": issued,
+                         "geo_value": case.geo_value,
                          "lag": case.lag, "case_n": int(case.case_n),
                          "source": source, "history_n": len(selected),
                          "q_error": float(np.quantile(selected.rr_ae, eta)),
                          "q_regret": float(np.quantile(regret, eta))})
-    return pd.DataFrame(rows, columns=["method", "cutoff", "geo_value", "lag", "case_n", "source",
-                                      "history_n", "q_error", "q_regret"])
+    return pd.DataFrame(rows, columns=["method", "cutoff", "report_date", "geo_value", "lag",
+                                      "case_n", "source", "history_n", "q_error", "q_regret"])
 
 
 # ---------------------------------------------------------------------------
@@ -583,7 +620,7 @@ def reliability_history(long: pd.DataFrame, method: str, *, eta: float | None = 
                         prediction_column: str = "prediction", null_column: str = "provisional_value") -> pd.DataFrame:
     """Per-case post-prediction assessment quantities for one evaluated method.
 
-    Resolves TWO comparable sets per origin and reliability key, because the
+    Resolves TWO comparable sets per report date and reliability key, because the
     final model-free spec requires different support rules:
 
       * ``C_err(q)``  -- adequate TOTAL history; supports q_eta^err, n_err,
@@ -616,9 +653,9 @@ def reliability_history(long: pd.DataFrame, method: str, *, eta: float | None = 
                   "f_harm_wilson_high", "risk_score", "profile_status")
     harm_fields = ("m_harm", "harm_positive_n", "harm_severity_status")
     frames = []
-    for fold, test in base.groupby("fold", sort=True, observed=True):
-        cutoff = test.cutoff.iloc[0]
-        history = base[(base.cutoff < cutoff) & (base.target_date <= cutoff)]
+    completed = _HistoryByDate(base)
+    for (fold, issued), test in base.groupby(["fold", "report_date"], sort=True, observed=True):
+        history = completed.at(issued)
         # C_err: stop on total support.
         err_strata = resolve_strata(test, history, min_history, adjacent_lag_radius)
         # C_harm: same hierarchy, stop on POSITIVE-HARM support. The counter

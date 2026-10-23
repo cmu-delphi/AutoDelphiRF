@@ -8,26 +8,24 @@ import pandas as pd
 
 from ..comparators.red import ROUTED_TAUS
 from dataclasses import replace
-from ..core.io import load_prepared_triangles
+from ..core.io import (describe_skipped_locations, load_prepared_triangles, read_csv,
+                       read_skipped_locations)
 from ..post_assessment.scoring import wis
-from ..core.defaults import to_raw_scale
+from ..core.defaults import provisional_column, to_reporting_scale
 from ..comparators.red_prediction import replay
 from ..comparators.red_routing import attach_revision_progress
 from ..core.context import attach_issued_context
-from .process_monitor import build_monitor_index, process_state_monitor
-from ..core.defaults import PROCESS_DEFAULTS, EVALUATION_DEFAULTS
+from ..core.history import enforce_target_maturity, target_as_of_date, validate_target_dates
+from ..core.defaults import EVALUATION_DEFAULTS
 from ..post_assessment.reliability import add_interval_columns, prospective_calibration, reliability_history
 from ..post_assessment.inference import bootstrap, primary_comparison_pairs
 from ..post_assessment.validation import run_validation
 
 from ..core.config import DatasetConfig, write_resolved_config
 from ..comparators.schema import validate_comparator_file
-from ..pre_diagnosis.diagnosis import (diagnose_prepared_data, diagnose_target_lag,
-                                      raw_archive_for_diagnosis, resolve_target_lag)
-from ..pre_diagnosis.archive import diagnose_raw_archive
+from ..pre_diagnosis.diagnosis import diagnose_prepared_data, resolve_target_lag
 from ..core.registry import LAYER_COLUMNS, PREDICTION_LAYERS, point_layer
 from .methods import DELPHIRF_METHODS, train_requested_delphirf
-from ..core.resources import user_config_path
 from ..post_assessment.reporting import LEVELS, build_report
 
 KEYS = ["fold", "cutoff", "geo_value", "reference_date", "report_date", "target_date", "lag"]
@@ -57,7 +55,13 @@ BOOTSTRAP_ROLE_BY_METHOD = {
 
 def build_cases(prepared: pd.DataFrame, schedule: pd.DataFrame,
                 genuine_only: bool = True) -> pd.DataFrame:
-    """Build forecast cases from the states actually visible in each test window."""
+    """Build forecast cases from states visible in each test window.
+
+    Only releases before the target lag (l < L) need a forecast. A case whose
+    reference date has not reached t + L carries a missing truth (see
+    ``enforce_target_maturity``): it is forecast, and scored only once a later
+    archive supplies its target.
+    """
     target = str(schedule.target_column.iloc[0])
     rows = []
     ordered = schedule.sort_values("test_date").reset_index(drop=True)
@@ -71,62 +75,19 @@ def build_cases(prepared: pd.DataFrame, schedule: pd.DataFrame,
         visible = prepared[prepared.report_date.ge(cutoff) & prepared.report_date.lt(end)].copy()
         if genuine_only and "genuine_event" in visible:
             visible = visible[visible.genuine_event.fillna(False).astype(bool)]
-        visible = visible[visible[target].notna() & visible.log_value_7dav.notna()].copy()
-        visible["fold"], visible["cutoff"] = index + 1, cutoff
-        visible["truth"], visible["Null"] = visible[target].astype(float), visible.log_value_7dav.astype(float)
+        provisional = provisional_column(target)
+        visible = visible[visible.log_value_7dav.notna() & visible[provisional].notna()].copy()
+        if pd.notna(item.get("target_lag")):
+            visible = visible[visible.lag < int(item.target_lag)].copy()
+        visible["fold"] = int(item.get("fold_id", index + 1))
+        visible["cutoff"] = cutoff
+        visible["truth"] = pd.to_numeric(visible[target], errors="coerce")
+        # Null carries forward the provisional value Y_itl on the target's scale.
+        visible["Null"] = visible[provisional].astype(float)
         rows.append(visible[KEYS + ["truth", "Null"]])
     if not rows:
         return pd.DataFrame(columns=KEYS + ["truth", "Null"])
     return pd.concat(rows, ignore_index=True)
-
-
-def attach_reporting_process_assessment(cases: pd.DataFrame,
-                                        prepared: pd.DataFrame) -> pd.DataFrame:
-    """Attach the target-free reporting-process assessment."""
-    result = cases.copy()
-    rows = []
-    settings = {
-        "recent_days": PROCESS_DEFAULTS["recent_days"],
-        "history_days": PROCESS_DEFAULTS["history_days"],
-        "min_recent_dates": PROCESS_DEFAULTS["minimum_recent_report_dates"],
-        "min_history_dates": PROCESS_DEFAULTS["minimum_history_report_dates"],
-        "watch_threshold": PROCESS_DEFAULTS["watch_threshold"],
-        "rediagnose_threshold": PROCESS_DEFAULTS["rediagnose_threshold"],
-        "epsilon_scale": PROCESS_DEFAULTS["epsilon_scale"],
-    }
-    for cutoff, group in result.groupby("cutoff", sort=False, observed=True):
-        index = build_monitor_index(prepared, pd.Timestamp(cutoff))
-        for geo, lag in group[["geo_value", "lag"]].drop_duplicates().itertuples(index=False):
-            state, score, details = process_state_monitor(
-                prepared, pd.Timestamp(cutoff), str(geo), int(lag),
-                monitor_index=index, return_details=True, **settings)
-            rows.append({"cutoff": cutoff, "geo_value": geo, "lag": lag,
-                         "process_state": state, "process_shift_score": score,
-                         "process_shift_driver": (max(details, key=details.get)
-                                                  if details else None),
-                         "process_shift_components": json.dumps(details, sort_keys=True)})
-    context = pd.DataFrame(rows)
-    return (result.merge(context, on=["cutoff", "geo_value", "lag"], how="left",
-                         validate="many_to_one") if not context.empty else result)
-
-
-def apply_input_schema(prepared: pd.DataFrame, columns: dict[str, str]) -> pd.DataFrame:
-    """Rename configured source columns to the frozen internal prepared-triangle schema."""
-    required = {"geo_value", "reference_date", "report_date", "target_date", "lag", "target_lag", "as_of_value"}
-    missing = required.difference(columns)
-    if missing:
-        raise ValueError(f"input_columns mapping missing semantic fields: {sorted(missing)}")
-    canonical = {"as_of_value": "log_value_7dav"}
-    rename = {}
-    for semantic, source in columns.items():
-        destination = canonical.get(semantic, semantic)
-        if source != destination:
-            if source not in prepared:
-                raise ValueError(f"configured source column {source!r} for {semantic!r} is absent")
-            if destination in prepared:
-                raise ValueError(f"cannot rename {source!r} to existing column {destination!r}")
-            rename[source] = destination
-    return normalize_lag_dtypes(prepared.rename(columns=rename))
 
 
 #: Columns that must be integer-typed for the joins downstream to work.
@@ -141,8 +102,8 @@ def normalize_lag_dtypes(prepared: pd.DataFrame) -> pd.DataFrame:
     DelphiRF's ``data_preprocessing`` writes ``lag``/``target_lag`` as doubles
     (date arithmetic in R yields a numeric difftime), and a hand-built CSV
     triangle picks up float64 the moment one value is missing. Either one
-    reaches ``pandas.merge_asof`` in :func:`diagnosis.diagnose_target_lag`,
-    which compares join-key dtypes exactly and raises rather than coercing.
+    reaches joins and lag arithmetic that compare dtypes exactly and raise
+    rather than coerce.
     Normalizing once here means no downstream module has to care which
     producer wrote the triangle.
 
@@ -171,72 +132,37 @@ def normalize_lag_dtypes(prepared: pd.DataFrame) -> pd.DataFrame:
     return prepared
 
 
-def _raw(values, transform: str):
-    """Working scale -> original reporting scale (see defaults.to_raw_scale)."""
-    return to_raw_scale(values, transform)
+def _reporting(values, working_scale: str):
+    """Working scale -> original reporting scale (see defaults.to_reporting_scale)."""
+    return to_reporting_scale(values, working_scale)
 
 
-# Optional USER configuration, not package data: both files record choices
-# about particular datasets rather than properties of the method, so they are
-# looked up in the user's environment/working directory and may be absent.
-# See ``resources.user_config_path`` for the search order, and the fallbacks
-# below for what a run does without them (diagnose L from the prepared
-# triangle; honour the schedule's own ``target_lag``).
-# Resolved per call rather than at import: the search consults the process
-# environment and the working directory, both of which a caller may set after
-# importing this module (the CLI does exactly that).
-def target_lag_params_path() -> Path | None:
-    return user_config_path("target_lag_params.json")
-
-
-def raw_archive_manifest_path() -> Path | None:
-    return user_config_path("raw_archive_manifest.json")
-
-
-def load_target_lag_params(dataset: str, path: Path | None = None) -> tuple[int | None, bool, dict]:
-    """The user's declared target lag for one dataset, if the params file has one.
-
-    Returns ``(target_lag, confirmed, rule_overrides)``. A missing file or a
-    missing entry means "no declared choice", which stops the run after
-    diagnosis until a target lag is supplied.
-    """
-    path = path or target_lag_params_path()
-    if path is None or not Path(path).exists():
-        return None, False, {}
-    params = json.loads(Path(path).read_text())
-    defaults = params.get("defaults", {}) or {}
-    entry = (params.get("datasets", {}) or {}).get(dataset)
-    rule = dict(defaults.get("rule", {}) or {})
-    if entry is None:
-        return None, False, rule
-    rule.update(entry.get("rule", {}) or {})
-    return entry.get("target_lag"), bool(entry.get("confirmed", False)), rule
-
-
-def derive_value_transform(prepared: pd.DataFrame, config: DatasetConfig) -> str:
+def derive_working_scale(prepared: pd.DataFrame, config: DatasetConfig) -> str:
     """Determine the working scale from the triangle itself, not from a declaration.
 
     DelphiRF always smooths by adding one in the counting domain and then logs,
     so the working column's form follows the VALUE-COLUMN ARITY:
 
       one column (a count, or a rate supplied directly)
-          -> log(value + 1)                      -> invert with expm1  ("log1p")
+          -> log(value + 1)                      -> invert with expm1  ("log_value")
       a numerator/denominator pair
-          -> log(num + 1) - log(denom + 1)       -> invert with exp    ("log")
+          -> log(num + 1) - log(denom + 1)       -> invert with exp    ("log_ratio")
+
+    The names are DelphiRF's ``working_scale`` values.
 
     An arity-2 triangle carries the numerator and denominator feature families
     alongside the combined column, so their presence is the decisive evidence.
     This is derived rather than configured because it is a property of the data;
     a dataset with both counts is ALWAYS on the log-ratio scale.
     """
-    base = config.input_columns.get("as_of_value", "log_value_7dav")
+    base = "log_value_7dav"
     if f"{base}_num" in prepared.columns and f"{base}_denom" in prepared.columns:
-        return "log"
-    return "log1p"
+        return "log_ratio"
+    return "log_value"
 
 
 def _check_transform(wide: pd.DataFrame, config: DatasetConfig) -> None:
-    """Fail loudly when the declared value_transform cannot be the one that
+    """Fail loudly when the declared working_scale cannot be the one that
     built this triangle, instead of silently emitting shifted raw values.
 
     log1p(x) is >= 0 for every x >= 0, so a negative working value proves the
@@ -245,27 +171,27 @@ def _check_transform(wide: pd.DataFrame, config: DatasetConfig) -> None:
     as value - 1; difference-based metrics (AE/WIS/coverage) survive the shift,
     so nothing else would have flagged it.
     """
-    if config.value_transform != "log1p" or "truth" not in wide:
+    if config.working_scale != "log_value" or "truth" not in wide:
         return
     truth = pd.to_numeric(wide["truth"], errors="coerce")
     smallest = truth.min()
     if pd.notna(smallest) and smallest < 0:
         raise ValueError(
-            f"dataset '{config.name}' declares value_transform='log1p' but its working "
+            f"dataset '{config.name}' declares working_scale='log_value' but its working "
             f"column reaches {smallest:.4g} (< 0), so it cannot be log1p of a non-negative "
             "value. A num/denom triangle stores log1p(num) - log1p(denom); declare "
-            "value_transform='log' for it.")
+            "working_scale='log_ratio' for it.")
 
 
-AUDIT_PASSTHROUGH = ("process_state", "process_shift_score", "process_shift_driver",
-                     "process_shift_components", "weight_fallback",
+AUDIT_PASSTHROUGH = ("weight_fallback",
                      "effective_donor_count", "cold_start", "point_ess",
                      "max_normalized_donor_weight", "mean_curve_distance",
                      "mean_stage_distance", "revision_state_active")
 
 
 def _method_rows(wide: pd.DataFrame, method: str, point: np.ndarray, quantiles: np.ndarray,
-                 config: DatasetConfig) -> pd.DataFrame:
+                 config: DatasetConfig, *, point_raw: np.ndarray | None = None,
+                 quantiles_raw: np.ndarray | None = None) -> pd.DataFrame:
     """One method's standardized long rows, built as columns rather than dicts.
 
     ``point`` is the working-scale point prediction per case and ``quantiles``
@@ -275,23 +201,25 @@ def _method_rows(wide: pd.DataFrame, method: str, point: np.ndarray, quantiles: 
     missing prediction, quantile, and score fields.
     """
     frame = wide
-    transform = config.value_transform
+    working_scale = config.working_scale
     truth_working = frame["truth"].to_numpy(float)
-    truth_raw = _raw(truth_working, transform)
-    point_raw = _raw(point, transform)
+    truth_raw = _reporting(truth_working, working_scale)
+    if point_raw is None:
+        point_raw = _reporting(point, working_scale)
     # A row keeps its untransformed quantiles unless every one of them is
     # finite, matching the per-case rule: a partial distribution is not
     # back-transformed into a reportable one.
     complete = np.isfinite(quantiles).all(axis=1)
-    quantiles_raw = quantiles.copy()
-    if complete.any():
-        quantiles_raw[complete] = _raw(quantiles[complete], transform)
+    if quantiles_raw is None:
+        quantiles_raw = quantiles.copy()
+        if complete.any():
+            quantiles_raw[complete] = _reporting(quantiles[complete], working_scale)
     has_distribution = np.isfinite(quantiles_raw).all(axis=1)
     null_working = (frame["Null"].to_numpy(float) if "Null" in frame else truth_working)
-    provisional = _raw(null_working, transform)
+    provisional = _reporting(null_working, working_scale)
     out = {key: (frame[key].to_numpy() if key in frame else None) for key in KEYS}
-    out.update(dataset=config.name, value_transform=transform,
-               prediction_scale="raw", method=method, truth=truth_raw, prediction=point_raw,
+    out.update(dataset=config.name, working_scale=working_scale,
+               prediction_scale="reporting", method=method, truth=truth_raw, prediction=point_raw,
                absolute_error=np.abs(truth_raw - point_raw), has_distribution=has_distribution)
     # Working-scale companions. Evaluation is reported on BOTH scales: the
     # original reporting scale (primary) and the model's own working scale.
@@ -303,6 +231,12 @@ def _method_rows(wide: pd.DataFrame, method: str, point: np.ndarray, quantiles: 
     out["truth_working"] = truth_working
     out["prediction_working"] = point
     out["absolute_error_working"] = np.abs(truth_working - point)
+    # Convert the log-scale prediction/target difference into a percentage.
+    # For log1p count models this is the relative difference between value + 1,
+    # which remains defined when the target is zero; for log fraction models it
+    # is the ordinary prediction/target ratio.
+    relative_point = 100 * np.expm1(point - truth_working)
+    out["relative_error_pct"] = np.abs(relative_point)
     out["provisional_value"] = provisional
     out["true_remaining_revision"] = truth_raw - provisional
     out["predicted_remaining_revision"] = point_raw - provisional
@@ -315,13 +249,20 @@ def _method_rows(wide: pd.DataFrame, method: str, point: np.ndarray, quantiles: 
         out[f"q{tau:g}_working"] = quantiles[:, index]
     scored = np.full(len(frame), np.nan)
     scored_working = np.full(len(frame), np.nan)
+    scored_relative = np.full(len(frame), np.nan)
     if has_distribution.any():
         scored[has_distribution] = wis(quantiles_raw[has_distribution], truth_raw[has_distribution])
         scored_working[has_distribution] = wis(quantiles[has_distribution],
                                                truth_working[has_distribution])
+        relative_quantiles = 100 * np.expm1(
+            quantiles[has_distribution] - truth_working[has_distribution, None])
+        scored_relative[has_distribution] = wis(
+            relative_quantiles, np.zeros(has_distribution.sum()))
     # Evaluate every strategy on the original reporting scale. The scoring
     # function remains DelphiRF/evalcast's twice-mean-pinball definition.
-    out["wis"], out["wis_raw"], out["wis_working"] = scored, scored, scored_working
+    # The same names as DelphiRF's revision_forecast() scores.
+    out["wis_reporting"], out["wis_working"] = scored, scored_working
+    out["relative_wis_pct"] = scored_relative
     for field in AUDIT_PASSTHROUGH:
         if field in frame:
             out[field] = frame[field].to_numpy()
@@ -330,10 +271,10 @@ def _method_rows(wide: pd.DataFrame, method: str, point: np.ndarray, quantiles: 
 
 def standardize_predictions(wide: pd.DataFrame, config: DatasetConfig) -> pd.DataFrame:
     """Convert method-specific columns into one stable, long prediction schema."""
-    if config.value_transform is None:
+    if config.working_scale is None:
         raise ValueError(
-            f"dataset '{config.name}' has no resolved value_transform. It is normally derived from "
-            "the prepared triangle by run_pipeline() (see derive_value_transform); when calling "
+            f"dataset '{config.name}' has no resolved working_scale. It is normally derived from "
+            "the prepared triangle by run_pipeline() (see derive_working_scale); when calling "
             "standardize_predictions directly, supply a config that already has it set.")
     _check_transform(wide, config)
     adapters = dict(PREDICTION_LAYERS)
@@ -364,13 +305,39 @@ def standardize_predictions(wide: pd.DataFrame, config: DatasetConfig) -> pd.Dat
             else:
                 quantiles = np.column_stack([wide[tau_template.format(tau=tau)].to_numpy(float)
                                              for tau in ROUTED_TAUS])
+            point_raw = quantiles_raw = None
+            working_point_column = f"{point_column}_working"
+            if method in DELPHIRF_METHODS and working_point_column not in wide:
+                raise ValueError(
+                    f"DelphiRF method '{method}' supplied no paired working-scale prediction; "
+                    "install the current DelphiRF package and regenerate the model output")
+            if working_point_column in wide:
+                # Paired columns mean the producing model already performed
+                # its own inverse transformation. The unsuffixed columns are
+                # reporting-scale values; the suffixed columns are the exact
+                # model-scale values used for scoring and calibration.
+                point_raw = point
+                point = wide[working_point_column].to_numpy(float)
+                if tau_template is not None:
+                    raw_quantiles = quantiles
+                    working_columns = [f"{tau_template.format(tau=tau)}_working"
+                                       for tau in ROUTED_TAUS]
+                    if not all(column in wide for column in working_columns):
+                        raise ValueError(
+                            f"method '{method}' has raw predictions but incomplete "
+                            "working-scale quantiles")
+                    quantiles = np.column_stack(
+                        [wide[column].to_numpy(float) for column in working_columns])
+                    quantiles_raw = raw_quantiles
         else:
             # A custom layer registered through ``register_prediction_layer``
             # with no column template still works, one row at a time.
             extracted = [adapters[method](row, ROUTED_TAUS) for row in wide.to_dict("records")]
             point = np.array([float(x[0]) for x in extracted])
             quantiles = np.vstack([np.asarray(x[1], float) for x in extracted])
-        frames.append(_method_rows(wide, method, point, quantiles, config))
+            point_raw = quantiles_raw = None
+        frames.append(_method_rows(wide, method, point, quantiles, config,
+                                   point_raw=point_raw, quantiles_raw=quantiles_raw))
     frames = [f for f in frames if not f.empty]
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
@@ -386,7 +353,7 @@ def _load_reliability_reference(config: DatasetConfig, method: str | None = None
     """
     if not config.reliability_reference_file:
         return None, None
-    reference = pd.read_csv(config.reliability_reference_file)
+    reference = read_csv(config.reliability_reference_file)
     if "method" in reference:
         if method is None:
             raise ValueError("method-specific reliability references require a method")
@@ -419,7 +386,7 @@ def run_reliability_and_calibration(long: pd.DataFrame, config: DatasetConfig,
     distribution_methods = ([m for m in config.prediction_layers if m in eligible]
                             if config.uncertainty_layer else [])
     calibration = (prospective_calibration(long, distribution_methods,
-                                            value_transform=config.value_transform) if distribution_methods
+                                            working_scale=config.working_scale) if distribution_methods
                   else long.iloc[:0].copy())
     if not calibration.empty:
         base_intervals = add_interval_columns(calibration, LEVELS, prefix="")
@@ -429,6 +396,7 @@ def run_reliability_and_calibration(long: pd.DataFrame, config: DatasetConfig,
         interval_rows = []
         for level in LEVELS:
             for status, frame in (("base", base_intervals), ("calibrated", calibrated_intervals)):
+                wis_column = "cal_wis_reporting" if status == "calibrated" else "wis_reporting"
                 for method, group in frame.groupby("method", observed=True):
                     interval_rows.append({
                         "method": method, "status": status, "nominal": level / 100, "n": len(group),
@@ -438,10 +406,8 @@ def run_reliability_and_calibration(long: pd.DataFrame, config: DatasetConfig,
                         "median_width": group[f"width_{level}"].median(),
                         "lower_miss": group[f"lower_miss_{level}"].mean(),
                         "upper_miss": group[f"upper_miss_{level}"].mean(),
-                        "mean_wis": group["cal_wis" if status == "calibrated" else "wis"].mean()
-                        if ("cal_wis" if status == "calibrated" else "wis") in group else np.nan,
-                        "median_wis": group["cal_wis" if status == "calibrated" else "wis"].median()
-                        if ("cal_wis" if status == "calibrated" else "wis") in group else np.nan})
+                        "mean_wis": group[wis_column].mean() if wis_column in group else np.nan,
+                        "median_wis": group[wis_column].median() if wis_column in group else np.nan})
         interval_calibration = pd.DataFrame(interval_rows)
     else:
         interval_calibration = pd.DataFrame(columns=["method", "status", "nominal", "n", "coverage",
@@ -467,61 +433,232 @@ def run_reliability_and_calibration(long: pd.DataFrame, config: DatasetConfig,
     # V1/V2 prospective validation. Pure post-processing on forecasts that were
     # already issued and scored: nothing is re-predicted and no threshold is
     # tuned here.
-    from ..post_assessment.validation import alignment_frame
     validation = run_validation(long, wide=wide, calibration=calibration, reliability=reliability,
                                 point_pairs=point_pairs, distribution_pairs=distribution_pairs,
                                 taus=ROUTED_TAUS)
-    validation["_alignment"] = alignment_frame(reliability, long)
     return {"calibration": calibration, "interval_calibration": interval_calibration,
             "reliability": reliability, "bootstrap": bootstrap_rows, **validation}
 
 
-def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_stop=None) -> dict:
+def forecast_time_assessment(history: pd.DataFrame, newly_issued: pd.DataFrame,
+                             config: DatasetConfig) -> dict[str, pd.DataFrame]:
+    """Attach prospective calibration and reliability only to new forecasts.
+
+    Accuracy, coverage, and realized-harm fields remain unavailable until a
+    later archive exposes the target. Historical ledger rows supply only the
+    information that would have been observable at the new forecast cutoff.
+    """
+    if newly_issued.empty:
+        return {"calibration": newly_issued.copy(), "reliability": newly_issued.copy()}
+    eligible = set(DISTRIBUTION_METHODS)
+    if config.comparator_quantile_template:
+        eligible |= set(config.comparator_methods)
+    methods = ([method for method in config.prediction_layers if method in eligible]
+               if config.uncertainty_layer else [])
+    calibrated = (prospective_calibration(
+        history, methods, working_scale=config.working_scale) if methods
+                  else newly_issued.iloc[:0].copy())
+    reliability_parts = []
+    for method in methods:
+        error_reference, regret_reference = _load_reliability_reference(config, method)
+        reliability_parts.append(reliability_history(
+            history, method, error_reference=error_reference,
+            regret_reference=regret_reference))
+    reliability = (pd.concat(reliability_parts, ignore_index=True)
+                   if reliability_parts else newly_issued.iloc[:0].copy())
+    identity = ["method", "cutoff", "geo_value", "reference_date",
+                "report_date", "target_date", "lag"]
+    wanted = newly_issued[identity].drop_duplicates()
+    def select(frame):
+        if frame.empty:
+            return frame
+        selected = frame.merge(wanted.assign(_new=True), on=identity, how="inner")
+        return selected.drop(columns="_new")
+    calibrated, reliability = select(calibrated), select(reliability)
+    for frame in (calibrated, reliability):
+        for column in ("realized_ae", "realized_null_ae", "realized_regret",
+                       "realized_harm", "qerr_covered", "mharm_covered"):
+            if column in frame:
+                frame[column] = np.nan
+    return {"calibration": calibrated, "reliability": reliability}
+
+
+def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_stop=None,
+                 *, model_mode: str = "train", incremental_update: bool = False,
+                 post_assessment: bool = True) -> dict:
     started = perf_counter()
     pipeline_timings = []
     def record_stage(name, began):
         pipeline_timings.append({"stage": name, "seconds": perf_counter() - began})
     output = config.output_dir
     output.mkdir(parents=True, exist_ok=True)
+    from .operational import (append_forecast_ledger, ensure_analysis_contract,
+                              exclude_issued_cases, raw_archive_state,
+                              read_autodelphirf_preparation, recorded_archive_state,
+                              read_deployment_origin, read_forecast_ledger,
+                              refresh_forecast_ledger_truth, select_update_schedule,
+                              write_deployment_origin, write_model_manifest)
     stage = perf_counter()
+    preparation = read_autodelphirf_preparation(config.prepared_dir)
+    # The diagnosis (Python) and preparation (R) clean the raw archive with one
+    # contract; their retained rows legitimately differ by scope (lag bound,
+    # as-of date), which each audit states. Only a contract mismatch is an error.
+    diagnosis_audit = (preparation.get("diagnosis") or {}).get("raw_cleaning_audit") or {}
+    preparation_audit_path = config.prepared_dir / "raw_cleaning_audit.json"
+    if diagnosis_audit and preparation_audit_path.is_file():
+        preparation_audit = json.loads(preparation_audit_path.read_text())
+        if diagnosis_audit.get("contract_version") != preparation_audit.get("contract_version"):
+            raise ValueError(
+                f"dataset '{config.name}': the diagnosis used raw-cleaning contract "
+                f"{diagnosis_audit.get('contract_version')} but preparation used "
+                f"{preparation_audit.get('contract_version')}; re-run `autodelphirf prepare`.")
     prepared = load_prepared_triangles(config.prepared_dir)
-    prepared = apply_input_schema(prepared, config.input_columns)
+    # A location preparation could not build is absent from every forecast and
+    # score below, so say which and why, and keep the record with the results.
+    skipped_locations = read_skipped_locations(config.prepared_dir)
+    skipped_locations.to_csv(output / "skipped_locations.csv", index=False)
+    if not skipped_locations.empty:
+        print(f"{len(skipped_locations)} location(s) were skipped during preparation and are "
+              "not forecast or evaluated:", flush=True)
+        print("\n".join(describe_skipped_locations(skipped_locations)), flush=True)
+    ensure_analysis_contract(config.prepared_dir, output)
+    prepared = normalize_lag_dtypes(prepared)
     for column in ("reference_date", "report_date", "target_date"):
         prepared[column] = pd.to_datetime(prepared[column])
-    derived_transform = derive_value_transform(prepared, config)
-    if config.value_transform is not None and config.value_transform != derived_transform:
+    derived_scale = derive_working_scale(prepared, config)
+    if config.working_scale is not None and config.working_scale != derived_scale:
         raise ValueError(
-            f"dataset '{config.name}' declares value_transform='{config.value_transform}' but its "
-            f"prepared triangle is '{derived_transform}'. The working scale follows the value-column "
+            f"dataset '{config.name}' declares working_scale='{config.working_scale}' but its "
+            f"prepared triangle is '{derived_scale}'. The working scale follows the value-column "
             "arity and is not a free choice: a numerator/denominator triangle is always "
-            "log(num+1)-log(denom+1) ('log'); a single-column triangle is always log(value+1) "
-            "('log1p'). Remove the declaration to derive it, or correct it.")
-    config = replace(config, value_transform=derived_transform)
+            "log(num+1)-log(denom+1) ('log_ratio'); a single-column triangle is always "
+            "log(value+1) ('log_value'). Remove the declaration to derive it, or correct it.")
+    config = replace(config, working_scale=derived_scale)
     record_stage("load_prepared_data", stage)
     stage = perf_counter()
-    schedule = pd.read_csv(config.prepared_dir / config.schedule_file,
-                           parse_dates=["test_date", "experiment_end_date"])
-    summary, missingness = diagnose_prepared_data(prepared, schedule, config.revision_profile)
+    full_schedule = pd.read_csv(config.prepared_dir / config.schedule_file,
+                                parse_dates=["test_date", "experiment_end_date"])
+    existing_ledger = read_forecast_ledger(output) if incremental_update else pd.DataFrame()
+    retraining_required = None
+    if incremental_update:
+        schedule, retraining_required = select_update_schedule(
+            full_schedule, read_deployment_origin(output))
+    else:
+        schedule = full_schedule
+    resolved_preprocessing = preparation["resolved_preprocessing"]
+    modeling_profile = {
+        "weekday_groups": resolved_preprocessing.get("weekday_groups") or {},
+        "weekday_groups_source": resolved_preprocessing.get("weekday_groups_source"),
+        "lag_terms": list(resolved_preprocessing.get("lag_terms") or []),
+    }
+    # The weekday groups and lag terms are fixed at preparation and recorded in
+    # preparation.json, which training reads. A revision_profile left in a
+    # dataset JSON by an older version is not a second setting: it must agree.
+    stale = config.revision_profile or {}
+    conflicts = [key for key in ("weekday_groups", "lag_terms")
+                 if key in stale and stale[key] != modeling_profile[key]]
+    if conflicts:
+        raise ValueError(
+            f"dataset '{config.name}': revision_profile in the dataset JSON sets {conflicts} "
+            "differently from the prepared dataset, which is what training uses. Weekday groups "
+            "and lag terms are chosen at preparation: set preprocessing.weekday_groups (ISO "
+            "weekday numbers) in the raw configuration and re-run `autodelphirf prepare`, then "
+            "remove revision_profile from the dataset JSON.")
+    summary, missingness = diagnose_prepared_data(prepared, full_schedule, modeling_profile)
     (output / "diagnostics").mkdir(exist_ok=True)
     (output / "diagnostics" / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
     missingness.to_csv(output / "diagnostics" / "missingness.csv", index=False)
     record_stage("input_diagnosis", stage)
     if diagnosis_only:
         return summary
+    # The target lag is settled before any case is built or model trained.
+    # Target lag L is the user's choice, made at `autodelphirf prepare` and
+    # recorded in the prepared schedule: the triangle's target column and
+    # target_date encode it. Its evidence comes only from the raw archive and
+    # is recorded in preparation.json; a prepared triangle is never diagnosed.
+    built = (set(schedule.target_lag.dropna().astype(int)) if "target_lag" in schedule
+             else set())
+    if len(built) > 1:
+        raise ValueError(f"dataset '{config.name}': the schedule mixes target lags "
+                         f"{sorted(built)}; a run uses one target lag")
+    user_lag = built.pop() if built else None
+    recorded = preparation.get("diagnosis") or {}
+    recorded_range = recorded.get("target_lag_suggested_range")
+    diagnosed = {
+        "selected_target_lag": None,
+        "suggested_target_lag_range": recorded_range,
+        "status": ("skipped: the target lag was specified"
+                   if user_lag is not None and (recorded_range is None or recorded_range.get("skipped"))
+                   else "raw archive diagnosis recorded during preprocessing"
+                   if recorded_range is not None else "not diagnosed"),
+        "completion": recorded.get("target_lag_completion_curve", {}),
+        "source": "preparation.json (raw archive)",
+    }
+    resolved, reason = resolve_target_lag(diagnosed, user_lag, user_lag is not None, config.name)
+    print(f"Target lag: {resolved} days ({reason}); diagnostic range: "
+          f"{diagnosed.get('suggested_target_lag_range')}", flush=True)
+    target_lag_record = {"resolved": resolved, "reason": reason,
+                         "user_target_lag": user_lag, "user_confirmed": user_lag is not None,
+                         "diagnosed": diagnosed}
+    (output / "target_lag_resolution.json").write_text(
+        json.dumps(target_lag_record, indent=2, default=str) + "\n")
+    # One target definition for training, scoring, calibration, reliability and
+    # the ledger: the prepared target_date (t + L), used as stored, and the
+    # as-of date recorded at preparation.
+    target_column = str(schedule.target_column.iloc[0])
+    validate_target_dates(prepared, resolved)
+    as_of_date = target_as_of_date(full_schedule)
+    prepared = enforce_target_maturity(prepared, as_of_date)
+    if incremental_update:
+        truth_update = refresh_forecast_ledger_truth(
+            prepared, target_column, config.working_scale, output, as_of_date=as_of_date)
+        existing_ledger = read_forecast_ledger(output)
+        issued_forecasts_file = output / "_issued_forecast_cases.csv"
+        issued_columns = ["cutoff", "geo_value", "reference_date", "report_date",
+                          "target_date", "lag"]
+        (existing_ledger[issued_columns].drop_duplicates()
+         if not existing_ledger.empty else pd.DataFrame(columns=issued_columns)).to_csv(
+             issued_forecasts_file, index=False)
+        incremental_cases = exclude_issued_cases(
+            build_cases(prepared, schedule, config.genuine_testing),
+            existing_ledger)
+    else:
+        truth_update = None
+        issued_forecasts_file = None
+        incremental_cases = None
     # Every DelphiRF-labelled method crosses one auditable boundary into the
     # installed R package. RevRoute itself contributes only the per-origin
     # task pools consumed by the default ``delphirf`` method.
     requested_delphirf = tuple(
         method for method in config.prediction_layers if method in DELPHIRF_METHODS)
     delphirf_seconds, delphirf_provenance = 0., None
-    if requested_delphirf:
-        # DelphiRF necessarily returns predictions on the response's working
-        # scale. This is an explicitly named intermediate; predictions.csv.gz
-        # below is the public artifact and always carries raw-scale prediction
-        # and q* columns after the inverse transform in _method_rows().
-        trained = output / "_working_scale_delphirf_predictions.csv.gz"
+    # Retraining is scheduled by calendar origin, independently of whether a
+    # report happens to arrive on that date.  A quiet retraining date must
+    # still persist the new models for the next release; it simply produces no
+    # forecasts during this update.
+    should_run_delphirf = (
+        not incremental_update or retraining_required or not incremental_cases.empty
+    )
+    if requested_delphirf and should_run_delphirf:
+        # DelphiRF returns paired reporting- and working-scale predictions.
+        # AutoDelphiRF preserves both without independently inverting the
+        # model output.
+        trained = output / "_delphirf_predictions.csv.gz"
+        model_dir = output / "models"
         _, delphirf_seconds, delphirf_provenance = train_requested_delphirf(
-            config, prepared, schedule, requested_delphirf, trained)
+            config, prepared, schedule, requested_delphirf, trained,
+            model_dir=model_dir, model_mode=model_mode,
+            issued_forecasts=issued_forecasts_file,
+            unresolved_only=incremental_update)
+        write_model_manifest(model_dir, output, delphirf_provenance)
+        if incremental_update and retraining_required:
+            write_deployment_origin(output, pd.Timestamp(schedule.test_date.iloc[0]))
+        elif not incremental_update:
+            # A retrospective run trains every scheduled origin and leaves the
+            # final one ready for operational use.  Persist that fact alongside
+            # the saved models so the first later update can reuse it directly
+            # instead of treating the deployment as uninitialized.
+            write_deployment_origin(output, pd.to_datetime(schedule.test_date).max())
         config = replace(
             config, comparator_file=trained,
             comparator_methods={**config.comparator_methods,
@@ -538,117 +675,52 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
     (output / "assessment_inputs.json").write_text(
         json.dumps(input_manifest, indent=2, default=str) + "\n")
     stage = perf_counter()
-    cases = build_cases(prepared, schedule, config.include_genuine_events_only)
+    cases = (incremental_cases if incremental_update else
+             build_cases(prepared, schedule, config.genuine_testing))
     if cases.empty:
+        if incremental_update:
+            raw_update = raw_archive_state(config.prepared_dir, output)
+            manifest = {
+                "dataset": config.name, "cases": 0, "origins": 0,
+                "methods": list(config.prediction_layers), "incremental_update": True,
+                "retraining_required": retraining_required,
+                "new_forecasts": 0, "truth_update": truth_update,
+                "raw_archive_update": raw_update,
+                "forecast_ledger": {"path": str(output / "forecast_ledger.csv.gz"),
+                                    "previous_rows": len(existing_ledger), "new_rows": 0,
+                                    "total_rows": len(existing_ledger)},
+                "wall_seconds": perf_counter() - started,
+            }
+            (output / "run_manifest.json").write_text(
+                json.dumps(manifest, indent=2, default=str) + "\n")
+            return manifest
         raise ValueError("the configured test windows produced no forecast cases")
-    cases = attach_reporting_process_assessment(
-        attach_issued_context(attach_revision_progress(cases, prepared), prepared), prepared)
+    cases = attach_issued_context(attach_revision_progress(cases, prepared), prepared)
     record_stage("case_construction_and_features", stage)
     params = dict(config.method_params)
     if config.initial_lag is not None:
         params["initial_lag"] = config.initial_lag
     params["include_red"] = "red" in config.prediction_layers
     params["target_column"] = str(schedule.target_column.iloc[0])
-    # Target lag L is always the user's explicit choice. Diagnosis supplies a
-    # 90%-completion evidence range but never selects or overrides a value.
-    user_lag, confirmed, rule = load_target_lag_params(config.name)
-    if user_lag is None and "target_lag" in schedule:
-        # A schedule that already states one acts as the declared choice, so a
-        # dataset set up before the params file keeps working unchanged.
-        target_lags = set(schedule.target_lag.dropna().astype(int))
-        if len(target_lags) == 1:
-            user_lag, confirmed = target_lags.pop(), True
-    # Diagnose from the RAW archive when one is registered: a prepared
-    # triangle is truncated at the target lag it was built with, so diagnosing L
-    # from it is circular and fails the follow-up requirement outright on
-    # every dataset whose triangle stops short of it.
-    # A triangle created by ``autodelphirf prepare`` carries the diagnosis made
-    # from the full raw archive. Reuse it: re-diagnosing from the prepared
-    # triangle is circular because that triangle is already truncated at L,
-    # and can produce misleading target-lag evidence in the run log.
-    preparation_path = config.prepared_dir / "preparation.json"
-    recorded = None
-    if preparation_path.is_file():
-        try:
-            recorded = json.loads(preparation_path.read_text()).get("diagnosis")
-        except (OSError, json.JSONDecodeError):
-            recorded = None
-    if recorded and recorded.get("target_lag_suggested_range") is not None:
-        diagnosed = {
-            "selected_target_lag": None,
-            "suggested_target_lag_range": recorded["target_lag_suggested_range"],
-            "status": "raw archive diagnosis recorded during preprocessing",
-            "rule": {"completion_rate": 0.90, "relative_error": 0.01,
-                     "guidance_relative_error": 0.10},
-            "completion": recorded.get("target_lag_completion_curve", {}),
-            "source": "preparation.json (full raw archive)",
-        }
-        source = diagnosed["source"]
-    else:
-        archive, source = raw_archive_for_diagnosis(config.name, raw_archive_manifest_path())
-        if archive is not None:
-            # Use the same full-history diagnosis as fresh preprocessing. Late
-            # reports define the comparator; the primary candidate grid (ending
-            # at 365 days) bounds only the automatically suggested target lag.
-            raw_diagnosis = diagnose_raw_archive(
-                archive,
-                completion_rate=rule.get("completion_rate", 0.90),
-                completion_threshold=rule.get("relative_error", 0.01),
-            )
-            diagnosed = {
-                "selected_target_lag": None,
-                "suggested_target_lag_range": raw_diagnosis.target_lag_suggested_range,
-                "status": "primary diagnosis reconstructed from the full raw archive",
-                "rule": {"completion_rate": rule.get("completion_rate", 0.90),
-                         "relative_error": rule.get("relative_error", 0.01)},
-                "completion": raw_diagnosis.target_lag_completion_curve,
-            }
-        else:
-            diagnosed = diagnose_target_lag(
-                prepared, value_column=config.input_columns.get("raw_value", "value_7dav"), **rule)
-            source = f"prepared triangle ({source}; truncated, so the diagnosis is limited)"
-        diagnosed["source"] = source
-    resolved, reason = resolve_target_lag(diagnosed, user_lag, confirmed, config.name)
-    # The triangle encodes its target lag: data_preprocessing() builds the target
-    # column and target_date from the ref_lag it was given, and writes the same
-    # value into the schedule. So a run cannot adopt a different L than the one
-    # its triangle was built with -- the eligibility filter would cut at one
-    # target lag while the targets held another. Diagnosis informs preprocessing;
-    # by the time a run reads a triangle, the target lag is already encoded and
-    # can only be checked.
-    if "target_lag" in schedule:
-        built = set(schedule.target_lag.dropna().astype(int))
-        if len(built) == 1 and resolved != built.copy().pop():
-            baked = built.pop()
-            raise ValueError(
-                f"dataset '{config.name}': this run would use L={resolved} ({reason}) but its "
-                f"prepared triangle was built with L={baked}, so its target column and "
-                f"target_date encode {baked}. Re-run `autodelphirf prepare` from the raw "
-                f"archive with --target-lag {resolved}, or keep target_lag={baked} for this run.")
-    print(f"Target lag: {resolved} days ({reason}); diagnostic range: "
-          f"{diagnosed.get('suggested_target_lag_range')}", flush=True)
     params["target_lag"] = resolved
-    target_lag_record = {"resolved": resolved, "reason": reason,
-                         "user_target_lag": user_lag, "user_confirmed": confirmed,
-                         "diagnosed": diagnosed}
-    (output / "target_lag_resolution.json").write_text(
-        json.dumps(target_lag_record, indent=2, default=str) + "\n")
     stage = perf_counter()
     # Training windows are schedule data, not a dataset-wide constant. Pass
     # the fold -> days mapping so retrospective studies may vary them across
     # origins without splitting the dataset into separate runs.
-    training_windows = dict(zip(schedule.index + 1,
-                                schedule.training_days.astype(int)))
+    fold_ids = (schedule["fold_id"].astype(int) if "fold_id" in schedule
+                else pd.Series(schedule.index + 1, index=schedule.index))
+    training_windows = dict(zip(fold_ids, schedule.training_days.astype(int)))
     wide, timing = replay(cases, prepared, training_windows,
                           should_stop=should_stop, **params)
     record_stage("revroute_execution", stage)
     rr_audit = rr_clusters = None
     if config.comparator_file:
         stage = perf_counter()
-        validate_comparator_file(config.comparator_file, config.comparator_method_column,
-                                 config.comparator_prediction_column, config.comparator_methods,
-                                 config.comparator_columns)
-        comparator = pd.read_csv(config.comparator_file)
+        comparator = read_csv(config.comparator_file)
+        if not (incremental_update and comparator.empty):
+            validate_comparator_file(config.comparator_file, config.comparator_method_column,
+                                     config.comparator_prediction_column,
+                                     config.comparator_methods, config.comparator_columns)
         for column in ("cutoff", "reference_date", "report_date", "target_date"):
             if column in comparator:
                 comparator[column] = pd.to_datetime(comparator[column])
@@ -657,6 +729,11 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
         for output_name, source_name in config.comparator_methods.items():
             selected = comparator[comparator[config.comparator_method_column].eq(source_name)]
             wanted = {config.comparator_prediction_column: output_name}
+            # DelphiRF owns the inverse transformation and emits both scales.
+            # Keep the paired working-scale columns alongside the public raw
+            # predictions; AutoDelphiRF must not reconstruct model outputs.
+            if "prediction_working" in selected.columns:
+                wanted["prediction_working"] = f"{output_name}_working"
             if template:
                 # Rename the file's quantile columns into this method's own
                 # namespace so several comparators can each carry a full
@@ -669,6 +746,19 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
                         f"{template!r} but is missing {missing}")
                 wanted.update({template.format(tau=tau): f"{output_name}_tau{tau:g}"
                                for tau in ROUTED_TAUS})
+                working_quantiles = {
+                    f"{template.format(tau=tau)}_working":
+                    f"{output_name}_tau{tau:g}_working"
+                    for tau in ROUTED_TAUS
+                }
+                present_working = {source: destination
+                                   for source, destination in working_quantiles.items()
+                                   if source in selected.columns}
+                if present_working and len(present_working) != len(working_quantiles):
+                    raise ValueError(
+                        f"comparator '{source_name}' has an incomplete set of working-scale "
+                        "quantile columns")
+                wanted.update(present_working)
             values = selected[merge_keys + list(wanted)].rename(columns=wanted)
             # Each method keeps its own availability pattern. Taking an inner
             # intersection here would let one failed method erase valid
@@ -681,22 +771,79 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
         record_stage("external_comparator_ingestion", stage)
     stage = perf_counter()
     long = standardize_predictions(wide, config)
+    # A failed model forecast is recorded as unavailable (model_available False,
+    # no prediction), in the ledger as everywhere else. Its case is issued once
+    # and never forecast again by a later update.
     record_stage("standardize_predictions", stage)
     stage = perf_counter()
-    reliability_outputs = run_reliability_and_calibration(long, config, wide=wide)
+    scored_long = long[long.truth.notna()].copy()
+    scored_wide = wide[wide.truth.notna()].copy()
+    if not post_assessment:
+        if incremental_update:
+            raise ValueError("an update always assesses its newly issued forecasts; "
+                             "post_assessment=False applies to a full run only")
+        # Predictions and their evaluation (truth, AE, WIS, relative error) only.
+        # Calibration, reliability, bootstrap and the report are left to a later
+        # `autodelphirf assess`, which restarts from the files written here.
+        wide.to_csv(output / "predictions_wide.csv.gz", index=False, compression="gzip")
+        long.to_csv(output / "predictions.csv.gz", index=False, compression="gzip")
+        # The run has recorded its deployment origin, so a later update needs
+        # the issued forecasts too; the ledger is part of the predictions.
+        ledger = append_forecast_ledger(long, output)
+        manifest = {"dataset": config.name, "cases": len(wide),
+                    "origins": int(wide.cutoff.nunique()),
+                    "methods": list(config.prediction_layers), "evaluation_scale": "reporting",
+                    "working_scale": config.working_scale,
+                    "wall_seconds": perf_counter() - started, "method_params": params,
+                    "delphirf_provenance": delphirf_provenance, "model_mode": model_mode,
+                    "post_assessment": False, "forecast_ledger": ledger,
+                    "skipped_locations": skipped_locations.to_dict("records")}
+        (output / "run_manifest.json").write_text(json.dumps(manifest, indent=2, default=str))
+        pd.DataFrame(pipeline_timings).to_csv(output / "runtime_pipeline_stages.csv", index=False)
+        return manifest
+    if incremental_update:
+        ledger = append_forecast_ledger(long, output)
+        combined_ledger = read_forecast_ledger(output)
+        forecast_outputs = forecast_time_assessment(combined_ledger, long, config)
+        reliability_outputs = {
+            "calibration": forecast_outputs["calibration"],
+            "reliability": forecast_outputs["reliability"],
+            "interval_calibration": pd.DataFrame(), "bootstrap": pd.DataFrame(),
+        }
+    else:
+        reliability_outputs = run_reliability_and_calibration(
+            scored_long, config, wide=scored_wide)
     record_stage("calibration_and_reliability", stage)
     wide.to_csv(output / "predictions_wide.csv.gz", index=False, compression="gzip")
     long.to_csv(output / "predictions.csv.gz", index=False, compression="gzip")
+    if not incremental_update:
+        ledger = append_forecast_ledger(long, output)
+    # An update has just re-prepared from the current raw archive; a rerun of
+    # an already-prepared dataset uses the state recorded at preparation and
+    # never rereads the raw archive.
+    raw_update = (raw_archive_state(config.prepared_dir, output) if incremental_update
+                  else recorded_archive_state(config.prepared_dir, output))
     reliability_outputs["calibration"].to_csv(output / "calibration.csv.gz", index=False, compression="gzip")
     reliability_outputs["interval_calibration"].to_csv(output / "interval_calibration.csv", index=False)
     reliability_outputs["reliability"].to_csv(output / "reliability.csv.gz", index=False, compression="gzip")
     reliability_outputs["bootstrap"].to_csv(output / "bootstrap_pairwise_comparisons.csv", index=False)
+    if incremental_update:
+        (output / "forecast_assessment_status.json").write_text(json.dumps({
+            "scope": "newly issued unresolved forecasts only",
+            "new_forecast_rows": len(long),
+            "calibrated_forecast_rows": len(reliability_outputs["calibration"]),
+            "reliability_rows": len(reliability_outputs["reliability"]),
+            "realized_scores": "pending until target values become observable",
+            "truth_rows_resolved_this_update": truth_update["resolved_rows"],
+            "truth_rows_corrected_this_update": truth_update["corrected_rows"],
+            "truth_rows_withheld_until_target_date": truth_update["withheld_rows"],
+        }, indent=2) + "\n")
     for name, frame in reliability_outputs.items():
         if name.startswith(("v1_", "v2_", "v3_", "v4_")) and frame is not None and not frame.empty:
             frame.to_csv(output / f"{name}.csv", index=False)
     timing.to_csv(output / "runtime_by_origin.csv", index=False)
     shared_columns = ["training_selection_seconds", "route_build_seconds", "red_prediction_seconds",
-                      "process_monitor_seconds", "residual_history_seconds"]
+                      "residual_history_seconds"]
     shared_seconds = float(timing[[c for c in shared_columns if c in timing]].sum().sum())
     runtime_rows = [{"method": "baseline_null", "timing_status": "fresh", "shared_seconds": 0.,
                      "incremental_seconds": 0., "standalone_total_seconds": 0.}]
@@ -713,22 +860,32 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
     runtime = pd.DataFrame(runtime_rows)
     runtime.to_csv(output / "runtime_by_method.csv", index=False)
     manifest = {"dataset": config.name, "cases": len(wide), "origins": int(wide.cutoff.nunique()),
-                "methods": list(config.prediction_layers), "evaluation_scale": "raw",
-                "value_transform": config.value_transform, "wall_seconds": perf_counter() - started,
+                "methods": list(config.prediction_layers), "evaluation_scale": "reporting",
+                "working_scale": config.working_scale, "wall_seconds": perf_counter() - started,
                 "method_params": params,
                 "delphirf_provenance": delphirf_provenance,
                 "uncertainty_layer": config.uncertainty_layer,
+                "model_mode": model_mode, "forecast_ledger": ledger,
+                "incremental_update": incremental_update,
+                "retraining_required": retraining_required,
+                "new_forecasts": len(long) if incremental_update else None,
+                "truth_update": truth_update,
+                "raw_archive_update": raw_update,
+                "skipped_locations": skipped_locations.to_dict("records"),
                 "reliability_reference": (str(config.reliability_reference_file)
                                           if config.reliability_reference_file else None)}
     (output / "run_manifest.json").write_text(json.dumps(manifest, indent=2, default=str))
     stage = perf_counter()
-    build_report(long, output / "report", wide=wide, runtime=runtime,
-                interval_calibration=reliability_outputs["interval_calibration"],
-                reliability=reliability_outputs["reliability"],
-                bootstrap=reliability_outputs["bootstrap"], rr_regimes=rr_audit,
-                rr_clusters=rr_clusters,
-                validation={k: v for k, v in reliability_outputs.items()
-                            if k.startswith(("v1_", "v2_", "v3_", "v4_"))})
+    if not incremental_update:
+        build_report(scored_long, output / "report", wide=scored_wide, runtime=runtime,
+                    skipped_locations=skipped_locations,
+                    interval_calibration=reliability_outputs["interval_calibration"],
+                    reliability=reliability_outputs["reliability"],
+                    bootstrap=reliability_outputs["bootstrap"], rr_regimes=rr_audit,
+                    rr_clusters=rr_clusters,
+                    validation={k: v for k, v in reliability_outputs.items()
+                                if k.startswith(("v1_", "v2_", "v3_", "v4_"))},
+                    dataset_name=config.name)
     record_stage("report_generation", stage)
     pd.DataFrame(pipeline_timings).to_csv(output / "runtime_pipeline_stages.csv", index=False)
     return manifest

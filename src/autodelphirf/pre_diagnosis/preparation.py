@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,9 +12,10 @@ import tempfile
 
 import pandas as pd
 
+from ..core.io import read_csv
 from .diagnosis import WEEKDAYS, weekday_groups_from_share
-from .archive import (DEFAULT_TRAINING_WINDOW_DAYS, MAX_OBSERVED_LAG_DAYS,
-                      diagnose_raw_archive)
+from .archive import (CLEANING_CONTRACT_VERSION, DEFAULT_TRAINING_WINDOW_DAYS,
+                      MAX_OBSERVED_LAG_DAYS, diagnose_raw_archive)
 from ..core.resources import resource_path
 
 #: Fraction signals are the one case where the archive carries two value
@@ -54,33 +56,80 @@ class PreparationError(RuntimeError):
     """A prepared triangle could not be built."""
 
 
-def normalize_weekday_groups(groups: dict, temporal_resolution: str) -> dict:
-    """Validate model weekday groups against DelphiRF's canonical columns."""
-    if temporal_resolution == "weekly":
-        if groups:
-            raise PreparationError("weekday groups cannot be used with weekly data")
-        return {}
-    normalized = {}
-    used = set()
-    for name, members in groups.items():
-        if not isinstance(name, str) or not name or not name.replace("_", "").isalnum():
-            raise PreparationError(f"invalid weekday group name: {name!r}")
-        if isinstance(members, str):
-            members = [members]
-        clean = [("Thurs" if day == "Thu" else str(day)) for day in members]
-        if not clean or any(day not in WEEKDAYS for day in clean):
-            raise PreparationError(
-                f"weekday group {name!r} must contain weekdays from {list(WEEKDAYS)}")
-        overlap = used.intersection(clean)
-        if overlap:
-            raise PreparationError(
-                f"weekday groups overlap on: {', '.join(sorted(overlap))}")
-        normalized[name] = clean
-        used.update(clean)
-    if normalized and used == set(WEEKDAYS):
+#: ISO weekday numbers (Monday = 1) -> DelphiRF's canonical weekday columns.
+ISO_WEEKDAYS = dict(zip(range(1, 8), WEEKDAYS))
+#: Group labels whose ``_ref``/``_issue`` columns would overwrite DelphiRF's
+#: week-of-month indicators.
+RESERVED_GROUP_LABELS = frozenset({"W1", "W2", "W3"})
+
+
+def parse_weekday_groups(groups) -> dict:
+    """Validate user weekday groups given as ISO weekday numbers.
+
+    ``{"monday": [1], "weekend": [6, 7]}`` assigns Monday to one group and
+    Saturday and Sunday to another; every weekday left out of the groups forms
+    the reference category; ``{}`` means no weekday contrasts at all. Returns
+    DelphiRF's canonical form, ``{"monday": ["Mon"], "weekend": ["Sat", "Sun"]}``.
+    An invalid specification raises; it never falls back to automatic detection.
+    """
+    if not isinstance(groups, dict):
         raise PreparationError(
-            "weekday groups must leave at least one weekday as the reference category")
-    return normalized
+            "weekday_groups must be an object mapping group names to lists of ISO weekday "
+            "numbers (1 = Monday ... 7 = Sunday), e.g. {\"monday\": [1], \"weekend\": [6, 7]}; "
+            "omit it or use null for automatic detection")
+    parsed, used = {}, {}
+    for name, members in groups.items():
+        if (not isinstance(name, str) or not name or not name[0].isalpha()
+                or not name.replace("_", "").isalnum()):
+            raise PreparationError(
+                f"invalid weekday group name {name!r}: use letters, digits and underscores, "
+                "starting with a letter")
+        if name in RESERVED_GROUP_LABELS:
+            raise PreparationError(
+                f"weekday group name {name!r} is reserved for DelphiRF's week-of-month features")
+        if not isinstance(members, list) or not members:
+            raise PreparationError(
+                f"weekday group {name!r} must list at least one ISO weekday number (1-7)")
+        days = []
+        for day in members:
+            if isinstance(day, bool) or not isinstance(day, int) or day not in ISO_WEEKDAYS:
+                raise PreparationError(
+                    f"weekday group {name!r} contains {day!r}; weekdays are the integers "
+                    "1 (Monday) through 7 (Sunday)")
+            if day in used:
+                raise PreparationError(
+                    f"weekday {day} is assigned to both {used[day]!r} and {name!r}")
+            used[day] = name
+            days.append(ISO_WEEKDAYS[day])
+        parsed[name] = days
+    if len(used) == len(ISO_WEEKDAYS):
+        raise PreparationError(
+            "weekday_groups assigns all seven weekdays; at least one weekday must be left "
+            "out to form the reference category")
+    return parsed
+
+
+def iso_weekday_groups(groups: dict) -> dict:
+    """The canonical form back in ISO weekday numbers (for a frozen setting)."""
+    numbers = {day: number for number, day in ISO_WEEKDAYS.items()}
+    return {name: [numbers[day] for day in members] for name, members in (groups or {}).items()}
+
+
+def resolve_weekday_groups(manual, report_weekday_share: dict,
+                           temporal_resolution: str) -> tuple[dict, str]:
+    """The single effective weekday grouping and where it came from.
+
+    Valid manual groups win; without them (``None``) the groups are detected
+    from the weekday share of distinct report dates. Weekly data has no
+    weekday contrasts.
+    """
+    if temporal_resolution == "weekly":
+        if manual:
+            raise PreparationError("weekday groups cannot be used with weekly data")
+        return {}, "not applicable (weekly)"
+    if manual is not None:
+        return parse_weekday_groups(manual), "manual"
+    return weekday_groups_from_share(report_weekday_share or {}, temporal_resolution), "automatic"
 
 
 @dataclass
@@ -105,10 +154,9 @@ class PreparationSpec:
     max_observed_lag_days: int
     lag_terms: tuple[int, ...]
     weekday_groups: dict
+    weekday_groups_source: str
     training_days: int
     testing_days: int
-    lower: int
-    upper: int
     target_column: str
     start_date: str | None
     end_date: str | None
@@ -117,6 +165,10 @@ class PreparationSpec:
     min_location_rows: int
     overrides: tuple[str, ...] = ()
     diagnosis: dict = field(default_factory=dict)
+    as_of_date: str | None = None
+    #: Also write the cleaned releases R passes to DelphiRF (cleaned_releases.csv),
+    #: for checking that Python and R apply the same cleaning rules.
+    write_cleaned_releases: bool = False
 
     def to_r_spec(self) -> dict:
         """The JSON handed to the R bridge (paths as strings, no provenance)."""
@@ -129,29 +181,42 @@ class PreparationSpec:
             "ref_lag": int(self.ref_lag),
             "max_observed_lag_days": int(self.max_observed_lag_days),
             "lag_terms": [int(t) for t in self.lag_terms],
-            "weekday_groups": self.weekday_groups, "training_days": int(self.training_days),
-            "testing_days": int(self.testing_days), "lower": int(self.lower),
-            "upper": int(self.upper), "target_column": self.target_column,
+            "weekday_groups": self.weekday_groups,
+            "weekday_groups_source": self.weekday_groups_source,
+            "training_days": int(self.training_days),
+            "testing_days": int(self.testing_days), "target_column": self.target_column,
             "start_date": self.start_date, "end_date": self.end_date,
             "experiment_end_date": self.experiment_end_date,
             "triangle_format": self.triangle_format,
             "min_location_rows": int(self.min_location_rows),
+            "as_of_date": self.as_of_date,
+            "write_cleaned_releases": bool(self.write_cleaned_releases),
+            "raw_contract_version": CLEANING_CONTRACT_VERSION,
         }
 
 
-def read_archive(path: Path, columns: list[str] | None = None) -> pd.DataFrame:
-    """Read a raw archive from CSV (optionally gzipped) or Parquet."""
+def read_archive(path: Path, columns: list[str] | None = None,
+                 geo_col: str | None = None) -> pd.DataFrame:
+    """Read a raw archive from CSV (optionally gzipped) or Parquet.
+
+    The geography column is read as text, so "01" and "1" stay distinct. A
+    missing label stays missing (pandas' nullable string type), never the
+    literal text "None" or "nan", so the missing-location check can see it.
+    """
     path = Path(path)
     if not path.is_file():
         raise PreparationError(f"raw archive not found: {path}")
     if path.suffix == ".parquet":
         try:
-            return pd.read_parquet(path, columns=columns)
+            frame = pd.read_parquet(path, columns=columns)
+            if geo_col and geo_col in frame:
+                frame[geo_col] = frame[geo_col].astype("string")
+            return frame
         except ImportError as error:
             raise PreparationError(
                 f"reading {path.name} needs pyarrow: pip install 'autodelphirf[parquet]', or "
                 "supply the archive as CSV.") from error
-    frame = pd.read_csv(path, usecols=columns, nrows=DIAGNOSIS_ROW_LIMIT + 1)
+    frame = read_csv(path, geo_col=geo_col, usecols=columns, nrows=DIAGNOSIS_ROW_LIMIT + 1)
     if len(frame) > DIAGNOSIS_ROW_LIMIT:
         raise PreparationError(
             f"{path.name} has more than {DIAGNOSIS_ROW_LIMIT:,} rows. Diagnosis needs the whole "
@@ -159,23 +224,39 @@ def read_archive(path: Path, columns: list[str] | None = None) -> pd.DataFrame:
     return frame
 
 
-def diagnose_archive(raw_csv: Path, *, geo_col: str | None, reference_col: str,
-                     report_col: str, value_cols: tuple[str, ...], value_type: str,
-                     user_target_lag: int | None = None) -> dict:
-    """Diagnose a raw archive, returning :func:`diagnose_raw_archive`'s report.
+def standardize_raw_archive(raw_csv: Path, *, geo_col: str | None, reference_col: str,
+                            report_col: str, value_cols: tuple[str, ...],
+                            value_type: str) -> tuple[pd.DataFrame, int, int]:
+    """The raw archive as geo_value, reference_date, report_date, value.
 
-    A fraction signal is diagnosed on the ratio it models, not on its
-    numerator: the revision behaviour of a rate is the thing RevRoute routes
-    on, and numerator and denominator revise on their own schedules.
+    Returns the frame, the rows removed for a missing location, and the
+    input row count. The remaining rules are in ``archive.clean_raw_archive``.
     """
     needed = [c for c in (geo_col, reference_col, report_col, *value_cols) if c]
-    frame = read_archive(raw_csv, columns=None)
+    frame = read_archive(raw_csv, columns=None, geo_col=geo_col)
     missing = [c for c in needed if c not in frame.columns]
     if missing:
         raise PreparationError(
             f"raw archive is missing column(s) {missing}. Present: "
             f"{sorted(frame.columns)[:40]}. Name your columns with --reference-col / "
             "--report-col / --value-col / --geo-col.")
+    # A declared geography column must name a location on every row: a missing
+    # or blank label is invalid and the row is dropped, before the labels are
+    # read as text ("01" and "1" stay distinct locations).
+    dropped_locations = 0
+    input_rows = len(frame)
+    if geo_col:
+        labels = frame[geo_col]
+        # Missingness is judged before any conversion to plain strings, which
+        # would turn a missing label into the text "None" or "nan".
+        invalid = labels.isna() | labels.astype("string").str.strip().eq("").fillna(True)
+        dropped_locations = int(invalid.sum())
+        frame = frame.loc[~invalid].copy()
+        frame[geo_col] = frame[geo_col].astype(str)
+        if frame.empty:
+            raise PreparationError(
+                f"the geography column {geo_col!r} has no valid location on any row; check "
+                "--geo-col, or use --no-geo for a single-location archive")
     work = pd.DataFrame({
         "reference_date": frame[reference_col],
         "report_date": frame[report_col],
@@ -186,7 +267,35 @@ def diagnose_archive(raw_csv: Path, *, geo_col: str | None, reference_col: str,
         work["value"] = numerator / denominator.where(denominator > 0)
     else:
         work["value"] = pd.to_numeric(frame[value_cols[0]], errors="coerce")
-    diagnosis = diagnose_raw_archive(work, user_target_lag=user_target_lag).to_dict()
+    return work, dropped_locations, input_rows
+
+
+def diagnose_archive(raw_csv: Path, *, geo_col: str | None, reference_col: str,
+                     report_col: str, value_cols: tuple[str, ...], value_type: str,
+                     user_target_lag: int | None = None, as_of_date=None) -> dict:
+    """Diagnose a raw archive, returning :func:`diagnose_raw_archive`'s report.
+
+    A fraction signal is diagnosed on the ratio it models, not on its
+    numerator: the revision behaviour of a rate is the thing RevRoute routes
+    on, and numerator and denominator revise on their own schedules.
+    """
+    work, dropped_locations, input_rows = standardize_raw_archive(
+        raw_csv, geo_col=geo_col, reference_col=reference_col, report_col=report_col,
+        value_cols=value_cols, value_type=value_type)
+    # The as-of date is the analysis clock: nothing reported after it is seen.
+    diagnosis = diagnose_raw_archive(work, user_target_lag=user_target_lag,
+                                     as_of_date=as_of_date).to_dict()
+    diagnosis["dropped_missing_location_rows"] = dropped_locations
+    cleaning = dict(diagnosis.pop("cleaning"))
+    diagnosis["raw_cleaning_audit"] = {
+        "scope": "pre_diagnosis", "contract_version": CLEANING_CONTRACT_VERSION,
+        **cleaning.pop("as_of"), "lag_upper_bound": MAX_OBSERVED_LAG_DAYS,
+        "input_rows": int(input_rows), "missing_location_rows": dropped_locations, **cleaning,
+        "retained_rows": int(diagnosis["n_rows"]),
+        "retained_locations": int(diagnosis["n_locations"])}
+    if dropped_locations:
+        diagnosis["notes"] = list(diagnosis.get("notes") or ()) + [
+            f"Dropped {dropped_locations:,} row(s) with a missing or blank location."]
     if geo_col is None:
         diagnosis["notes"] = list(diagnosis.get("notes") or ()) + [
             "No geography column was specified. AutoDelphiRF will treat the archive as "
@@ -245,11 +354,13 @@ def build_spec(name: str, raw_csv: Path, output_dir: Path, *, reference_col: str
                temporal_resol: str | None = None, lag_terms: tuple[int, ...] | None = None,
                training_days: int | None = None, testing_days: int | None = None,
                first_origin_date: str | None = None,
-               lower: int = 0, upper: int = 0, start_date: str | None = None,
+               start_date: str | None = None,
                end_date: str | None = None, triangle_format: str = "parquet",
                min_location_rows: int = DEFAULT_MIN_LOCATION_ROWS,
                weekday_groups: dict | None = None,
-               confirm_target_lag: bool = False) -> PreparationSpec:
+               confirm_target_lag: bool = False,
+               as_of_date: str | None = None,
+               smoothed_target: bool | None = None) -> PreparationSpec:
     """Diagnose the archive and resolve every preprocessing argument.
 
     A keyword left at ``None`` is diagnosed from the archive; a keyword given
@@ -268,14 +379,15 @@ def build_spec(name: str, raw_csv: Path, output_dir: Path, *, reference_col: str
         raise PreparationError("a count signal takes exactly one --value-col")
     if (start_date is None) != (end_date is None):
         raise PreparationError("--start-date and --end-date must be given together")
-    if target_lag is not None and not 0 <= int(target_lag) <= MAX_OBSERVED_LAG_DAYS:
+    if target_lag is not None and not 1 <= int(target_lag) <= MAX_OBSERVED_LAG_DAYS:
         raise PreparationError(
-            f"target_lag must be between 0 and {MAX_OBSERVED_LAG_DAYS} days; "
+            f"target_lag must be between 1 and {MAX_OBSERVED_LAG_DAYS} days; "
             "later raw observations are outside the modelled revision horizon.")
 
     diagnosis = diagnose_archive(raw_csv, geo_col=geo_col, reference_col=reference_col,
                                  report_col=report_col, value_cols=value_cols,
-                                 value_type=value_type, user_target_lag=target_lag)
+                                 value_type=value_type, user_target_lag=target_lag,
+                                 as_of_date=as_of_date)
     overrides = []
     if target_lag is not None:
         overrides.append("target_lag")
@@ -287,9 +399,9 @@ def build_spec(name: str, raw_csv: Path, output_dir: Path, *, reference_col: str
             f"range is {bounds.get('lower')} to {bounds.get('upper')} days (90% within "
             "10% to 1% relative error). Re-run with --target-lag L.")
     resolved_lag = int(resolved)
-    if not 0 <= resolved_lag <= MAX_OBSERVED_LAG_DAYS:
+    if not 1 <= resolved_lag <= MAX_OBSERVED_LAG_DAYS:
         raise PreparationError(
-            f"target_lag must be between 0 and {MAX_OBSERVED_LAG_DAYS} days; "
+            f"target_lag must be between 1 and {MAX_OBSERVED_LAG_DAYS} days; "
             "later raw observations are outside the modelled revision horizon.")
     if confirm_target_lag:
         if target_lag is None:
@@ -305,6 +417,15 @@ def build_spec(name: str, raw_csv: Path, output_dir: Path, *, reference_col: str
     if temporal_resol not in ("daily", "weekly"):
         raise PreparationError(f"temporal_resol must be 'daily' or 'weekly', got {temporal_resol!r}")
 
+    # Reference dates and releases have separate frequencies: a stream can have
+    # weekly reference dates and daily releases, and stays in DelphiRF's daily
+    # mode to keep its daily releases. DelphiRF then lays reference dates out
+    # day by day; the days absent from the archive are removed after
+    # preprocessing, and nothing may be computed from them.
+    cadence = diagnosis.get("reference_axis_cadence_days")
+    reference_step = max(1, int(round(cadence))) if cadence else 1
+    daily_reference = reference_step == 1
+
     if lag_terms is None:
         diagnosed_lags = [int(t) for t in diagnosis.get("reference_axis_feature_lags") or []]
         # A stream with no diagnosable reference-axis cadence still needs
@@ -312,26 +433,48 @@ def build_spec(name: str, raw_csv: Path, output_dir: Path, *, reference_col: str
         lag_terms = tuple(diagnosed_lags) or ((1, 7) if temporal_resol == "daily" else (7, 14))
     else:
         overrides.append("lag_terms")
+    if temporal_resol == "daily" and any(int(t) % reference_step for t in lag_terms):
+        raise PreparationError(
+            f"lag terms {list(lag_terms)} must be multiples of the reference-date spacing "
+            f"({reference_step} days): a lagged feature would otherwise read a reference date "
+            "that is not in the archive")
 
     if smoothed is None:
-        # Smoothing is a property of the stream, not a free choice: a daily
-        # stream is modelled on its 7-day trailing average, a weekly stream is
-        # already an aggregate.
-        smoothed = temporal_resol == "daily"
+        # Daily reference dates: 7-day trailing averages of the values (the
+        # Delphi-RF model of Ch. 2). Reference dates spaced further apart: a
+        # 7-day window holds a single reference date, so no further smoothing;
+        # DelphiRF then uses the values themselves as the value features.
+        # (DelphiRF's weekly mode never averages, so its default is unchanged.)
+        smoothed = temporal_resol == "daily" and not daily_reference
     else:
         overrides.append("smoothed")
+        if temporal_resol == "daily" and not daily_reference and not smoothed:
+            raise PreparationError(
+                f"7-day smoothing needs daily reference dates; this archive's reference dates "
+                f"are {reference_step} days apart, so a 7-day window would average one real "
+                "reference date with days that are not in the archive. Leave smoothing off "
+                "for this archive (do not pass --no-smoothed).")
+    # The target's own smoothing level. A smoothed target is DelphiRF's 7-day
+    # value at lag L, (1/7) sum_v Y_{t-v, L+v}; for a fraction, the 7-day mean
+    # numerator over the 7-day mean denominator. It is reported by t + L, like
+    # the unsmoothed Y_itL. An already-smoothed archive has only that target.
+    if smoothed_target is None:
+        smoothed_target = False
+    else:
+        overrides.append("smoothed_target")
+    target_is_smoothed = bool(smoothed) or bool(smoothed_target)
 
     if training_days is None:
         training_days = int(diagnosis.get("training_window_days") or DEFAULT_TRAINING_WINDOW_DAYS)
     else:
         overrides.append("training_days")
 
-    if weekday_groups is None:
-        weekday_groups = weekday_groups_from_share(
-            diagnosis.get("report_axis_weekdays") or {}, temporal_resol)
-    else:
+    # ``weekday_groups`` is the user's grouping in ISO weekday numbers, or None
+    # to use the groups detected from the distinct report dates.
+    weekday_groups, weekday_groups_source = resolve_weekday_groups(
+        weekday_groups, diagnosis.get("report_axis_weekdays") or {}, temporal_resol)
+    if weekday_groups_source == "manual":
         overrides.append("weekday_groups")
-    weekday_groups = normalize_weekday_groups(weekday_groups, temporal_resol)
 
     # Every test origin is a retraining origin, so ``testing_days`` IS the
     # retraining interval. Left unset it follows the diagnosed cadence.
@@ -362,11 +505,13 @@ def build_spec(name: str, raw_csv: Path, output_dir: Path, *, reference_col: str
         smoothed=bool(smoothed), temporal_resol=temporal_resol, ref_lag=resolved_lag,
         max_observed_lag_days=MAX_OBSERVED_LAG_DAYS,
         lag_terms=tuple(int(t) for t in lag_terms), weekday_groups=dict(weekday_groups),
+        weekday_groups_source=weekday_groups_source,
         training_days=int(training_days), testing_days=int(testing_days),
-        lower=int(lower), upper=int(upper), target_column=TARGET_COLUMNS[bool(smoothed)],
+        target_column=TARGET_COLUMNS[target_is_smoothed],
         start_date=start_date, end_date=end_date,
         experiment_end_date=experiment_end_date, triangle_format=triangle_format,
         min_location_rows=int(min_location_rows),
+        as_of_date=None if as_of_date is None else str(pd.Timestamp(as_of_date).date()),
         overrides=tuple(dict.fromkeys(overrides)),
         diagnosis={**diagnosis, "user_confirmed_target_lag": bool(confirm_target_lag),
                    "final_target_lag": resolved_lag})
@@ -380,7 +525,8 @@ def rscript_executable() -> str:
             "Rscript was not found on PATH. AutoDelphiRF calls DelphiRF (an R package) to build a "
             "prepared triangle from a raw archive:\n"
             "  1. install R          https://cran.r-project.org\n"
-            "  2. install DelphiRF   Rscript -e 'remotes::install_github(\"cmu-delphi/DelphiRF@refactor-clean\")'\n"
+            "  2. install R packages as shown in the AutoDelphiRF README (jsonlite, "
+            "data.table, arrow, and DelphiRF with its dependencies)\n"
             "Set AUTODELPHIRF_RSCRIPT to use a specific Rscript. If you already have a prepared "
             "triangle, skip this stage and run `autodelphirf run --config <dataset>.json` instead.")
     return executable
@@ -456,20 +602,30 @@ def write_dataset_config(spec: PreparationSpec, config_path: Path,
         "prepared_dir": relative(spec.output_dir),
         "output_dir": relative(spec.output_dir.parent / "results"),
         "schedule_file": "test_dates.csv",
-        "include_genuine_events_only": True,
+        "genuine_training": True,
+        "genuine_testing": True,
         "model_methods": list(prediction_layers),
         "prediction_layers": list(prediction_layers),
         "method_params": {},
-        "revision_profile": {
-            "weekday_groups": spec.weekday_groups,
-            "lag_terms": list(spec.lag_terms),
-        },
         "comparator_file": None,
         "comparator_methods": {},
         "reliability_reference_file": None,
     }
     config_path.write_text(json.dumps(payload, indent=2) + "\n")
     return config_path
+
+
+def _read_json(path: Path):
+    return json.loads(Path(path).read_text()) if Path(path).is_file() else None
+
+
+def _archive_identity(path: Path) -> dict:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return {"archive": str(Path(path).resolve()), "bytes": Path(path).stat().st_size,
+            "sha256": digest.hexdigest()}
 
 
 def prepare_dataset(spec: PreparationSpec, *, prediction_layers: tuple[str, ...],
@@ -486,9 +642,17 @@ def prepare_dataset(spec: PreparationSpec, *, prediction_layers: tuple[str, ...]
     provenance = {
         "name": spec.name,
         "raw_archive": str(spec.raw_csv),
+        # Recorded once here, so rerunning the prepared dataset never needs to
+        # reread the raw archive to document which input produced it.
+        "raw_archive_state": _archive_identity(spec.raw_csv),
         "resolved_preprocessing": spec.to_r_spec(),
         "user_overrides": list(spec.overrides),
         "diagnosis": spec.diagnosis,
+        # Both stages' cleaning audits. Their retained rows differ by scope
+        # (lag bound, as-of date, experiment window), which each records.
+        "raw_cleaning_audits": {
+            "pre_diagnosis": spec.diagnosis.get("raw_cleaning_audit"),
+            "feature_preparation": _read_json(spec.output_dir / "raw_cleaning_audit.json")},
     }
     (spec.output_dir / "preparation.json").write_text(
         json.dumps(provenance, indent=2, default=str) + "\n")

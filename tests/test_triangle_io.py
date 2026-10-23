@@ -11,8 +11,9 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from autodelphirf.core import io
 from autodelphirf.core.io import (NON_TRIANGLE_STEMS, TRIANGLE_SUFFIXES,
-                                load_prepared_triangles, triangle_files)
+                                 load_prepared_triangles, triangle_files)
 
 
 def triangle(location: str, rows: int = 3) -> pd.DataFrame:
@@ -134,3 +135,22 @@ def test_format_preference_follows_the_declared_order(tmp_path):
     # .csv.gz precedes .csv in TRIANGLE_SUFFIXES, so the gzipped set wins.
     assert TRIANGLE_SUFFIXES.index(".csv.gz") < TRIANGLE_SUFFIXES.index(".csv")
     assert [p.name for p in triangle_files(directory)] == ["bb.csv.gz"]
+
+
+def test_parquet_fallback_uses_configured_rscript(monkeypatch):
+    monkeypatch.setenv("AUTODELPHIRF_RSCRIPT", "/opt/custom-R/bin/Rscript")
+    monkeypatch.setattr(io.shutil, "which", lambda name: "/usr/bin/Rscript")
+    assert io._rscript_executable() == "/opt/custom-R/bin/Rscript"
+
+
+def test_parquet_fallback_finds_rscript_on_path(monkeypatch):
+    monkeypatch.delenv("AUTODELPHIRF_RSCRIPT", raising=False)
+    monkeypatch.setattr(io.shutil, "which", lambda name: "/usr/local/bin/Rscript")
+    assert io._rscript_executable() == "/usr/local/bin/Rscript"
+
+
+def test_parquet_fallback_explains_missing_rscript(monkeypatch):
+    monkeypatch.delenv("AUTODELPHIRF_RSCRIPT", raising=False)
+    monkeypatch.setattr(io.shutil, "which", lambda name: None)
+    with pytest.raises(RuntimeError, match="AUTODELPHIRF_RSCRIPT"):
+        io._rscript_executable()

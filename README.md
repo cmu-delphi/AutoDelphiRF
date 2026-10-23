@@ -13,10 +13,11 @@ information across indicators.
 revision archive → diagnosis → forecasting → evaluation report
 ```
 
-The current application is designed for a **one-time retrospective analysis**.
-It moves through past report dates and recreates the forecasts that could have
-been made at each date. Future reports are kept hidden, so the evaluation
-reflects historical real-time use.
+For a **first-time retrospective analysis**, AutoDelphiRF moves through past
+report dates and recreates the forecasts that could have been made at each
+date. Future reports are kept hidden, so the evaluation reflects historical
+real-time use. When later releases arrive, the same analysis can be updated
+without discarding its saved models or previously issued forecasts.
 
 See the [static interface demonstration](https://cmu-delphi.github.io/AutoDelphiRF/demo.html)
 without installing the package. The demonstration is illustrative and does not
@@ -27,13 +28,20 @@ upload data or run models.
 - Python 3.10 or newer
 - R and `Rscript`
 - The R package [DelphiRF](https://github.com/cmu-delphi/DelphiRF/tree/refactor-clean)
-- The R package `quantreg`
+- The R packages `jsonlite` and `data.table`
+- The R package `arrow` when using the default Parquet triangle format
 
 Install the R dependencies:
 
 ```bash
-Rscript -e 'install.packages(c("remotes", "quantreg"), repos="https://cloud.r-project.org"); remotes::install_github("cmu-delphi/DelphiRF@refactor-clean")'
+Rscript -e 'install.packages(c("remotes", "jsonlite", "data.table", "arrow"), repos="https://cloud.r-project.org"); remotes::install_github("cmu-delphi/DelphiRF@refactor-clean", dependencies=TRUE)'
 ```
+
+DelphiRF declares its own modeling dependencies, including `quantreg`, so
+`remotes::install_github(..., dependencies=TRUE)` installs them without
+AutoDelphiRF maintaining a duplicate list. If installing R `arrow` is not
+practical, omit it and use `--triangle-format csv`; Python `pyarrow` and R
+`arrow` are separate packages, and the default Parquet workflow needs both.
 
 Create a Python virtual environment and install AutoDelphiRF from GitHub:
 
@@ -221,17 +229,95 @@ autodelphirf diagnose --raw-config mydata-raw.json
 ```
 
 After reviewing the diagnosis, enter your chosen target lag in
-`preprocessing.target_lag` in the JSON file. Run the complete analysis with:
+`preprocessing.target_lag` in the JSON file. Weekday groups are detected from the
+archive's report dates unless you set `preprocessing.weekday_groups` yourself,
+using ISO weekday numbers (1 = Monday ... 7 = Sunday), for example
+`{"monday": [1], "weekend": [6, 7]}`. Weekdays you leave out form the
+reference category, at least one must be left out, and `null` keeps the
+automatic detection. Run the complete analysis with:
 
 ```bash
 autodelphirf run --raw-config mydata-raw.json
 ```
 
 Paths inside the raw configuration are resolved relative to the JSON file.
-`autodelphirf init --kind prepared` remains available for the less common case
-of registering an existing prepared triangle.
+Every analysis starts from a raw revision archive. `autodelphirf prepare` (or
+`run --archive`) builds the prepared triangle through DelphiRF and writes a
+dataset JSON next to it. To rerun that prepared dataset without rebuilding the
+triangle, pass the JSON to `autodelphirf run --config`; the rerun uses only the
+prepared artifacts and does not reread the raw archive. A prepared triangle
+built outside AutoDelphiRF is not supported.
 
-Run `autodelphirf run --help` or `autodelphirf diagnose --help` for all options.
+The repository includes a runnable version of this configuration for
+`my_archive.csv`. From the repository root, run:
+
+```bash
+autodelphirf diagnose --raw-config examples/my_archive.json
+autodelphirf run --raw-config examples/my_archive.json
+```
+
+The example fixes the user-selected target lag at 28 days, starts its monthly
+historical forecast origins on September 5, 2025, and lets AutoDelphiRF
+diagnose the remaining preprocessing settings. It writes its results under
+`autodelphirf_work/readme_example`.
+
+## Returning-user workflow
+
+Use this workflow when the first retrospective run is complete and a newer
+release of the same revision archive becomes available. The new file must be a
+complete archive containing both its earlier records and the newly reported or
+revised records; do not supply only the latest rows.
+
+Keep the original raw JSON configuration and its working directory. Replace
+the archive at the path named by `archive` with each newer complete export and
+run the update command every time a raw release arrives:
+
+```bash
+autodelphirf update --raw-config examples/my_archive.json
+```
+
+For your own analysis, replace `examples/my_archive.json` with the raw JSON
+file used for its first run. AutoDelphiRF then:
+
+1. verifies that the target lag, feature lags, weekday groups, training window,
+   and other preparation settings agree with the first run;
+2. rebuilds the prepared data from the updated complete raw archive;
+3. preserves every previously issued forecast without regenerating it;
+4. fills in outcomes and scores for old forecasts whose target has become
+   observable;
+5. fits one new pooling plan and model set only when a new retraining origin is
+   due; otherwise it loads only the latest applicable models;
+6. forecasts only newly received records whose target is not yet observable;
+7. writes prospective calibration and reliability information for those new
+   forecasts; and
+8. atomically appends the new forecasts to the cumulative ledger.
+
+Update cadence and retraining cadence are deliberately different. Invoke
+`autodelphirf update` for **every raw release**, including releases between
+scheduled model origins. `retraining.retrain_days` controls only when a new
+pooling plan and model set are fitted. On intervening releases, AutoDelphiRF
+loads the latest deployed models and forecasts the newly arrived records. If a
+release is skipped, AutoDelphiRF cannot retroactively claim that forecasts were
+issued when that release originally arrived.
+
+On a scheduled retraining date with no new raw release, run the command with
+`--as-of-date YYYY-MM-DD`; the model is refreshed even when there are no new
+forecast rows. In an automated deployment, trigger ordinary updates from the
+raw-data ingestion job and schedule the quiet-date command separately.
+
+Realized accuracy, coverage, and harm assessments cannot be calculated for an
+unresolved forecast. They are filled in by a later update after its target
+becomes observable. The update-specific `calibration.csv.gz`,
+`reliability.csv.gz`, and `forecast_assessment_status.json` therefore describe
+only forecasts issued by the latest update.
+
+If the archive has not changed, the command exits without rebuilding the data
+or fitting models. Keep the entire working directory: the prepared-data
+contract, models, pooling decisions, and forecast ledger are all required for
+future updates.
+
+Run `autodelphirf run --help`, `autodelphirf update --help`, or
+`autodelphirf diagnose --help` for all options.
 
 ## Results
 
@@ -246,6 +332,10 @@ autodelphirf_work/
 │   ├── test_dates.csv
 │   └── prepared data files
 └── results/
+    ├── models/
+    ├── analysis_contract.json
+    ├── forecast_ledger.csv.gz
+    ├── model_manifest.json
     ├── report/report.html
     ├── predictions.csv.gz
     ├── resolved_config.json
@@ -255,7 +345,10 @@ autodelphirf_work/
 The important files for a first-time user are:
 
 - `results/report/report.html`: the evaluation report;
-- `results/predictions.csv.gz`: complete row-level forecasts and scores;
+- `results/predictions.csv.gz`: row-level forecasts produced by the latest
+  successful run or update;
+- `results/forecast_ledger.csv.gz`: forecasts preserved across later archive
+  updates, with outcomes and scores added when they become available;
 - `results/resolved_config.json`: the settings actually used by the run; and
 - `results/run_manifest.json`: the run and input provenance record.
 
@@ -268,12 +361,14 @@ origins.
 Install development dependencies and run the tests:
 
 ```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
 python -m pip install -e ".[dev]"
 python -m pytest
 ```
 
-The repository's slower integration tests require R and a compatible DelphiRF
-installation.
+Python 3.11 is the repository's test interpreter. The slower integration tests
+also require R and a compatible DelphiRF installation.
 
 ## License
 

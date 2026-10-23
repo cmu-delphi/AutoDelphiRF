@@ -13,9 +13,11 @@ PRIMARY_METHOD_ID = "revroute_delphirf"
 
 
 def prepare_revroute_delphirf(prepared: pd.DataFrame, schedule: pd.DataFrame,
-                              output: Path) -> Path:
+                              output: Path, *, preserve_existing: bool = False) -> Path:
     """Create the primary method's pools without applying DelphiRF lag bands."""
-    return learn_task_pools(prepared, schedule, Path(output).with_name("revroute_pools.csv"))
+    return learn_task_pools(
+        prepared, schedule, Path(output).with_name("revroute_pools.csv"),
+        preserve_existing=preserve_existing)
 
 
 __all__ = ["PRIMARY_METHODS", "PRIMARY_METHOD_ID",

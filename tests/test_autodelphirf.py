@@ -5,7 +5,7 @@ import pandas as pd
 
 from autodelphirf.core.config import load_dataset_config
 from autodelphirf.pre_diagnosis.diagnosis import diagnose_prepared_data
-from autodelphirf.workflow.run import apply_input_schema, build_cases, standardize_predictions
+from autodelphirf.workflow.run import build_cases, standardize_predictions
 # ROUTED_TAUS lives in the package's red.py module.
 from autodelphirf.comparators.red import ROUTED_TAUS
 
@@ -28,15 +28,6 @@ def test_diagnosis_uses_scheduled_target_column():
     assert summary["target_column"] == "dataset_target"
 
 
-def test_input_schema_renames_noncanonical_source_columns():
-    source = pd.DataFrame({"event": ["2020-01-01"], "issue": ["2020-01-02"],
-                           "target_ready": ["2020-01-03"], "place": ["a"], "age": [1],
-                           "target_lag_source": [2], "asof": [1.2]})
-    mapped = apply_input_schema(source, {"geo_value": "place", "reference_date": "event",
-        "report_date": "issue", "target_date": "target_ready", "lag": "age",
-        "target_lag": "target_lag_source", "as_of_value": "asof"})
-    assert {"geo_value", "reference_date", "report_date", "target_date", "lag",
-            "target_lag", "log_value_7dav"}.issubset(mapped.columns)
 
 
 def test_point_comparator_has_no_degenerate_distribution(tmp_path):
@@ -45,13 +36,13 @@ def test_point_comparator_has_no_degenerate_distribution(tmp_path):
         "prediction_layers": ["benchmark"], "comparator_columns": {"benchmark": "other"},
         # Synthetic config with no prepared triangle to derive from, so the
         # working scale is stated explicitly here; real configs derive it.
-        "value_transform": "log1p"}))
+        "working_scale": "log_value"}))
     config = load_dataset_config(config_path)
     row = {"truth": np.log1p(10), "other": np.log1p(8), "lag": 1}
     out = standardize_predictions(pd.DataFrame([row]), config)
     assert np.isclose(out.prediction.iloc[0], 8)
     assert not out.has_distribution.iloc[0]
-    assert np.isnan(out.wis.iloc[0])
+    assert np.isnan(out.wis_reporting.iloc[0])
     assert all(np.isnan(out[f"q{tau:g}"].iloc[0]) for tau in ROUTED_TAUS)
 
 

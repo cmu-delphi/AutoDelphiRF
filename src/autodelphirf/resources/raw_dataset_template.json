@@ -18,8 +18,8 @@
     "lag_terms": null,
     "training_days": null,
     "smoothed": null,
-    "target_lag_lower_tolerance": 0,
-    "target_lag_upper_tolerance": 0,
+    "smoothed_target": null,
+    "weekday_groups": null,
     "min_location_rows": 100,
     "triangle_format": "parquet"
   },

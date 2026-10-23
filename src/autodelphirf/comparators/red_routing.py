@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 from scipy.interpolate import BSpline, PchipInterpolator
 
+from ..core.defaults import provisional_column
+
 EPS = 1e-8
 
 # Prospective revision-progress feature V.
@@ -30,8 +32,8 @@ def _robust_median_positive(values: np.ndarray) -> float:
     return float(np.median(values) + EPS) if len(values) else 1.0
 
 
-def _remaining(rows: pd.DataFrame) -> pd.Series:
-    return rows["log_value_target_7dav"].astype(float) - rows["log_value_7dav"].astype(float)
+def _remaining(rows: pd.DataFrame, value_column: str, target_column: str) -> pd.Series:
+    return rows[target_column].astype(float) - rows[value_column].astype(float)
 
 
 def _penalized_bspline(x: np.ndarray, y: np.ndarray, grid: np.ndarray, *, n_basis: int,
@@ -62,14 +64,15 @@ def _penalized_bspline(x: np.ndarray, y: np.ndarray, grid: np.ndarray, *, n_basi
 
 def _episode_curve(rows: pd.DataFrame, initial_lag: int, target_lag: int, *,
                    spline_method: str = "pchip", spline_basis: int = 6,
-                   spline_penalty: float = 1e-3) -> np.ndarray | None:
+                   spline_penalty: float = 1e-3, value_column: str = "log_value_raw",
+                   target_column: str = "log_value_target") -> np.ndarray | None:
     """Return a spline-derived remaining-revision curve for one real episode.
 
     Returned values are a routing representation only; never appended to the
     donor data frame or treated as observations.
     """
     episode = rows.sort_values("lag").drop_duplicates("lag", keep="last")
-    episode = episode[np.isfinite(episode.log_value_7dav) & np.isfinite(episode.log_value_target_7dav)]
+    episode = episode[np.isfinite(episode[value_column]) & np.isfinite(episode[target_column])]
     if episode.empty:
         return None
     if initial_lag >= target_lag or not (episode.lag == initial_lag).any():
@@ -78,10 +81,10 @@ def _episode_curve(rows: pd.DataFrame, initial_lag: int, target_lag: int, *,
     anchors = pd.concat([genuine, episode.iloc[[0]]], ignore_index=True).drop_duplicates("lag", keep="last")
     target_row = anchors.iloc[[-1]].copy()
     target_row.loc[:, "lag"] = target_lag
-    target_row.loc[:, "log_value_7dav"] = float(episode.log_value_target_7dav.iloc[0])
+    target_row.loc[:, value_column] = float(episode[target_column].iloc[0])
     anchors = pd.concat([anchors, target_row], ignore_index=True).sort_values("lag").drop_duplicates("lag", keep="last")
     x = anchors.lag.to_numpy(float)
-    y = anchors.log_value_7dav.to_numpy(float)
+    y = anchors[value_column].to_numpy(float)
     if len(x) < 2 or np.any(~np.isfinite(y)):
         return None
     grid = np.arange(initial_lag, target_lag + 1, dtype=float)
@@ -94,7 +97,7 @@ def _episode_curve(rows: pd.DataFrame, initial_lag: int, target_lag: int, *,
             raise ValueError(f"unknown spline method: {spline_method}")
     except np.linalg.LinAlgError:
         fitted = np.interp(grid, x, y)
-    return float(episode.log_value_target_7dav.iloc[0]) - np.asarray(fitted, dtype=float)
+    return float(episode[target_column].iloc[0]) - np.asarray(fitted, dtype=float)
 
 
 @dataclass(frozen=True)
@@ -133,8 +136,13 @@ class CurveRouting:
 def build_curve_routing(rows: pd.DataFrame, target_lag: int, min_curve_episodes: int = 3,
                         gamma: float = 1.0, *, spline_method: str = "pchip",
                         spline_basis: int = 6, spline_penalty: float = 1e-3,
-                        initial_lag: int | None = None) -> CurveRouting:
+                        initial_lag: int | None = None,
+                        target_column: str = "log_value_target") -> CurveRouting:
     """Build cutoff-valid curve templates and retain only real donor rows.
+
+    Remaining revisions are measured between the target and the provisional
+    value on the same smoothing level (``provisional_column``), so RED's
+    ``Null + remaining revision`` forecast is on the target's scale.
 
     ``rows`` must already be restricted to the completed rolling history
     (see ``rolling_completed_training``). Donor responses are the observed
@@ -149,7 +157,8 @@ def build_curve_routing(rows: pd.DataFrame, target_lag: int, min_curve_episodes:
     if spline_basis < 2 or spline_penalty < 0:
         raise ValueError("spline basis must be at least two and penalty non-negative")
     source = rows.copy()
-    required = ["geo_value", "reference_date", "lag", "log_value_7dav", "log_value_target_7dav"]
+    value_column = provisional_column(target_column)
+    required = ["geo_value", "reference_date", "lag", value_column, target_column]
     source = source.dropna(subset=required)
     source = source[(source.lag <= target_lag) & (source.lag >= 0)].copy()
     if initial_lag is None:
@@ -158,7 +167,7 @@ def build_curve_routing(rows: pd.DataFrame, target_lag: int, min_curve_episodes:
     if initial_lag < 0 or initial_lag >= target_lag:
         raise ValueError("initial_lag must satisfy 0 <= initial_lag < target_lag")
     source = source[source.lag >= initial_lag].copy()
-    source["real_remaining_revision"] = _remaining(source)
+    source["real_remaining_revision"] = _remaining(source, value_column, target_column)
     source = source[np.isfinite(source.real_remaining_revision)]
     if source.empty:
         empty = np.array([], dtype=float)
@@ -168,7 +177,8 @@ def build_curve_routing(rows: pd.DataFrame, target_lag: int, min_curve_episodes:
     episode_curves: dict[str, list[np.ndarray]] = {}
     for (location, _), episode in source.groupby(["geo_value", "reference_date"], observed=True):
         curve = _episode_curve(episode, initial_lag, target_lag, spline_method=spline_method,
-                               spline_basis=spline_basis, spline_penalty=spline_penalty)
+                               spline_basis=spline_basis, spline_penalty=spline_penalty,
+                               value_column=value_column, target_column=target_column)
         if curve is not None:
             episode_curves.setdefault(str(location), []).append(curve)
     curves: dict[str, np.ndarray] = {}

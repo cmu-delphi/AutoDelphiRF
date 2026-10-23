@@ -73,8 +73,6 @@ def flat_line_comparison(long: pd.DataFrame, baseline: str = "baseline_null",
                 "median_loss_saved": float(-np.median(difference)),
             })
     return pd.DataFrame(rows)
-
-
 def pairwise_loss_comparison(long: pd.DataFrame, pairs, loss: str = "absolute_error",
                              early_lag_max: int = EARLY_LAG_MAX) -> pd.DataFrame:
     """Mean/median Delta, win/tie/loss probabilities and loss saved per pair.
@@ -107,8 +105,6 @@ def pairwise_loss_comparison(long: pd.DataFrame, pairs, loss: str = "absolute_er
                 "mean_loss_saved": float(-delta.mean()),
             })
     return pd.DataFrame(rows)
-
-
 def interval_calibration_by_lag(calibration: pd.DataFrame, taus, levels=LEVELS,
                                 early_lag_max: int = EARLY_LAG_MAX) -> pd.DataFrame:
     """Base vs calibrated coverage, width and miss rates, resolved by lag.
@@ -126,6 +122,7 @@ def interval_calibration_by_lag(calibration: pd.DataFrame, taus, levels=LEVELS,
     calibrated = add_interval_columns(calibrated_source, levels, prefix="")
     rows = []
     for status, frame in (("base", base), ("calibrated", calibrated)):
+        wis_column = "cal_wis_reporting" if status == "calibrated" else "wis_reporting"
         for scope, subset in (("by_lag", frame), ("early", frame[frame.lag <= early_lag_max]),
                               ("overall", frame)):
             grouping = ["method", "lag"] if scope == "by_lag" else ["method"]
@@ -144,10 +141,10 @@ def interval_calibration_by_lag(calibration: pd.DataFrame, taus, levels=LEVELS,
                         "median_width": float(group[f"width_{level}"].median()),
                         "lower_miss": float(group[f"lower_miss_{level}"].mean()),
                         "upper_miss": float(group[f"upper_miss_{level}"].mean()),
-                        "mean_wis": float(group["cal_wis" if status == "calibrated" else "wis"].mean())
-                        if ("cal_wis" if status == "calibrated" else "wis") in group else np.nan,
-                        "median_wis": float(group["cal_wis" if status == "calibrated" else "wis"].median())
-                        if ("cal_wis" if status == "calibrated" else "wis") in group else np.nan})
+                        "mean_wis": float(group[wis_column].mean())
+                        if wis_column in group else np.nan,
+                        "median_wis": float(group[wis_column].median())
+                        if wis_column in group else np.nan})
     return pd.DataFrame(rows)
 
 
@@ -156,8 +153,8 @@ def regime_stratified_differences(long: pd.DataFrame, wide: pd.DataFrame, pairs,
     """Pairwise loss differences stratified by prospectively available quantities.
 
     Explanatory only. Every stratifier is known at issuance -- routed regime,
-    distance to the routed medoid, number of regimes, process shift score,
-    exact lag -- so the bins never use a finalized value. These do not become an
+    distance to the routed medoid, number of regimes, exact lag -- so the bins
+    never use a finalized value. These do not become an
     estimator selector.
     """
     if wide is None or wide.empty:
@@ -167,9 +164,9 @@ def regime_stratified_differences(long: pd.DataFrame, wide: pd.DataFrame, pairs,
     # Predictor-agnostic only: the three-axis protocol treats the upstream
     # model as a black box, and its V1 is "not a comparison of predictor
     # internals". RevRoute-specific stratifiers (routed regime, medoid
-    # distance, regime count) are therefore excluded; lag, location and the
-    # process axis are available whatever produced the forecast.
-    stratifiers = [c for c in ("process_shift_score", "lag", "geo_value") if c in wide]
+    # distance, regime count) are therefore excluded; lag and location are
+    # available whatever produced the forecast.
+    stratifiers = [c for c in ("lag", "geo_value") if c in wide]
     if not stratifiers:
         return pd.DataFrame()
     # ``lag`` is both a merge key and a stratifier, so select it once.
@@ -257,11 +254,11 @@ def alert_stratification(reliability: pd.DataFrame, long: pd.DataFrame | None = 
     if reliability is None or reliability.empty or "reliability_level" not in reliability:
         return pd.DataFrame()
     frame = reliability
-    if long is not None and "wis" in long:
+    if long is not None and "wis_reporting" in long:
         key = [c for c in ("method", "fold", "geo_value", "reference_date", "report_date", "lag")
                if c in frame and c in long]
         if key:
-            frame = frame.merge(long[key + ["wis"]].drop_duplicates(key), on=key, how="left")
+            frame = frame.merge(long[key + ["wis_reporting"]].drop_duplicates(key), on=key, how="left")
     rows = []
     for subset, subframe in _subsets(frame, early_lag_max):
         for (method, level), group in subframe.groupby(["method", "reliability_level"],
@@ -270,8 +267,8 @@ def alert_stratification(reliability: pd.DataFrame, long: pd.DataFrame | None = 
                 "subset": subset, "method": method, "reliability_level": level, "n": len(group),
                 "mean_ae": float(group.realized_ae.mean()),
                 "median_ae": float(group.realized_ae.median()),
-                "mean_wis": float(group.wis.mean()) if "wis" in group else np.nan,
-                "median_wis": float(group.wis.median()) if "wis" in group else np.nan,
+                "mean_wis": float(group.wis_reporting.mean()) if "wis_reporting" in group else np.nan,
+                "median_wis": float(group.wis_reporting.median()) if "wis_reporting" in group else np.nan,
                 "harm_probability": float((group.realized_regret > 0).mean()),
                 "mean_regret": float(group.realized_regret.mean()),
                 "median_regret": float(group.realized_regret.median()),
@@ -385,53 +382,6 @@ def operational_alert_summary(reliability: pd.DataFrame,   # RETIRED: see note b
     return pd.DataFrame(rows)
 
 
-# ---------------------------------------------------------------------------
-# V3: process-alert validity
-# ---------------------------------------------------------------------------
-
-def process_alert_validation(long: pd.DataFrame,
-                             early_lag_max: int = EARLY_LAG_MAX) -> pd.DataFrame:
-    """Audit issued process states and their downstream forecast association.
-
-    This is deliberately labelled a downstream association, not proof of a
-    reporting-process change.  Timeliness/false-alarm claims require an
-    independent, prespecified change-event file and are consequently not
-    fabricated from the alert's own coordinates.
-    """
-    required = {"method", "process_state", "process_shift_score", "absolute_error"}
-    if long is None or not required.issubset(long.columns):
-        return pd.DataFrame()
-    rows = []
-    for subset, frame in _subsets(long, early_lag_max):
-        frame = frame[frame.process_state.isin(["stable", "watch", "re-diagnose"])]
-        for (method, state), group in frame.groupby(["method", "process_state"], observed=True):
-            rows.append({"subset": subset, "method": method, "process_alert": state,
-                         "n": len(group), "mean_shift_score": float(group.process_shift_score.mean()),
-                         "median_shift_score": float(group.process_shift_score.median()),
-                         "mean_ae": float(group.absolute_error.mean()),
-                         "median_ae": float(group.absolute_error.median()),
-                         "mean_regret": float((group.absolute_error -
-                                                (group.truth - group.provisional_value).abs()).mean())
-                         if {"truth", "provisional_value"}.issubset(group.columns) else np.nan,
-                         "validation_scope": "downstream association; independent change labels required for timeliness/false alarms"})
-    return pd.DataFrame(rows)
-
-
-def process_coordinate_attribution(long: pd.DataFrame) -> pd.DataFrame:
-    """Which prespecified process coordinate triggered each issued alert."""
-    needed = {"method", "process_state", "process_shift_driver"}
-    if long is None or not needed.issubset(long.columns):
-        return pd.DataFrame()
-    frame = long[long.process_state.isin(["stable", "watch", "re-diagnose"])].copy()
-    frame = frame[frame.process_shift_driver.notna()]
-    if frame.empty:
-        return pd.DataFrame()
-    return (frame.groupby(["method", "process_state", "process_shift_driver"], observed=True)
-            .agg(n=("process_shift_driver", "size"),
-                 mean_shift_score=("process_shift_score", "mean"))
-            .reset_index())
-
-
 def run_validation(long: pd.DataFrame, *, wide: pd.DataFrame | None = None,
                    calibration: pd.DataFrame | None = None,
                    reliability: pd.DataFrame | None = None,
@@ -440,7 +390,7 @@ def run_validation(long: pd.DataFrame, *, wide: pd.DataFrame | None = None,
     tables = {
         "v1_flat_line_comparison": flat_line_comparison(long),
         "v1_pairwise_point": pairwise_loss_comparison(long, point_pairs, "absolute_error"),
-        "v1_pairwise_distribution": (pairwise_loss_comparison(long, distribution_pairs, "wis")
+        "v1_pairwise_distribution": (pairwise_loss_comparison(long, distribution_pairs, "wis_reporting")
                                      if distribution_pairs else pd.DataFrame()),
         "v1_interval_calibration_by_lag": interval_calibration_by_lag(calibration, taus),
         "v1_regime_stratified_differences": regime_stratified_differences(
@@ -456,151 +406,19 @@ def run_validation(long: pd.DataFrame, *, wide: pd.DataFrame | None = None,
         "v2_mharm_severity": harm_severity_validation(reliability),
         "v2_qerr_vs_interval_width": interval_width_value_added(reliability, long),
         "v2_opposed_objective_diagnostic": opposed_objective_diagnostic(reliability),
-        # V3 nondegeneracy is required before any process claim is credible.
-        "v3_process_monitor_nondegeneracy": process_monitor_nondegeneracy(long),
-        "v3_process_alert_validation": process_alert_validation(long),
-        "v3_process_coordinate_attribution": process_coordinate_attribution(long),
         # Retained for support accounting, no longer a risk category.
         "v2_profile_availability": alert_stratification(reliability, long),
     }
-    # V4: the two joint displays stay separate -- the spec forbids merging
-    # difficulty-vs-process and harm-vs-process into one risk surface.
-    for name, frame in three_axis_heatmaps(reliability, long).items():
-        tables[f"v4_{name}"] = frame
     return {name: frame for name, frame in tables.items() if frame is not None}
 
 
-def attach_process_context(reliability: pd.DataFrame, long: pd.DataFrame) -> pd.DataFrame:
-    """Join the target-free process state and shift score onto the risk record.
-
-    The reliability record carries the forecast-quality channel (``risk_score``,
-    ``q_error``, ``f_harm``, ``m_harm``); the process channel (``process_state``,
-    ``process_shift_score``) travels with the predictions. Both are issued at
-    the same time for the same case, so joining them on the case key is the
-    step V4 needs to compare the two warning channels.
-    """
-    if reliability is None or reliability.empty or long is None or long.empty:
-        return pd.DataFrame()
-    wanted = [c for c in ("process_state", "process_shift_score") if c in long]
-    if not wanted:
-        return reliability.copy()
-    key = [c for c in ("method", "fold", "geo_value", "reference_date", "report_date", "lag")
-           if c in reliability and c in long]
-    if not key:
-        return reliability.copy()
-    context = long[key + wanted].drop_duplicates(key)
-    return reliability.merge(context, on=key, how="left")
-
-
-def joint_alert_table(reliability: pd.DataFrame, long: pd.DataFrame | None = None,   # RETIRED
-                      early_lag_max: int = EARLY_LAG_MAX) -> pd.DataFrame:
-    """The joint (forecast alert x process alert) cell table (V4).
-
-    One row per adequately populated cell of the 3x3 grid. Sparse cells are
-    reported as they are and never pooled to manufacture a pattern; the ``n``
-    column is what tells you whether a cell means anything.
-    """
-    frame = attach_process_context(reliability, long)
-    if frame.empty or "reliability_level" not in frame or "process_state" not in frame:
-        return pd.DataFrame()
-    if long is not None and "wis" in long:
-        key = [c for c in ("method", "fold", "geo_value", "reference_date", "report_date", "lag")
-               if c in frame and c in long]
-        if key:
-            frame = frame.merge(long[key + ["wis"]].drop_duplicates(key), on=key, how="left")
-    rows = []
-    for subset, subframe in _subsets(frame, early_lag_max):
-        subframe = subframe[subframe.reliability_level.isin(["supported", "caution", "high risk"])
-                            & subframe.process_state.isin(["stable", "watch", "re-diagnose"])]
-        if subframe.empty:
-            continue
-        grouped = subframe.groupby(["method", "reliability_level", "process_state"], observed=True)
-        for (method, predictive, process), group in grouped:
-            rows.append({
-                "subset": subset, "method": method, "forecast_alert": predictive,
-                "process_alert": process, "n": len(group),
-                "mean_ae": float(group.realized_ae.mean()),
-                "median_ae": float(group.realized_ae.median()),
-                "mean_wis": float(group.wis.mean()) if "wis" in group else np.nan,
-                "median_wis": float(group.wis.median()) if "wis" in group else np.nan,
-                "harm_probability": float((group.realized_regret > 0).mean()),
-                "mean_regret": float(group.realized_regret.mean()),
-                "median_regret": float(group.realized_regret.median()),
-                "mean_shift_score": float(group.process_shift_score.mean())
-                if "process_shift_score" in group else np.nan})
-    return pd.DataFrame(rows)
-
-
-def dual_alert_contrasts(reliability: pd.DataFrame, long: pd.DataFrame | None = None) -> pd.DataFrame:   # RETIRED
-    """Prespecified adjacent-level conditional V4 contrasts.
-
-    Missing/unavailable states are intentionally excluded: they are audit
-    states, not a fourth alert level that can evidence complementarity.
-    """
-    frame = attach_process_context(reliability, long)
-    if frame.empty:
-        return pd.DataFrame()
-    frame = frame[frame.reliability_level.isin(["supported", "caution", "high risk"])
-                  & frame.process_state.isin(["stable", "watch", "re-diagnose"])]
-    reps = EVALUATION_DEFAULTS.get("bootstrap_repetitions", 500)
-    rng = np.random.default_rng(41)
-    rows = []
-    for direction, fixed, changing, levels in (
-        ("process", "reliability_level", "process_state", ["stable", "watch", "re-diagnose"]),
-        ("forecast", "process_state", "reliability_level", ["supported", "caution", "high risk"]),
-    ):
-        for (method, fixed_value), group in frame.groupby(["method", fixed], observed=True):
-            values = group.groupby(changing, observed=True).realized_ae.agg(["mean", "size"])
-            for lower, higher in zip(levels, levels[1:]):
-                if lower in values.index and higher in values.index:
-                    ci_low = ci_high = np.nan
-                    episodes = group.reference_date.dropna().unique() if "reference_date" in group else []
-                    if len(episodes) >= 2:
-                        lower_by_episode = (group[group[changing].eq(lower)]
-                                            .groupby("reference_date", observed=True).realized_ae.agg(["sum", "size"])
-                                            .reindex(episodes, fill_value=0.))
-                        higher_by_episode = (group[group[changing].eq(higher)]
-                                             .groupby("reference_date", observed=True).realized_ae.agg(["sum", "size"])
-                                             .reindex(episodes, fill_value=0.))
-                        draw = rng.integers(0, len(episodes), size=(reps, len(episodes)))
-                        low_n = lower_by_episode["size"].to_numpy()[draw].sum(axis=1)
-                        high_n = higher_by_episode["size"].to_numpy()[draw].sum(axis=1)
-                        valid = (low_n > 0) & (high_n > 0)
-                        if valid.any():
-                            sampled = (higher_by_episode["sum"].to_numpy()[draw][valid].sum(axis=1) / high_n[valid]
-                                       - lower_by_episode["sum"].to_numpy()[draw][valid].sum(axis=1) / low_n[valid])
-                            ci_low, ci_high = np.quantile(sampled, [.025, .975])
-                    rows.append({"method": method, "direction": direction,
-                                 "fixed_alert": fixed_value, "lower_alert": lower,
-                                 "higher_alert": higher, "lower_n": int(values.loc[lower, "size"]),
-                                 "higher_n": int(values.loc[higher, "size"]),
-                                 "mean_ae_difference_higher_minus_lower": float(values.loc[higher, "mean"] - values.loc[lower, "mean"]),
-                                 "ci_low": ci_low, "ci_high": ci_high,
-                                 "episodes": len(episodes)})
-    return pd.DataFrame(rows)
-
-
-def alignment_frame(reliability: pd.DataFrame, long: pd.DataFrame | None = None) -> pd.DataFrame:
-    """Per-case rows for the risk/shift-vs-realized-error alignment figures."""
-    frame = attach_process_context(reliability, long)
-    if frame.empty:
-        return pd.DataFrame()
-    columns = [c for c in ("method", "lag", "q_error", "f_harm", "m_harm",
-                           "process_shift_score", "process_state", "reliability_level",
-                           "realized_ae", "realized_regret") if c in frame]
-    return frame[columns].copy()
-
-
-# RETIRED with the three-axis spec: operational_alert_summary,
-# joint_alert_table and dual_alert_contrasts all summarise the categorical
-# Q^pred / S^risk alert system that the spec removed ("No S^risk score,
-# frozen reference CDF, or categorical Q^pred is required"). They are kept
-# only so archived runs remain readable and are deliberately NOT wired into
-# run_validation; the live V4 displays are three_axis_heatmaps.
+# RETIRED: operational_alert_summary summarises the categorical alert system
+# that the spec removed. It is kept only so archived runs remain readable and
+# is deliberately NOT wired into run_validation.
 
 
 # ---------------------------------------------------------------------------
-# Three-axis post-prediction validation (three_axis spec Sec. V2/V4)
+# Post-prediction validation of the historical assessments (Sec. 3.2.5)
 # ---------------------------------------------------------------------------
 
 def harm_frequency_discrimination(reliability: pd.DataFrame, bins: int = 5,
@@ -807,86 +625,4 @@ def opposed_objective_diagnostic(reliability: pd.DataFrame,
                                            if "f_harm" in group else np.nan),
                 "interpretation": "negative qerr-vs-regret/harm supports keeping the axes separate"})
     return pd.DataFrame(rows)
-
-
-def three_axis_heatmaps(reliability: pd.DataFrame, long: pd.DataFrame | None = None,
-                        bins: int = 4) -> dict:
-    """The TWO separate joint displays of spec V4 -- never merged.
-
-    ``difficulty_vs_process`` crosses binned ``q_err`` with binned
-    ``D^shift`` and reports realized AE; ``harm_vs_process`` crosses binned
-    ``f_harm`` with binned ``D^shift`` and reports observed harm frequency.
-    They answer different questions, so the spec forbids combining them into
-    one risk surface. Bins are descriptive quantile groups for display, not
-    operational thresholds.
-
-    ``D^shift`` enters as a PROCESS-STATE axis, not a forecast-error axis: a
-    flat AE profile across its bins is a legitimate outcome and would say that
-    process anomaly and forecast difficulty are separate phenomena on that
-    dataset.
-    """
-    frame = attach_process_context(reliability, long) if long is not None else reliability.copy()
-    if frame.empty or "process_shift_score" not in frame:
-        return {"difficulty_vs_process": pd.DataFrame(), "harm_vs_process": pd.DataFrame()}
-
-    def grouped(axis: str, outcome: str, label: str) -> pd.DataFrame:
-        data = frame.dropna(subset=[axis, "process_shift_score", outcome])
-        if len(data) < bins:
-            return pd.DataFrame()
-        rows = []
-        for method, group in data.groupby("method", observed=True):
-            try:
-                a = pd.qcut(group[axis], bins, duplicates="drop", labels=False)
-                p = pd.qcut(group.process_shift_score, bins, duplicates="drop", labels=False)
-            except ValueError:
-                continue
-            for (ai, pi), cell in group.groupby([a, p], observed=True):
-                entry = {"method": method, f"{label}_bin": int(ai), "process_bin": int(pi),
-                         "n": len(cell),
-                         f"mean_{label}": float(cell[axis].mean()),
-                         "mean_process_shift": float(cell.process_shift_score.mean())}
-                if outcome == "realized_ae":
-                    entry["mean_ae"] = float(cell.realized_ae.mean())
-                    entry["median_ae"] = float(cell.realized_ae.median())
-                else:
-                    entry["observed_harm_frequency"] = float((cell.realized_regret > 0).mean())
-                    entry["n_harmed"] = int((cell.realized_regret > 0).sum())
-                rows.append(entry)
-        return pd.DataFrame(rows)
-
-    return {"difficulty_vs_process": grouped("q_error", "realized_ae", "q_error"),
-            "harm_vs_process": grouped("f_harm", "realized_regret", "f_harm")}
-
-
-def process_monitor_nondegeneracy(long: pd.DataFrame) -> pd.DataFrame:
-    """Required nondegeneracy check on ``D^shift`` (spec V3.1).
-
-    "An all-zero or nearly constant D^shift is treated as monitor FAILURE
-    requiring feature-definition or implementation review, not as evidence
-    that the reporting process is perfectly stable." This reports the
-    distribution and the unavailability rate so that verdict can be reached
-    from the table rather than assumed.
-    """
-    if long.empty or "process_shift_score" not in long:
-        return pd.DataFrame()
-    score = pd.to_numeric(long.process_shift_score, errors="coerce")
-    finite = score[np.isfinite(score)]
-    state = (long.process_state.value_counts(normalize=True).to_dict()
-             if "process_state" in long else {})
-    degenerate = bool(len(finite) == 0 or finite.nunique() <= 1
-                      or float(np.nanmax(finite)) <= 0)
-    return pd.DataFrame([{
-        "n": len(score), "n_finite": int(len(finite)),
-        "unavailable_fraction": float(1 - len(finite) / max(len(score), 1)),
-        "distinct_values": int(finite.nunique()),
-        "min": float(finite.min()) if len(finite) else np.nan,
-        "q25": float(finite.quantile(.25)) if len(finite) else np.nan,
-        "median": float(finite.median()) if len(finite) else np.nan,
-        "q75": float(finite.quantile(.75)) if len(finite) else np.nan,
-        "max": float(finite.max()) if len(finite) else np.nan,
-        "fraction_at_max": (float((finite == finite.max()).mean()) if len(finite) else np.nan),
-        "process_state_shares": str(state),
-        "monitor_degenerate": degenerate,
-        "verdict": ("MONITOR FAILURE: D^shift is constant or all-zero; review the feature "
-                    "definitions" if degenerate else "nondegenerate"),
-    }])
+# End of validation helpers.

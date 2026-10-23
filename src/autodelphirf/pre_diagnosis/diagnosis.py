@@ -7,6 +7,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from ..core.io import read_csv
+
 REQUIRED = {"geo_value", "reference_date", "report_date", "target_date", "lag",
             "target_lag", "log_value_7dav"}
 
@@ -120,7 +122,14 @@ def observed_weekday_columns(prepared: pd.DataFrame) -> list[str]:
 
 
 def diagnose_prepared_data(prepared: pd.DataFrame, schedule: pd.DataFrame,
-                           specified_profile: dict | None = None) -> tuple[dict, pd.DataFrame]:
+                           modeling_profile: dict | None = None) -> tuple[dict, pd.DataFrame]:
+    """Summarize a prepared triangle.
+
+    ``modeling_profile`` is the single effective profile recorded at
+    preparation (``weekday_groups``, ``weekday_groups_source``, ``lag_terms``):
+    exactly what training uses. The pattern read off the triangle itself is
+    reported for inspection only and never used for modeling.
+    """
     target_columns = set(schedule.target_column.dropna().astype(str))
     if len(target_columns) != 1:
         raise ValueError("schedule must define exactly one target_column")
@@ -137,26 +146,18 @@ def diagnose_prepared_data(prepared: pd.DataFrame, schedule: pd.DataFrame,
         summary[f"{column}_min"] = str(pd.to_datetime(prepared[column]).min())
         summary[f"{column}_max"] = str(pd.to_datetime(prepared[column]).max())
 
-    derived = derive_revision_profile(prepared)
-    summary["revision_profile_derived"] = derived
-    # A user-supplied profile always wins; the derivation is still reported so
-    # a disagreement is visible rather than silent.
-    summary["revision_profile_specified"] = specified_profile or None
-    summary["revision_profile_effective_source"] = "user-specified" if specified_profile else "derived"
-    effective = dict(specified_profile) if specified_profile else {
-        k: derived.get(k) for k in ("weekday_groups", "lag_terms")}
-    summary["revision_profile_effective"] = effective
-    if specified_profile and derived.get("status") == "derived":
-        disagreements = {k: {"specified": specified_profile.get(k), "derived": derived.get(k)}
-                         for k in ("weekday_groups", "lag_terms")
-                         if k in specified_profile and specified_profile[k] != derived.get(k)}
-        summary["revision_profile_disagreements"] = disagreements or None
+    summary["triangle_release_pattern"] = {
+        **derive_revision_profile(prepared),
+        "note": "read off the prepared triangle for inspection; not used for modeling"}
+    effective = dict(modeling_profile or {})
 
     observed = observed_weekday_columns(prepared)
     expected = list(WEEKDAYS) if observed else []
     summary["weekday_columns_in_triangle"] = observed
     summary["weekday_columns_match_profile"] = (observed == expected)
     summary["weekday_groups_used_for_modeling"] = effective.get("weekday_groups") or {}
+    summary["weekday_groups_source"] = effective.get("weekday_groups_source")
+    summary["lag_terms_used_for_modeling"] = effective.get("lag_terms")
 
     quality = pd.DataFrame({"column": prepared.columns,
                             "missing_n": [int(prepared[c].isna().sum()) for c in prepared],
@@ -167,223 +168,24 @@ diagnose = diagnose_prepared_data
 
 
 # ---------------------------------------------------------------------------
-# Target-lag diagnosis
+# Target lag
 # ---------------------------------------------------------------------------
-# Defaults of the target-lag evidence rule. The suggested area runs from the
-# earliest cadence-aligned lag at which ``completion_rate`` of records are
-# within 10% relative error to the earliest lag at which that share is within
-# 1%. It is evidence for a user's decision, never an automatic selection.
-# Episodes with less than ``min_followup_days`` of
-# follow-up are excluded so a series without enough later observations cannot
-# be treated as finalized. The rule is evidence about the data; it never overrides a user's
-# declared choice (see ``resolve_target_lag``).
-# The target lag is diagnosed from the data provided: retrospectively that is the
-# whole archive, and in deployment whatever was available at the first run
-# (pass ``selection_cutoff``). No location--reference-date pair is filtered out
-# by default -- a pair simply contributes at the candidate lags where it has an
-# as-of value. ``min_followup_days`` and ``max_first_lag`` remain available for
-# a caller who wants a population held fixed across lags, but they DISCARD
-# provided data, so they are off unless asked for.
-TARGET_LAG_RULE = {"completion_rate": 0.90, "relative_error": 0.01,
-                   "min_followup_days": 0, "cadence_days": 7, "max_lag": None,
-                   "max_first_lag": None}
-
-
-def diagnose_target_lag(prepared: pd.DataFrame, *, value_column: str = "value_7dav",
-                        completion_rate: float = TARGET_LAG_RULE["completion_rate"],
-                        relative_error: float = TARGET_LAG_RULE["relative_error"],
-                        min_followup_days: int = TARGET_LAG_RULE["min_followup_days"],
-                        cadence_days: int = TARGET_LAG_RULE["cadence_days"],
-                        max_lag: int | None = None,
-                        max_first_lag: int | None = TARGET_LAG_RULE["max_first_lag"],
-                        extra_lags=(), selection_cutoff=None) -> dict:
-    """Describe a target-lag decision range from the observed revision process.
-
-    Returns per-lag completion evidence and the two boundaries where at least
-    ``completion_rate`` of records are within 10% and 1% relative error. It
-    never selects a target lag.
-
-    The comparator is each episode's latest available value in the supplied
-    archive -- not an assumed final truth -- so a triangle truncated near its
-    own configured target lag can only ever recommend a lag inside the range it
-    contains. That limit is reported as ``max_lag_examined``.
-    """
-    if not 0 < completion_rate <= 1 or not 0 <= relative_error or cadence_days < 1:
-        raise ValueError("invalid target-lag rule settings")
-    if value_column not in prepared.columns:
-        return {"selected_target_lag": None, "status": f"no {value_column} column",
-                "rule": {}, "completion": []}
-    keys = ["geo_value", "reference_date"]
-    frame = prepared[keys + ["report_date", "lag", value_column]].dropna(
-        subset=[value_column]).copy()
-    frame["report_date"] = pd.to_datetime(frame.report_date)
-    if selection_cutoff is not None:
-        frame = frame[frame.report_date < pd.Timestamp(selection_cutoff)]
-    if frame.empty:
-        return {"selected_target_lag": None, "status": "no rows before the selection cutoff",
-                "rule": {}, "completion": []}
-    frame = frame.sort_values(keys + ["report_date"])
-    # Only episodes with enough later observations can inform the decision range.
-    span = frame.groupby(keys, observed=True).lag.agg(["min", "max"])
-    eligible_index = span if not min_followup_days else span[span["max"] >= min_followup_days]
-    # ...and only episodes ALSO observed from early on can be compared across
-    # candidate lags. A reference date predating the archive's own start first
-    # appears at a large lag (p90 = 145 on nssp), so without this filter each
-    # candidate lag is scored on a different population -- a third of nssp
-    # episodes have no as-of value at lag 14 but do at lag 84 -- and "the
-    # earliest lag to cross the rate" compares incomparable subsets.
-    if max_first_lag is not None:
-        eligible_index = eligible_index[eligible_index["min"] <= max_first_lag]
-    eligible_pairs = eligible_index.index
-    frame = frame.set_index(keys)
-    frame = frame.loc[frame.index.isin(eligible_pairs)].reset_index()
-    if frame.empty:
-        return {"selected_target_lag": None,
-                "status": (f"no location-reference pair has both {min_followup_days} days of follow-up "
-                           f"and a first release by lag {max_first_lag}"),
-                "rule": {}, "completion": []}
-    latest = (frame.groupby(keys, observed=True).tail(1)[keys + [value_column]]
-              .rename(columns={value_column: "latest_value"}))
-    ceiling = int(frame.lag.max() if max_lag is None else min(max_lag, frame.lag.max()))
-    # Candidate target lags sit on the retraining cadence (weekly by default).
-    candidates = [lag for lag in range(cadence_days, ceiling + 1) if lag % cadence_days == 0]
-    # ``extra_lags`` are REPORTED but never selectable: a user's declared
-    # target lag is often off the retraining cadence (chng uses 60, not a
-    # multiple of 7), and its own within-tolerance rate is exactly what is
-    # needed to judge that choice against the rule's criterion.
-    reportable = sorted({int(x) for x in extra_lags if 0 < int(x) <= ceiling}
-                        .difference(candidates))
-    selectable = set(candidates)
-    candidates = sorted(set(candidates).union(reportable))
-    if not candidates:
-        # The archive does not reach the first cadence-aligned target lag, so
-        # there is nothing to score. Reported as a status, not raised: it is a
-        # property of the data, and the caller (pipeline, or `revroute
-        # diagnose`) already handles an unselectable target lag by falling back
-        # to the user's declared L. Returning early also keeps the empty
-        # candidate list out of ``merge_asof`` below, where an empty
-        # ``DataFrame({"lag": []})`` is float64 and fails the exact join-key
-        # dtype check against the triangle's integer lag.
-        return {"selected_target_lag": None,
-                "status": (f"no candidate target lag: the triangle reaches lag {ceiling}, short of "
-                           f"the first cadence-aligned target lag at {cadence_days} days. Lower "
-                           "cadence_days, or supply a triangle with longer follow-up."),
-                "rule": {"cadence_days": cadence_days, "max_lag_examined": ceiling},
-                "completion": []}
-    # AS-OF comparison. What a forecaster could see at lag l is the latest
-    # release at or BEFORE l, carried forward -- not a release dated exactly l.
-    # Matching l exactly evaluated only the episodes that happened to publish
-    # on that very day, which on a Wed/Fri reporter is ~1.4% of episodes and
-    # produced evidence from a 96-row sliver. Forward filling gives every
-    # eligible episode an as-of value at every candidate lag.
-    # Explicit key works on the older pandas release still used by the
-    # packaged test environment, where ``how="cross"`` incorrectly attempts
-    # to infer common columns.
-    grid = (frame[keys].drop_duplicates().assign(_cross=1)
-            .merge(pd.DataFrame({"lag": candidates, "_cross": 1}), on="_cross")
-            .drop(columns="_cross").sort_values("lag", kind="mergesort"))
-    asof = pd.merge_asof(grid, frame[keys + ["lag", value_column]].sort_values(
-                             "lag", kind="mergesort"),
-                         on="lag", by=keys, direction="backward")
-    asof = asof.merge(latest, on=keys, how="left").dropna(subset=[value_column, "latest_value"])
-    current = asof[value_column].to_numpy(dtype="float64")
-    latest_values = asof.latest_value.to_numpy(dtype="float64")
-    asof["rel_error"] = (np.abs(current - latest_values)
-                         / np.maximum(np.abs(latest_values), 1e-8))
-    completion = []
-    for lag, group in asof.groupby("lag", observed=True, sort=True):
-        values = group.rel_error.replace([np.inf, -np.inf], np.nan).dropna()
-        within = ((values <= relative_error) |
-                  np.isclose(values, relative_error, rtol=1e-6, atol=1e-8))
-        within_guidance = ((values <= 0.10) |
-                           np.isclose(values, 0.10, rtol=1e-6, atol=1e-8))
-        completion.append({
-            "lag": int(lag), "pairs": int(len(values)),
-            "within_tolerance_rate": float(np.mean(within)) if len(values) else None,
-            "within_1pct_rate": float(np.mean(within)) if len(values) else None,
-            "within_10pct_rate": float(np.mean(within_guidance)) if len(values) else None,
-            "q60_relative_error": float(values.quantile(0.60)) if len(values) else None,
-            "q75_relative_error": float(values.quantile(0.75)) if len(values) else None,
-            "q90_relative_error": float(values.quantile(0.90)) if len(values) else None,
-            "q95_relative_error": float(values.quantile(0.95)) if len(values) else None,
-            "median_relative_error": float(values.median()) if len(values) else None})
-    selectable_rows = [c for c in completion if c["lag"] in selectable]
-    lower_rows = [c for c in selectable_rows if c["within_10pct_rate"] is not None
-                  and c["within_10pct_rate"] >= completion_rate]
-    upper_rows = [c for c in selectable_rows if c["within_1pct_rate"] is not None
-                  and c["within_1pct_rate"] >= completion_rate]
-    suggested_range = {"lower": lower_rows[0]["lag"] if lower_rows else None,
-                       "upper": upper_rows[0]["lag"] if upper_rows else None,
-                       "completion_rate": completion_rate,
-                       "lower_relative_error": 0.10,
-                       "upper_relative_error": relative_error}
-    rule = {"completion_rate": completion_rate, "relative_error": relative_error,
-            "min_followup_days": min_followup_days, "cadence_days": cadence_days,
-            "max_first_lag": max_first_lag,
-            "reported_only_lags": reportable,
-            "max_lag_examined": ceiling, "pairs_used": int(len(eligible_pairs)),
-            "selection_cutoff": None if selection_cutoff is None else str(pd.Timestamp(selection_cutoff).date())}
-    return {"selected_target_lag": None,
-            "suggested_target_lag_range": suggested_range,
-            "status": (f"decision range where at least {completion_rate:.0%} of records "
-                       "are within 10% to 1% relative error"),
-            "rule": rule, "completion": completion}
+# The target lag is the user's choice. Its evidence comes only from the raw
+# archive (pre_diagnosis.archive.diagnose_raw_archive): a prepared triangle is
+# built with an already chosen L and holds no lag at or beyond it, so it cannot
+# say where revisions settle.
 
 
 def resolve_target_lag(diagnosed: dict, user_target_lag: int | None,
                        confirmed: bool, dataset: str) -> tuple[int, str]:
     """Use the user's declared target lag exactly; never infer one."""
     if user_target_lag is None:
+        bounds = (diagnosed or {}).get("suggested_target_lag_range") or {}
+        evidence = (f" The raw archive suggests {bounds.get('lower')} to {bounds.get('upper')} "
+                    "days." if bounds.get("lower") is not None else "")
         raise ValueError(
-            f"dataset '{dataset}' has no target_lag. Review the diagnostic range and "
-            "state the final target_lag explicitly before running.")
+            f"dataset '{dataset}' has no target lag, and none is inferred from a prepared "
+            f"triangle.{evidence} Set target_lag explicitly, or prepare the dataset from its raw "
+            "archive (`autodelphirf diagnose --archive ...` shows the evidence, then "
+            "`autodelphirf prepare --target-lag L`).")
     return int(user_target_lag), "explicit user choice"
-
-
-def raw_archive_for_diagnosis(dataset: str, manifest_path):
-    """Load a dataset's complete RAW archive for the primary pre-diagnosis.
-
-    The target-lag rule needs follow-up past any candidate target lag, and a
-    prepared triangle is truncated at the target lag it was built with, so
-    diagnosing L from it is circular and fails the follow-up requirement on
-    every dataset whose triangle stops before 60 days. The raw archive carries
-    the full revision history, which is what the rule was defined on. Do not
-    truncate late reports here: the primary diagnosis uses them to define each
-    episode's latest observed reference value while its candidate grid separately
-    bounds automatic target-lag suggestions.
-
-    Returns ``(frame, note)``; ``frame`` is ``None`` when the archive or its
-    manifest entry is unavailable, and ``note`` says why.
-    """
-    if manifest_path is None:
-        return None, ("no raw-archive manifest configured (set AUTODELPHIRF_RAW_ARCHIVE_MANIFEST, or "
-                      "place config/raw_archive_manifest.json in the working directory)")
-    manifest_path = Path(manifest_path)
-    if not manifest_path.exists():
-        return None, f"no raw-archive manifest at {manifest_path}"
-    manifest = json.loads(manifest_path.read_text())
-    entry = (manifest.get("datasets", {}) or {}).get(dataset)
-    if entry is None:
-        return None, f"no raw-archive manifest entry for '{dataset}'"
-    path = (manifest_path.parent / entry["raw_csv"]).resolve()
-    if not path.exists():
-        return None, f"raw archive not found: {path}"
-    raw = pd.read_csv(path)
-    reference, report = entry["reference_col"], entry["report_col"]
-    value, denominator = entry["value_col"], entry.get("denom_col")
-    missing = [c for c in (reference, report, value) if c not in raw.columns]
-    if missing:
-        return None, f"raw archive {path.name} missing {missing}"
-    frame = pd.DataFrame({
-        "reference_date": pd.to_datetime(raw[reference]),
-        "report_date": pd.to_datetime(raw[report]),
-        "geo_value": (raw["geo_value"].astype(str) if "geo_value" in raw.columns
-                      else "single_location")})
-    if denominator and denominator in raw.columns:
-        # A two-count fraction signal is diagnosed on the ratio it models.
-        frame["value"] = (pd.to_numeric(raw[value], errors="coerce")
-                          / pd.to_numeric(raw[denominator], errors="coerce").replace(0, np.nan))
-    else:
-        frame["value"] = pd.to_numeric(raw[value], errors="coerce")
-    frame = frame.dropna(subset=["value"])
-    return frame, f"full raw archive {path.name}"

@@ -14,7 +14,6 @@
 
 suppressPackageStartupMessages({
   library(data.table)
-  library(dplyr)
   library(jsonlite)
   library(DelphiRF)
 })
@@ -46,6 +45,13 @@ parse_flags <- function(flag_args) {
 }
 flags <- parse_flags(flag_args)
 get_flag <- function(name, default) if (is.null(flags[[name]])) default else flags[[name]]
+get_bool_flag <- function(name, default) {
+  value <- tolower(as.character(get_flag(name, if (default) "true" else "false")))
+  if (!value %in% c("true", "false")) {
+    stop("--", name, " must be true or false")
+  }
+  identical(value, "true")
+}
 
 prepared_dir <- normalizePath(positional[[1]])
 raw_path     <- normalizePath(positional[[2]])
@@ -57,15 +63,13 @@ dir.create(dirname(output_path), recursive = TRUE, showWarnings = FALSE)
 # silently substitute its own quantile-regression implementation or a source
 # checkout whose uncommitted state is absent from the run manifest.
 
-# DelphiRF writes each fitted model under model_save_dir/<indicator_signal_...>/
-# via create_dir_not_exist(), which calls dir.create() WITHOUT recursive=TRUE.
-# So model_save_dir itself must already exist, or saveRDS() fails with
-# "cannot open the connection" and every fit is silently dropped. Create one
-# run-scoped cache directory up front. Model filenames already encode the
-# training end date, geo key, lag group, quantile, and hyperparameters; the geo
-# key also encodes method, fold, group, and pool, so models cannot collide.
-model_save_dir <- tempfile("delphirf_comparator_models_")
+# DelphiRF already knows how to save and reload fitted models. AutoDelphiRF
+# supplies a persistent directory so a retrospective run also becomes the
+# reusable model history for later releases of the same archive.
+model_save_dir <- normalizePath(
+  get_flag("model-save-dir", tempfile("delphirf_models_")), mustWork = FALSE)
 dir.create(model_save_dir, recursive = TRUE, showWarnings = FALSE)
+model_mode <- match.arg(get_flag("model-mode", "train"), c("train", "auto"))
 
 ref_col    <- get_flag("ref-col", "reference_date")
 report_col <- get_flag("report-col", "report_date")
@@ -73,15 +77,18 @@ geo_col    <- get_flag("geo-col", "geo_value")
 constant_geo <- get_flag("constant-geo", "")
 value_col  <- get_flag("value-col", "value")
 # Per-dataset, not per-script: "count" vs "fraction" is a property of the
-# dataset's own reporting triangle (see full_package_pooling_preprocess.R's
-# `configs` list, mirrored in raw_archive_manifest.json). Previously hardcoded
-# to "count", which was only correct for the nhsn* datasets.
+# dataset's own reporting triangle, recorded at preparation.
 value_type <- match.arg(get_flag("value-type", "count"), c("count", "fraction"))
+genuine_training <- get_bool_flag("genuine-training", TRUE)
+genuine_testing <- get_bool_flag("genuine-testing", TRUE)
 # Optional denominator column, used only to build a fraction-aware revision
 # profile for the similarity-weighted pooling routes. Datasets whose raw value
 # column is already a rate/percentage (e.g. nssp_*) are value_type="fraction"
 # with no denominator and need no denom-col.
 denom_col <- get_flag("denom-col", "")
+# Working scale of the prepared response: log(num + 1) - log(denom + 1) when the
+# triangle was built from numerator and denominator columns, else log(value + 1).
+working_scale <- if (nzchar(denom_col)) "log_ratio" else "log_value"
 lag_terms  <- as.integer(strsplit(get_flag("lag-terms", "7,14"), ",")[[1]])
 weekday_groups <- jsonlite::fromJSON(get_flag("weekdays-json", "{}"), simplifyVector = FALSE)
 if (is.null(weekday_groups)) weekday_groups <- list()
@@ -96,8 +103,13 @@ if (length(unknown_methods)) {
        ". This script only produces: ", paste(allowed_methods, collapse = ", "))
 }
 revision_args <- names(formals(DelphiRF::revision_forecast))
-required_revision_args <- "model_backend"
+required_revision_args <- c("model_backend", "working_scale")
 missing_revision_args <- setdiff(required_revision_args, revision_args)
+for (helper in c("create_weight_anchors", "incomplete_test_rows")) {
+  if (!exists(helper, envir = asNamespace("DelphiRF"))) {
+    missing_revision_args <- c(missing_revision_args, paste0(helper, "()"))
+  }
+}
 if (length(missing_revision_args)) {
   stop("Installed DelphiRF is too old for this pipeline; revision_forecast() is missing: ",
        paste(missing_revision_args, collapse = ", "), ". Install the current DelphiRF release.")
@@ -113,12 +125,35 @@ if (!any(abs(experiment_taus - 0.5) < 1e-10)) {
   stop("--taus must include 0.5 (comparators are reported at the median).")
 }
 only_fold <- suppressWarnings(as.integer(get_flag("fold", NA_character_)))
+# A location is a label, never a number: "01" and "1" are different locations.
+read_with_text_geo <- function(path, column = "geo_value") {
+  # fread needs R.utils for gzipped files; base R reads them without it.
+  if (grepl("\\.gz$", path) && !requireNamespace("R.utils", quietly = TRUE)) {
+    header <- names(utils::read.csv(gzfile(path), nrows = 1L, check.names = FALSE))
+    classes <- if (column %in% header) setNames("character", column) else NA
+    return(as.data.table(utils::read.csv(gzfile(path), colClasses = classes,
+                                         check.names = FALSE, stringsAsFactors = FALSE)))
+  }
+  header <- names(fread(path, nrows = 0L))
+  if (column %in% header) fread(path, colClasses = setNames(list(column), "character"))
+  else fread(path)
+}
 pool_assignments_path <- get_flag("revroute-pools", "")
-pool_assignments <- if (nzchar(pool_assignments_path)) fread(pool_assignments_path) else NULL
+pool_assignments <- if (nzchar(pool_assignments_path)) read_with_text_geo(pool_assignments_path) else NULL
+issued_forecasts_path <- get_flag("issued-forecasts", "")
+issued_forecasts <- if (nzchar(issued_forecasts_path) && file.exists(issued_forecasts_path)) {
+  read_with_text_geo(issued_forecasts_path)
+} else NULL
+unresolved_only <- identical(tolower(get_flag("unresolved-only", "false")), "true")
 
 schedule <- fread(schedule_path)
 schedule[, test_date := as.Date(test_date)]
 if (!nrow(schedule)) stop("Schedule is empty: ", schedule_path)
+# Fold k is the k-th origin in calendar order, exactly as Python numbers it.
+setorder(schedule, test_date)
+if (!is.na(only_fold) && (only_fold < 1L || only_fold > nrow(schedule))) {
+  stop("--fold ", only_fold, " is outside the schedule's ", nrow(schedule), " origins")
+}
 temporal_resol <- tolower(as.character(schedule$temporal_resolution[[1]]))
 lag_groups <- if (temporal_resol == "weekly") {
   as.character(DelphiRF:::TEST_LAG_GROUPS_WEEKLY)
@@ -129,15 +164,32 @@ parse_group <- function(x) {
   z <- as.integer(strsplit(x, "-", fixed = TRUE)[[1]])
   if (length(z) == 1L) c(z, z) else z
 }
+# Location-specific comparators forecast every lag below the target lag. Keep
+# DelphiRF's own lag groups up to L - 1 and continue past its last group in
+# blocks as wide as its widest daily group (14 days) or one week.
+cover_lags_below_target <- function(groups, target_lag, block) {
+  bounds <- lapply(groups, parse_group)
+  keep <- vapply(bounds, function(b) b[[1]] <= target_lag - 1L, logical(1))
+  bounds <- lapply(bounds[keep], function(b) c(b[[1]], min(b[[2]], target_lag - 1L)))
+  start <- if (length(bounds)) max(vapply(bounds, `[[`, integer(1), 2L)) + 1L else 0L
+  while (start <= target_lag - 1L) {
+    bounds[[length(bounds) + 1L]] <- c(start, min(start + block - 1L, target_lag - 1L))
+    start <- start + block
+  }
+  vapply(bounds, function(b) if (b[[1]] == b[[2]]) as.character(b[[1]])
+         else paste0(b[[1]], "-", b[[2]]), character(1))
+}
+lag_groups <- cover_lags_below_target(lag_groups, as.integer(schedule$target_lag[[1]]),
+                                      if (temporal_resol == "weekly") 7L else 14L)
 
 location_files <- list.files(prepared_dir, pattern = "\\.(parquet|csv|csv\\.gz)$", full.names = TRUE)
-location_files <- location_files[!grepl("/(inventory|test_dates|genuine_rows|skipped_locations)\\.csv", location_files)]
+location_files <- location_files[!grepl("/(inventory|test_dates|genuine_rows|skipped_locations|cleaned_releases)\\.csv", location_files)]
 if (!length(location_files)) stop("No prepared triangles found in ", prepared_dir)
 all_data <- rbindlist(lapply(location_files, function(path) {
   d <- if (grepl("\\.parquet$", path)) {
     if (!requireNamespace("arrow", quietly = TRUE)) stop("Reading Parquet needs R package 'arrow'.")
     as.data.frame(arrow::read_parquet(path))
-  } else as.data.frame(data.table::fread(path))
+  } else as.data.frame(read_with_text_geo(path))
   d$reference_date <- as.Date(d$reference_date)
   d$report_date <- as.Date(d$report_date)
   d$target_date <- as.Date(d$target_date)
@@ -153,6 +205,11 @@ setorder(all_data, geo_value, report_date, reference_date)
 canonical_weekdays <- c("Mon", "Tue", "Wed", "Thurs", "Fri", "Sat", "Sun")
 add_weekday_groups <- function(frame, groups) {
   if (!length(groups)) return(frame)
+  # Every group is computed from the canonical columns before any is written,
+  # so a group labelled with a weekday name cannot overwrite a column that a
+  # later group still reads. The same groups define the reference-date (_ref)
+  # and report-date (_issue) weekday features.
+  indicators <- list()
   for (group_name in names(groups)) {
     members <- as.character(groups[[group_name]])
     for (axis in c("ref", "issue")) {
@@ -162,13 +219,42 @@ add_weekday_groups <- function(frame, groups) {
         stop("prepared triangle is missing canonical weekday column(s): ",
              paste(missing, collapse = ", "))
       }
-      frame[[paste0(group_name, "_", axis)]] <- as.integer(
+      indicators[[paste0(group_name, "_", axis)]] <- as.integer(
         rowSums(as.data.frame(frame)[, sources, drop = FALSE], na.rm = FALSE) > 0)
     }
   }
+  for (column in names(indicators)) frame[[column]] <- indicators[[column]]
   frame
 }
 all_data <- add_weekday_groups(all_data, weekday_groups)
+
+# Calendar indicators (weekday groups on the reference and report dates, and
+# week of month) that never vary carry no information. Screened twice: on the
+# prepared triangle's genuine observations, and again within each training
+# sample, where a further indicator can be constant.
+is_calendar_indicator <- function(columns) grepl("_(ref|issue)$", columns)
+constant_columns <- function(frame, columns) {
+  columns[vapply(columns, function(column) {
+    if (!(column %in% names(frame))) return(FALSE)
+    values <- frame[[column]]
+    values <- values[!is.na(values)]
+    length(unique(values)) < 2L
+  }, logical(1))]
+}
+calendar_candidates <- function() {
+  base <- DelphiRF:::create_params_list(all_data[0], lag_terms, temporal_resol)
+  grouped <- if (temporal_resol == "daily" && length(weekday_groups)) {
+    c(paste0(names(weekday_groups), "_ref"), paste0(names(weekday_groups), "_issue"))
+  } else character(0)
+  unique(c(base, grouped))[is_calendar_indicator(unique(c(base, grouped)))]
+}
+genuine_rows <- all_data[genuine_event == TRUE]
+constant_calendar_in_triangle <- constant_columns(as.data.frame(genuine_rows),
+                                                  calendar_candidates())
+if (length(constant_calendar_in_triangle)) {
+  message("Calendar indicators constant in the prepared triangle, excluded: ",
+          paste(constant_calendar_in_triangle, collapse = ", "))
+}
 
 model_params <- function(train) {
   base <- DelphiRF:::create_params_list(train, lag_terms, temporal_resol)
@@ -179,7 +265,11 @@ model_params <- function(train) {
     c(paste0(names(weekday_groups), "_ref"),
       paste0(names(weekday_groups), "_issue"))
   } else character(0)
-  unique(c(base, grouped))
+  params <- unique(c(base, grouped))
+  calendar <- params[is_calendar_indicator(params)]
+  excluded <- union(constant_calendar_in_triangle,
+                    constant_columns(as.data.frame(train), calendar))
+  setdiff(params, excluded)
 }
 target_column <- as.character(schedule$target_column[[1]])
 # DelphiRF's `smoothed_target` picks the response column: TRUE ->
@@ -197,10 +287,35 @@ if (!(target_column %in% names(all_data))) {
   stop("Schedule's target_column '", target_column, "' is not in the prepared data.")
 }
 
+# The prepared triangle is the one definition of each target's date:
+# prepare_triangle.R writes target_date = reference_date + L, and it is used
+# here as stored. A triangle that disagrees was built by an older version.
+rebuild <- paste0("Rebuild it with the current version: `autodelphirf prepare` ",
+                  "(or `autodelphirf run --archive ...`).")
+if (!("target_as_of_date" %in% names(schedule)) || all(is.na(schedule$target_as_of_date))) {
+  stop("the prepared schedule records no target_as_of_date. ", rebuild, call. = FALSE)
+}
+target_as_of <- max(as.Date(schedule$target_as_of_date), na.rm = TRUE)
+mismatched <- sum(all_data$target_date != all_data$reference_date +
+                    as.integer(schedule$target_lag[[1]]), na.rm = TRUE) +
+  sum(is.na(all_data$target_date))
+if (mismatched) {
+  stop(mismatched, " prepared row(s) have a target_date other than reference_date + ",
+       schedule$target_lag[[1]], " days; the prepared dataset is incompatible. ", rebuild,
+       call. = FALSE)
+}
+# Before the recorded as-of date reaches t + L the forward-filled value is
+# still provisional, so it is not a target (prepare_triangle.R already
+# withholds it; this keeps training independent of how the file was written).
+target_value_columns <- grep("^(log_)?value_target", names(all_data), value = TRUE)
+for (column in target_value_columns) {
+  set(all_data, which(all_data$target_date > target_as_of), column, NA)
+}
+
 # Raw profile rows, used only for similarity-weighted pooling routes.
 profile_rows <- NULL
 if ("Similarity-weighted DelphiRF" %in% requested_methods) {
-  raw_input <- fread(raw_path)
+  raw_input <- if (nzchar(constant_geo)) fread(raw_path) else read_with_text_geo(raw_path, geo_col)
   if (nzchar(constant_geo)) raw_input[[geo_col]] <- constant_geo
   if (!(geo_col %in% names(raw_input))) stop("--geo-col '", geo_col, "' is not a column of ", raw_path)
   profile_value <- as.numeric(raw_input[[value_col]])
@@ -270,7 +385,7 @@ add_fixed_effects <- function(train, test) {
   list(train = train, test = test, columns = columns)
 }
 
-independent_design <- function(train, base_params, columns, response) {
+independent_design <- function(train, base_params, columns, response, anchors) {
   # Prune the pooled design to a full-rank set of columns.
   #
   # The redundancy is NOT confined to the location indicators. Pooling every
@@ -281,16 +396,11 @@ independent_design <- function(train, base_params, columns, response) {
   # eligible for pruning too.
   #
   # Rank selection runs on exactly the rows revision_forecast will fit:
-  #   add_weights_related -> add_sqrtscale -> subset to selected columns
-  #   -> drop_na
-  # kept_bins take part in that drop_na even though they are not covariates,
-  # so the surviving row set cannot be reproduced without them.
+  #   add_weights_related -> subset to selected columns -> drop_na
   candidates <- c(base_params, columns)
-  prepared <- DelphiRF:::add_weights_related(as.data.frame(train))
-  scaled <- DelphiRF:::add_sqrtscale(prepared, sqrt(max(prepared$value_7dav, na.rm = TRUE)))
-  prepared <- scaled$data
+  prepared <- DelphiRF::add_weights_related(as.data.frame(train), anchors)
   selected <- unique(c("reference_date", "lag", "report_date", candidates,
-                       "value_slope_diff", "value_7dav_diff", scaled$kept_bins, response))
+                       "value_slope_diff", "value_7dav_diff", response))
   selected <- selected[selected %in% names(prepared)]
   frame <- prepared[stats::complete.cases(prepared[, selected, drop = FALSE]), , drop = FALSE]
   if (!nrow(frame)) return(candidates)
@@ -309,16 +419,45 @@ independent_design <- function(train, base_params, columns, response) {
 }
 
 fit_failures <- list()
+record_failure <- function(method, fold, group, pool_id, test_rows, reason, train_only) {
+  fit_failures[[length(fit_failures) + 1L]] <<- data.frame(
+    method = method, fold = as.integer(fold), group = as.character(group),
+    pool_id = as.character(pool_id), expected_test_rows = as.integer(test_rows),
+    error = reason, kind = if (train_only) "train_only" else "prediction",
+    stringsAsFactors = FALSE)
+  message("  [", method, " fold ", fold, " group ", group, " geo ", pool_id, "] ",
+          if (train_only) "train-only fit failed: " else "fit failed: ", reason)
+  NULL
+}
 
-fit_one <- function(train, test, method, fold, group, pool_id, observation_weights = NULL,
-                    params_list = NULL) {
-  if (nrow(train) < 10L || !nrow(test)) return(NULL)
+# Test rows DelphiRF could not forecast because a predictor is missing (for
+# example a lagged feature whose earlier reference date has no report). They
+# are recorded next to the fit failures rather than lost silently.
+dropped_test_rows <- list()
+record_dropped <- function(dropped, method, fold, group, pool_id) {
+  dropped <- as.data.frame(dropped)
+  dropped_test_rows[[length(dropped_test_rows) + 1L]] <<- data.frame(
+    method = method,
+    fold = if ("fold_id" %in% names(schedule)) schedule$fold_id[[fold]] else fold,
+    cutoff = as.Date(schedule$test_date[[fold]]), group = as.character(group),
+    pool_id = as.character(pool_id), dropped, stringsAsFactors = FALSE)
+}
+
+fit_one <- function(train, test, method, fold, group, pool_id, anchors,
+                    observation_weights = NULL, params_list = NULL, train_only = FALSE) {
+  if (!nrow(test)) return(NULL)
+  if (nrow(train) < 10L) {
+    return(record_failure(method, fold, group, pool_id, if (train_only) 0L else nrow(test),
+                          paste0("fewer than 10 training rows (", nrow(train), ")"), train_only))
+  }
   test_meta <- data.frame(
     geo_value = as.character(test$geo_value), reference_date = test$reference_date,
     report_date = test$report_date, lag = test$lag, target_date = test$target_date,
     stringsAsFactors = FALSE
   )
-  train <- DelphiRF:::add_weights_related(as.data.frame(train))
+  # Similarity weights compare each training row with its location's
+  # reporting context at this origin (one anchor per location and lag).
+  train <- DelphiRF::add_weights_related(as.data.frame(train), anchors)
   if (!is.null(observation_weights)) {
     weights <- as.numeric(observation_weights)
     if (length(weights) != nrow(train) || any(!is.finite(weights)) ||
@@ -343,15 +482,19 @@ fit_one <- function(train, test, method, fold, group, pool_id, observation_weigh
   if (is.null(alignment_params)) {
     alignment_params <- model_params(train)
   }
-  alignment_scale <- sqrt(max(train$value_7dav, na.rm = TRUE))
-  alignment_train <- DelphiRF:::add_sqrtscale(train, alignment_scale)
-  alignment_test <- DelphiRF:::add_sqrtscale_test(
-    as.data.frame(test), alignment_scale, alignment_train$kept_bins)
-  alignment_columns <- unique(c(alignment_params, alignment_train$kept_bins,
-                                "reference_date", "lag", "report_date"))
+  alignment_test <- as.data.frame(test)
+  alignment_columns <- unique(c(alignment_params, "reference_date", "lag", "report_date"))
   alignment_columns <- alignment_columns[alignment_columns %in% names(alignment_test)]
   aligned_test <- test[stats::complete.cases(alignment_test[, alignment_columns, drop = FALSE]), ]
-  key <- paste(method, "f", fold, "g", gsub("-", "_", group), "p", make.names(pool_id), sep = "_")
+  basic_columns <- c("reference_date", "lag", "report_date")
+  basic_test <- as.data.frame(test)[, basic_columns, drop = FALSE]
+  basic_aligned_test <- test[
+    stats::complete.cases(basic_test), , drop = FALSE]
+  # Calendar origin, rather than the schedule row number, is the stable model
+  # identity across an archive that grows over time.
+  origin_key <- format(as.Date(schedule$test_date[[fold]]), "%Y%m%d")
+  key <- paste(method, "origin", origin_key, "g", gsub("-", "_", group),
+               "p", make.names(pool_id), sep = "_")
   result <- tryCatch(
     DelphiRF::revision_forecast(
       train_data = as.data.frame(train), test_data = as.data.frame(test),
@@ -359,24 +502,34 @@ fit_one <- function(train, test, method, fold, group, pool_id, observation_weigh
       taus = experiment_taus, smoothed_target = smoothed_target, lagged_term_list = lag_terms,
       temporal_resol = temporal_resol, lambda = .1, gamma = .1, lp_solver = lp_solver,
       test_lag_group = group, geo = key, value_type = value_type,
+      working_scale = working_scale,
       model_save_dir = model_save_dir,
       indicator = "revroute_comparator", signal = method,
       training_end_date = as.character(schedule$test_date[[fold]]),
-      training_days = schedule$training_days[[fold]], train_models = TRUE,
-      make_predictions = TRUE,
+      training_days = schedule$training_days[[fold]],
+      train_models = identical(model_mode, "train"),
+      # A train-only fit saves the model without forecasting.
+      make_predictions = !train_only,
       model_backend = model_backend
     ), error = function(e) {
-      fit_failures[[length(fit_failures) + 1L]] <<- data.frame(
-        method = method, fold = as.integer(fold), group = as.character(group),
-        pool_id = as.character(pool_id), expected_test_rows = nrow(test),
-        error = conditionMessage(e), stringsAsFactors = FALSE
-      )
-      message("  [", method, " fold ", fold, " group ", group, " geo ",
-              pool_id, "] fit failed: ", conditionMessage(e))
-      NULL
+      record_failure(method, fold, group, pool_id, if (train_only) 0L else nrow(test),
+                     conditionMessage(e), train_only)
     }
   )
+  if (train_only) return(NULL)
+  dropped <- attr(result, "dropped_test_rows")
+  if (!is.null(dropped) && nrow(dropped)) record_dropped(dropped, method, fold, group, pool_id)
   if (is.null(result) || !nrow(result)) return(NULL)
+  tryCatch(collect_predictions(
+    result,
+    list(feature_complete = aligned_test, basic_complete = basic_aligned_test),
+    test_meta, method, fold),
+           error = function(e) record_failure(method, fold, group, pool_id, nrow(test),
+                                              conditionMessage(e), FALSE))
+}
+
+# Map DelphiRF's returned rows back to the test cases and keep every quantile.
+collect_predictions <- function(result, alignment_candidates, test_meta, method, fold) {
   # Include geo_value in the join key whenever the prediction frame carries it.
   # A per-location fit has one location so the date/lag triple is unique, but a
   # pooled fit spans every location and the triple repeats once per location --
@@ -388,11 +541,25 @@ fit_one <- function(train, test, method, fold, group, pool_id, observation_weigh
   # out across all of them. The returned frame is the test frame with
   # prediction columns appended, in the order of the filtered test frame.
   if (!("geo_value" %in% names(result))) {
-    if (nrow(result) != nrow(aligned_test)) {
-      stop("cannot align predictions to DelphiRF's complete test rows: returned ",
-           nrow(result), " rows for ", nrow(aligned_test), " complete test rows")
+    key_columns <- c("reference_date", "report_date", "lag")
+    same_ordered_keys <- function(candidate) {
+      if (nrow(result) != nrow(candidate)) return(FALSE)
+      result_keys <- lapply(as.data.frame(result)[, key_columns, drop = FALSE], as.character)
+      candidate_keys <- lapply(as.data.frame(candidate)[, key_columns, drop = FALSE], as.character)
+      identical(result_keys, candidate_keys)
     }
-    result$geo_value <- as.character(aligned_test$geo_value)
+    valid_candidates <- alignment_candidates[
+      vapply(alignment_candidates, same_ordered_keys, logical(1))]
+    if (length(valid_candidates) == 0L) {
+      expected <- paste(vapply(alignment_candidates, nrow, integer(1)), collapse = " or ")
+      stop("cannot align predictions to DelphiRF's complete test rows: returned ",
+           nrow(result), " rows for ", expected,
+           " valid test rows, or the ordered date/lag keys differ")
+    }
+    # Ordinary fits use feature_complete. Constant-response fits do not need
+    # predictors and therefore use DelphiRF's basic-key completeness path.
+    matched_test <- valid_candidates[[1L]]
+    result$geo_value <- as.character(matched_test$geo_value)
   } else {
     result$geo_value <- as.character(result$geo_value)
   }
@@ -402,10 +569,14 @@ fit_one <- function(train, test, method, fold, group, pool_id, observation_weigh
     stop("duplicated prediction rows after the test-metadata join for ", method)
   }
   out <- data.frame(
-    method = method, fold = fold, cutoff = as.Date(schedule$test_date[[fold]]),
+    method = method,
+    fold = if ("fold_id" %in% names(schedule)) schedule$fold_id[[fold]] else fold,
+    cutoff = as.Date(schedule$test_date[[fold]]),
     geo_value = as.character(result$geo_value), reference_date = result$reference_date,
     report_date = result$report_date, lag = result$lag, target_date = result$target_date,
-    prediction = result$predicted_tau0.5, stringsAsFactors = FALSE
+    prediction = result$predicted_tau0.5,
+    prediction_working = result$predicted_tau0.5_working,
+    stringsAsFactors = FALSE
   )
   # Carry EVERY fitted quantile, not only the median. `prediction` stays the
   # median so the existing point-comparator contract is unchanged, and each
@@ -419,6 +590,13 @@ fit_one <- function(train, test, method, fold, group, pool_id, observation_weigh
            "returned quantile columns disagree.")
     }
     out[[paste0("q", format(tau, trim = TRUE, scientific = FALSE))]] <- result[[source_col]]
+    working_col <- paste0(source_col, "_working")
+    if (!working_col %in% names(result)) {
+      stop("DelphiRF returned no column '", working_col, "'; reporting- and ",
+           "working-scale predictions must be emitted together.")
+    }
+    out[[paste0("q", format(tau, trim = TRUE, scientific = FALSE), "_working")]] <-
+      result[[working_col]]
   }
   out
 }
@@ -434,12 +612,49 @@ for (fold in fold_ids) {
   } else if (fold < nrow(schedule)) schedule$test_date[[fold + 1L]] else
     as.Date(schedule$experiment_end_date[[fold]])
   visible <- all_data[report_date < next_cutoff]
+  # The forecast context of this origin: for every location and lag, the
+  # latest row reported on or before the cutoff, whether or not its target has
+  # matured or it is a genuine release. Training weights are measured from it.
+  anchors <- DelphiRF::create_weight_anchors(as.data.frame(all_data), cutoff,
+                                             by = "geo_value")
   training <- visible[
-    report_date < cutoff & target_date < cutoff &
-      target_date > cutoff - schedule$training_days[[fold]] & genuine_event == TRUE
+    # The update ingests the current day's release before fitting. Targets
+    # observable on the origin date are therefore valid training outcomes;
+    # report-state feature rows released on the origin are also observable.
+    report_date <= cutoff & target_date <= cutoff &
+      target_date > cutoff - schedule$training_days[[fold]] &
+      !is.na(get(target_column)) & is.finite(value_7dav)
   ]
-  testing <- visible[report_date >= cutoff & report_date < next_cutoff & genuine_event == TRUE]
-  if (!nrow(training) || !nrow(testing)) next
+  if (genuine_training) training <- training[genuine_event == TRUE]
+  # A reference date whose trailing 7-day window is still incomplete has no
+  # 7-day-average features (DelphiRF leaves them missing), so it can neither
+  # train nor be forecast; build_cases drops the same rows.
+  testing <- visible[report_date >= cutoff & report_date < next_cutoff &
+                       is.finite(value_7dav)]
+  if (genuine_testing) testing <- testing[genuine_event == TRUE]
+  if (unresolved_only) {
+    # Unresolved: the stored target date is after the as-of date recorded at
+    # preparation (not the latest report seen, which can be earlier than it).
+    testing <- testing[target_date > target_as_of]
+    if (nrow(testing)) testing[, (target_column) := NA_real_]
+  }
+  if (!is.null(issued_forecasts) && nrow(testing)) {
+    issued <- copy(issued_forecasts)
+    issued[, cutoff := as.Date(cutoff)]
+    issued <- issued[cutoff == as.Date(schedule$test_date[[fold]])]
+    if (nrow(issued)) {
+      issued[, reference_date := as.Date(reference_date)]
+      issued[, report_date := as.Date(report_date)]
+      issued[, lag := as.integer(lag)]
+      issued[, geo_value := as.character(geo_value)]
+      testing <- testing[!issued, on = .(geo_value, reference_date, report_date, lag)]
+    }
+  }
+  if (!nrow(training)) next
+  # RevRoute persists every pool at its scheduled origin even when no report
+  # is released that day.  An empty test set therefore means train-only for
+  # RevRoute, while comparator methods with no test cases have nothing to do.
+  if (!nrow(testing) && !("RevRoute DelphiRF" %in% requested_methods)) next
 
   similarity_plan <- if ("Similarity-weighted DelphiRF" %in% requested_methods) {
     prospective_pooling_plan(
@@ -453,10 +668,15 @@ for (fold in fold_ids) {
     if (is.null(pool_assignments)) {
       stop("RevRoute DelphiRF requires --revroute-pools generated by the RevRoute stage.")
     }
-    current_fold <- fold
-    fold_pools <- pool_assignments[pool_assignments[["fold"]] == current_fold]
+    pool_cutoff <- as.Date(schedule$test_date[[fold]])
+    fold_pools <- if ("cutoff" %in% names(pool_assignments)) {
+      pool_assignments[as.Date(cutoff) == pool_cutoff]
+    } else {
+      pool_assignments[pool_assignments[["fold"]] == fold]
+    }
     if (!nrow(fold_pools)) stop("No RevRoute task pools for fold ", fold)
     test_tasks <- unique(testing[, .(geo_value = as.character(geo_value), lag = as.integer(lag))])
+    learned_pools <- copy(fold_pools)
     missing_tasks <- test_tasks[!fold_pools, on = .(geo_value, lag)]
     if (nrow(missing_tasks)) {
       fallback_rows <- lapply(seq_len(nrow(missing_tasks)), function(i) {
@@ -470,7 +690,9 @@ for (fold in fold_ids) {
       fold_pools <- unique(rbindlist(c(list(fold_pools), fallback_rows), fill = TRUE),
                            by = c("geo_value", "lag"))
     }
-    train_pooled <- merge(training, fold_pools[, .(geo_value, lag, pool)],
+    # Training rows come from learned pool members only (A.2.2: assigning an
+    # unrepresented task does not change the learned pools).
+    train_pooled <- merge(training, learned_pools[, .(geo_value, lag, pool)],
                           by = c("geo_value", "lag"), all.x = FALSE, all.y = FALSE)
     test_pooled <- merge(testing, fold_pools[, .(geo_value, lag, pool)],
                          by = c("geo_value", "lag"), all.x = FALSE, all.y = FALSE)
@@ -480,17 +702,34 @@ for (fold in fold_ids) {
       if (nrow(pool_train) < 10L) pool_train <- training[lag %in% unique(pool_test$lag)]
       if (nrow(pool_train) < 10L) pool_train <- training
       z <- fit_one(pool_train, pool_test, "RevRoute DelphiRF", fold, "pool",
-                   paste0("revroute_", pool_id))
+                   paste0("revroute_", pool_id), anchors = anchors)
       if (!is.null(z)) out[[length(out) + 1L]] <- z
+    }
+    # A real-time origin must leave a complete model set behind. Some learned
+    # pools have no forecast row in the archive yet; train those pools now so
+    # a later release can remain prediction-only instead of fitting a model
+    # after the origin at which its parameters were supposed to be frozen.
+    untested_pools <- setdiff(sort(unique(fold_pools$pool)),
+                              sort(unique(test_pooled$pool)))
+    for (pool_id in untested_pools) {
+      pool_train <- train_pooled[pool == pool_id]
+      pool_lags <- unique(fold_pools[pool == pool_id]$lag)
+      if (nrow(pool_train) < 10L) pool_train <- training[lag %in% pool_lags]
+      if (nrow(pool_train) < 10L) pool_train <- training
+      # revision_forecast takes a test frame even when predictions are
+      # disabled; a training row supplies it and is never forecast.
+      fit_one(pool_train, pool_train[1], "RevRoute DelphiRF", fold, "pool",
+              paste0("revroute_", pool_id), anchors = anchors, train_only = TRUE)
     }
   }
 
   if ("Global DelphiRF" %in% requested_methods) {
     fe <- add_fixed_effects(training, testing)
-    base_params <- model_params(DelphiRF:::add_weights_related(fe$train))
-    global_params <- independent_design(fe$train, base_params, fe$columns, target_column)
+    base_params <- model_params(fe$train)
+    global_params <- independent_design(fe$train, base_params, fe$columns, target_column,
+                                        anchors)
     z <- fit_one(fe$train, fe$test, "Global DelphiRF", fold, "all", "global",
-                 params_list = global_params)
+                 anchors = anchors, params_list = global_params)
     if (!is.null(z)) out[[length(out) + 1L]] <- z
   }
 
@@ -504,7 +743,8 @@ for (fold in fold_ids) {
       local_train <- train_group[geo_value == geo]
 
       if ("Naive DelphiRF" %in% requested_methods) {
-        z <- fit_one(local_train, test_geo, "Naive DelphiRF", fold, group, paste0("local_", geo))
+        z <- fit_one(local_train, test_geo, "Naive DelphiRF", fold, group, paste0("local_", geo),
+                     anchors = anchors)
         if (!is.null(z)) out[[length(out) + 1L]] <- z
       }
       if ("Similarity-weighted DelphiRF" %in% requested_methods) {
@@ -512,7 +752,8 @@ for (fold in fold_ids) {
         lag_value <- mean(bounds)
         sim_w <- route_weights(similarity_plan, geo, lag_value, source_geo)
         z <- fit_one(train_group, test_geo, "Similarity-weighted DelphiRF", fold, group,
-                     paste0("similarity_", geo), observation_weights = sim_w)
+                     paste0("similarity_", geo), anchors = anchors,
+                     observation_weights = sim_w)
         if (!is.null(z)) out[[length(out) + 1L]] <- z
       }
     }
@@ -520,8 +761,21 @@ for (fold in fold_ids) {
   message("DelphiRF comparators: fold ", fold, "/", nrow(schedule), " complete")
 }
 
-if (!length(out)) stop("No comparator predictions were produced -- check the schedule and prepared data.")
-result <- rbindlist(out, fill = TRUE)
+if (!length(out) && !unresolved_only) {
+  stop("No comparator predictions were produced -- check the schedule and prepared data.")
+}
+if (!length(out)) {
+  result <- data.table(
+    method = character(), fold = integer(), cutoff = as.Date(character()),
+    geo_value = character(), reference_date = as.Date(character()),
+    report_date = as.Date(character()), lag = integer(),
+    target_date = as.Date(character()), prediction = numeric())
+  for (tau in experiment_taus) {
+    result[[paste0("q", format(tau, trim = TRUE, scientific = FALSE))]] <- numeric()
+  }
+} else {
+  result <- rbindlist(out, fill = TRUE)
+}
 if (grepl("\\.gz$", output_path)) {
   fwrite(result, output_path, compress = "gzip")
 } else {
@@ -530,11 +784,25 @@ if (grepl("\\.gz$", output_path)) {
 message("Wrote ", nrow(result), " comparator rows to ", output_path)
 failure_table <- if (length(fit_failures)) rbindlist(fit_failures, fill = TRUE) else
   data.table(method = character(), fold = integer(), group = character(),
-             pool_id = character(), expected_test_rows = integer(), error = character())
+             pool_id = character(), expected_test_rows = integer(), error = character(),
+             kind = character())
 failure_path <- paste0(output_path, ".fit_failures.csv")
 fwrite(failure_table, failure_path)
-if (nrow(failure_table)) {
-  warning("DelphiRF completed with ", nrow(failure_table),
+dropped_table <- if (length(dropped_test_rows)) rbindlist(dropped_test_rows, fill = TRUE) else
+  data.table(method = character(), fold = integer(), cutoff = as.Date(character()),
+             group = character(), pool_id = character(), geo_value = character(),
+             reference_date = as.Date(character()), report_date = as.Date(character()),
+             lag = numeric(), missing_features = character(), reason = character())
+dropped_path <- paste0(output_path, ".dropped_test_rows.csv")
+fwrite(dropped_table, dropped_path)
+if (nrow(dropped_table)) {
+  message("DelphiRF left ", nrow(dropped_table), " test row(s) unforecast because a predictor ",
+          "is missing; details: ", dropped_path)
+}
+prediction_failures <- sum(failure_table$kind == "prediction")
+train_only_failures <- sum(failure_table$kind == "train_only")
+if (prediction_failures) {
+  warning("DelphiRF completed with ", prediction_failures,
           " failed fit(s); details: ", failure_path, call. = FALSE)
 }
 jsonlite::write_json(list(
@@ -545,12 +813,21 @@ jsonlite::write_json(list(
   package_version = as.character(utils::packageVersion("DelphiRF")),
   package_path = find.package("DelphiRF"),
   methods = requested_methods,
+  genuine_training = genuine_training,
+  genuine_testing = genuine_testing,
   model_backend = model_backend,
-  fit_status = if (nrow(failure_table)) "partial_failure" else "complete",
-  fit_failure_count = nrow(failure_table),
+  model_save_dir = model_save_dir,
+  model_mode = model_mode,
+  fit_status = if (prediction_failures) "partial_failure" else "complete",
+  fit_failure_count = prediction_failures,
+  train_only_failure_count = train_only_failures,
   fit_failures_file = failure_path,
   fit_failures = as.data.frame(failure_table),
+  dropped_test_row_count = nrow(dropped_table),
+  dropped_test_rows_by_reason = as.list(table(dropped_table$reason)),
+  dropped_test_rows_file = dropped_path,
   weekday_groups = weekday_groups,
-  effective_base_params = model_params(DelphiRF:::add_weights_related(as.data.frame(all_data))),
+  calendar_indicators_constant_in_triangle = I(constant_calendar_in_triangle),
+  effective_base_params = model_params(as.data.frame(all_data)),
   taus = experiment_taus
 ), paste0(output_path, ".provenance.json"), auto_unbox = TRUE, pretty = TRUE)

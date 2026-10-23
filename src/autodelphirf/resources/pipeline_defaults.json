@@ -1,8 +1,8 @@
 {
   "version": "autodelphirf-defaults",
   "status": "fixed design constants; not selected on outer-test outcomes",
-  "routing": {
-    "training_days": 189,
+  "red_routing": {
+    "note": "Settings of the optional RED comparator only. gamma is RED's routing bandwidth, not Delphi-RF's decay parameter (fixed at 0.1 in training).",
     "min_curve_episodes": 3,
     "spline_method": "pchip",
     "spline_method_note": "Use shape-preserving PCHIP interpolation for curve-template routing. spline_basis and spline_penalty apply only when spline_method is 'penalized_bspline'.",
@@ -11,30 +11,6 @@
     "spline_penalty": 0.001,
     "initial_lag_source": "minimum lag in immutable full prepared-stream metadata"
   },
-  "residual": {
-    "min_history": 100,
-    "trees": 300,
-    "min_samples_leaf": 5
-  },
-  "rr_delphirf": {
-    "cluster_max_rows": 3000,
-    "fit_max_rows": 4000,
-    "min_cluster_rows": 50,
-    "k_max_per_location": 18,
-    "min_process_releases": 3,
-    "qr_alpha": 0.001,
-    "include_location_effect": false,
-    "seed": 20260913,
-    "train_genuine_events_only": true,
-    "support_stop_after": 3,
-    "note": "Current RevRoute Delphi-RF clusters location-lag tasks from completed revision history, selects the finest Tukey structural-gap cut, and predicts by frozen task lookup. No silhouette, minimum-cluster-row rule, soft weighting, or prediction-time trajectory routing is used. fit_max_rows is only a numerical fitting cap; it does not determine the task partition."
-  },
-  "graph_fused_delphirf": {
-    "lambda_s": 0.001,
-    "lambda_f": 0.1,
-    "graph": "complete affinity-weighted graph within each prespecified lag group",
-    "tuning": "prespecified or training-only chronological validation; never random folds or outer-test outcomes"
-  },
   "calibration_reliability": {
     "minimum_history": 10,
     "adjacent_lag_radius": 1,
@@ -42,15 +18,6 @@
     "caution_cut": 0.7,
     "high_risk_cut": 0.9,
     "reference_policy": "completed pre-evaluation inner rolling origins only"
-  },
-  "process_monitor": {
-    "recent_days": 28,
-    "history_days": 84,
-    "minimum_recent_report_dates": 4,
-    "minimum_history_report_dates": 8,
-    "watch_threshold": 3.0,
-    "rediagnose_threshold": 5.0,
-    "epsilon_scale": 1e-08
   },
   "evaluation": {
     "early_lag_max": 14,

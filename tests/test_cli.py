@@ -8,6 +8,7 @@ needing R is exercised up to the R boundary and no further.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -42,12 +43,21 @@ def test_version_is_reported(capsys):
     assert __version__ in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("command", ["diagnose", "prepare", "run", "assess", "init"])
+@pytest.mark.parametrize("command", ["diagnose", "prepare", "run", "update", "assess", "init"])
 def test_every_subcommand_has_help(command, capsys):
     with pytest.raises(SystemExit) as exit_info:
         cli.main([command, "--help"])
     assert exit_info.value.code == 0
     assert capsys.readouterr().out.strip()
+
+
+def test_readme_raw_example_names_the_repository_archive_and_update_workspace():
+    root = Path(__file__).parents[1]
+    example = json.loads((root / "examples" / "my_archive.json").read_text())
+    assert (root / "my_archive.csv").is_file()
+    assert example["archive"] == "../my_archive.csv"
+    assert example["work_dir"] == "../autodelphirf_work/readme_example"
+    assert example["preprocessing"]["target_lag"] == 28
 
 
 # --- layer validation -----------------------------------------------------
@@ -169,13 +179,28 @@ def test_assess_cli_passes_both_directories_and_prints_the_report(tmp_path, caps
     assert str(output / "report" / "report.html") in capsys.readouterr().out
 
 
-def test_a_config_pointing_at_no_triangle_explains_what_was_expected(tmp_path, capsys):
+def test_a_config_pointing_at_no_prepared_dataset_explains_what_was_expected(tmp_path, capsys):
     config = tmp_path / "d.json"
     config.write_text(json.dumps({"name": "d", "prepared_dir": "input", "output_dir": "out",
                                   "prediction_layers": ["red"]}))
     (tmp_path / "input").mkdir()
     assert cli.main(["run", "--config", str(config), "--diagnosis-only"]) == 2
-    assert "no prepared triangles found" in capsys.readouterr().err
+    assert "was not prepared by AutoDelphiRF" in capsys.readouterr().err
+
+
+def test_an_external_triangle_is_refused_before_anything_is_written(tmp_path, capsys):
+    prepared = tmp_path / "input"
+    prepared.mkdir()
+    pd.DataFrame({"geo_value": ["aa"], "reference_date": ["2024-01-01"],
+                  "report_date": ["2024-01-02"], "lag": [1]}).to_csv(prepared / "aa.csv", index=False)
+    config = tmp_path / "d.json"
+    config.write_text(json.dumps({"name": "d", "prepared_dir": "input", "output_dir": "out",
+                                  "prediction_layers": ["baseline_null"]}))
+    assert cli.main(["run", "--config", str(config)]) == 2
+    error = capsys.readouterr().err
+    assert "Prepared triangles built elsewhere are not supported" in error
+    assert "autodelphirf prepare --archive" in error
+    assert not any((tmp_path / "out").rglob("*.csv*"))
 
 
 def test_wrong_column_names_are_reported_before_anything_is_written(tmp_path, capsys):
@@ -273,13 +298,18 @@ def test_malformed_lag_terms_are_reported(tmp_path, archive_csv, capsys):
 
 # --- init -----------------------------------------------------------------
 
-def test_init_writes_a_loadable_template(tmp_path, capsys):
+def test_init_writes_a_raw_archive_configuration_by_default(tmp_path, capsys):
     destination = tmp_path / "mine.json"
     assert cli.main(["init", "--name", "mine", "--output", str(destination)]) == 0
     payload = json.loads(destination.read_text())
     assert payload["name"] == "mine"
-    assert "mine" in payload["prepared_dir"]
-    assert "autodelphirf run --config" in capsys.readouterr().out
+    assert "mine" in payload["archive"]
+    assert "autodelphirf diagnose --raw-config" in capsys.readouterr().out
+
+
+def test_init_no_longer_offers_a_prepared_configuration(tmp_path):
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["init", "--kind", "prepared", "--name", "mine"])
 
 
 def test_init_can_write_a_raw_archive_configuration(tmp_path, capsys):
@@ -391,8 +421,9 @@ def test_raw_config_can_drive_the_complete_run(tmp_path, archive_csv, monkeypatc
             "model_methods": list(prediction_layers)}))
         return config_path
 
-    def fake_run(config, diagnosis_only=False):
+    def fake_run(config, diagnosis_only=False, post_assessment=True):
         called["run_config"] = config
+        called["post_assessment"] = post_assessment
         return {}
 
     monkeypatch.setattr(cli, "prepare_dataset", fake_prepare)
@@ -406,7 +437,10 @@ def test_raw_config_can_drive_the_complete_run(tmp_path, archive_csv, monkeypatc
     assert cli.main(["run", "--raw-config", str(config)]) == 0
     assert called["methods"] == ("baseline_null", "red")
     assert called["run_config"].name == "mine"
+    assert called["post_assessment"] is True
     assert prepared_config.is_file()
+    assert cli.main(["run", "--raw-config", str(config), "--no-post-assessment"]) == 0
+    assert called["post_assessment"] is False
 
 
 def test_a_missing_r_install_is_reported_as_guidance(tmp_path, archive_csv, monkeypatch, capsys):

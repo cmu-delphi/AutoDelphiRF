@@ -6,9 +6,29 @@ import pandas as pd
 import pytest
 
 from autodelphirf.post_assessment.run import assess_results, freeze_reliability_reference, sha256
+from autodelphirf.post_assessment import reporting
 from autodelphirf.post_assessment.reporting import (_early_lag_location_summary,
                                                      _location_quantile_summary)
 from autodelphirf.core.config import load_dataset_config, write_resolved_config
+
+
+def test_reporting_uses_a_headless_matplotlib_backend():
+    import matplotlib
+
+    assert reporting.plt.get_backend().lower() == "agg"
+    assert matplotlib.get_backend().lower() == "agg"
+
+
+def test_report_with_no_matured_outcomes_explains_the_pending_state(tmp_path):
+    """A real-time first origin can issue forecasts before any target matures."""
+    output = tmp_path / "report"
+
+    reporting.build_report(pd.DataFrame(), output, dataset_name="new-deployment")
+
+    report = (output / "report.html").read_text()
+    assert "new-deployment" in report
+    assert "No forecast outcomes are observable yet" in report
+    assert (output / "tables" / "forecast_evaluation_status.csv").is_file()
 
 
 def test_web_score_bands_weight_locations_equally_after_within_location_averaging():
@@ -17,7 +37,9 @@ def test_web_score_bands_weight_locations_equally_after_within_location_averagin
         "method": ["delphirf"] * 4,
         "geo_value": ["a", "a", "b", "b"],
         "absolute_error": [1.0, 3.0, 10.0, 14.0],
-        "wis": [2.0, 4.0, 20.0, 24.0],
+        "wis_reporting": [2.0, 4.0, 20.0, 24.0],
+        "relative_error_pct": [5.0, 7.0, 20.0, 24.0],
+        "relative_wis_pct": [6.0, 8.0, 22.0, 26.0],
     })
     summary = _location_quantile_summary(scored, ["lag", "method"])
     ae = summary[summary.metric.eq("ae")].iloc[0]
@@ -27,6 +49,7 @@ def test_web_score_bands_weight_locations_equally_after_within_location_averagin
     assert ae.q10 == pytest.approx(3.0)
     assert ae.q90 == pytest.approx(11.0)
     assert wis["median"] == pytest.approx(12.5)
+    assert set(summary.metric) == {"ae", "wis", "ae_pct", "wis_pct"}
 
 
 def test_early_lag_location_summary_reports_mean_and_sample_sd_through_day_14():
@@ -35,7 +58,9 @@ def test_early_lag_location_summary_reports_mean_and_sample_sd_through_day_14():
         "method": ["delphirf"] * 5,
         "geo_value": ["a", "a", "a", "b", "b"],
         "absolute_error": [1.0, 3.0, 100.0, 4.0, 8.0],
-        "wis": [2.0, 6.0, 200.0, float("nan"), float("nan")],
+        "wis_reporting": [2.0, 6.0, 200.0, float("nan"), float("nan")],
+        "relative_error_pct": [5.0, 7.0, 100.0, 8.0, 12.0],
+        "relative_wis_pct": [6.0, 10.0, 200.0, float("nan"), float("nan")],
     })
 
     summary = _early_lag_location_summary(scored)
@@ -47,6 +72,7 @@ def test_early_lag_location_summary_reports_mean_and_sample_sd_through_day_14():
     assert a_ae.n == 2 and a_ae.maximum_lag == 14
     assert b_ae["mean"] == pytest.approx(6.0)
     assert set(summary[summary.metric.eq("wis")].geo_value) == {"a"}
+    assert set(summary.metric) == {"ae", "wis", "ae_pct", "wis_pct"}
 
 
 def config_payload(tmp_path, results):
@@ -56,7 +82,7 @@ def config_payload(tmp_path, results):
         "name": "example",
         "prepared_dir": str(prepared),
         "output_dir": str(results),
-        "value_transform": "log1p",
+        "working_scale": "log_value",
         "model_methods": ["baseline_null", "delphirf"],
         "prediction_layers": ["baseline_null", "delphirf"],
         "comparator_methods": {"delphirf": "RevRoute DelphiRF"},
@@ -100,7 +126,7 @@ def test_resolved_config_round_trips_every_assessment_setting(tmp_path):
     loaded = load_dataset_config(snapshot)
     assert loaded == original
     raw = json.loads(snapshot.read_text())
-    assert raw["value_transform"] == "log1p"
+    assert raw["working_scale"] == "log_value"
     assert raw["comparator_quantile_template"] == "q{tau:g}"
 
 

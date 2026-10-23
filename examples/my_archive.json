@@ -1,0 +1,35 @@
+{
+  "_comment": "Runnable example for the repository's my_archive.csv. Paths are relative to this file.",
+  "name": "mydata",
+  "archive": "../my_archive.csv",
+  "work_dir": "../autodelphirf_work/readme_example",
+  "columns": {
+    "reference_date": "reference_date",
+    "report_date": "report_date",
+    "geo_value": "geo_value",
+    "values": [
+      "value"
+    ]
+  },
+  "value_type": "count",
+  "preprocessing": {
+    "target_lag": 28,
+    "confirm_target_lag": true,
+    "temporal_resolution": null,
+    "lag_terms": null,
+    "training_days": null,
+    "smoothed": null,
+    "min_location_rows": 100,
+    "triangle_format": "parquet"
+  },
+  "retraining": {
+    "first_origin_date": "2025-09-05",
+    "retrain_days": 30,
+    "start_date": null,
+    "end_date": null
+  },
+  "model_methods": [
+    "baseline_null",
+    "delphirf"
+  ]
+}

@@ -349,7 +349,10 @@ def test_results_view_is_the_focused_web_evaluation_not_the_full_report(html, sc
     assert "at least 80%" in html
     assert html.count('data-result-metric="ae"') == 1
     assert html.count('data-result-metric="wis"') == 1
+    assert html.count('data-result-scale="reported"') == 1
+    assert html.count('data-result-scale="percent"') == 1
     assert 'data-result-metric="ae">AE</button>' in html
+    assert 'data-result-scale="percent">Relative error (%)</button>' in html
     assert 'id="lag-score-chart"' in html
     assert 'id="lag-wis-chart"' not in html
     assert 'id="lag-ae-chart"' not in html
@@ -360,6 +363,10 @@ def test_results_view_is_the_focused_web_evaluation_not_the_full_report(html, sc
     assert "drawLagEvaluation();" in script
     assert "drawLocationEvaluation();" in script
     assert "drawEarlyLagCharts();" in script
+    assert "function activeResultMetric()" in script
+    assert "function sharedMetricAxis(rows)" in script
+    assert "yMax: sharedYAxis.maximum" in script
+    assert "relative error" in (html + script).lower()
     assert "raw scale" not in (html + script).lower()
 
 
@@ -729,3 +736,16 @@ def test_the_page_is_usable_at_phone_width(stylesheet):
 
 def test_reduced_motion_is_respected(stylesheet):
     assert "prefers-reduced-motion" in stylesheet
+
+
+def test_results_default_to_relative_error_shown_before_the_score(html, script):
+    display = html.index('aria-label="Evaluation display"')
+    score = html.index('aria-label="Evaluation score"')
+    assert display < score
+    assert 'class="active" data-result-scale="percent">Relative error (%)</button>' in html
+    assert 'class="active" data-result-scale="reported"' not in html
+    assert "let resultDisplayScale = 'percent';" in script
+    note = ("Percentages show each error relative to the size of the later target value, "
+            "so errors at locations of different sizes can be compared.")
+    assert note in html and note in script
+    assert "+1 convention" not in html and "+1 convention" not in script

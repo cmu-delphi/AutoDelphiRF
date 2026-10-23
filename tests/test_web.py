@@ -111,7 +111,7 @@ def session(tmp_path):
 
 @pytest.fixture
 def archive_bytes():
-    return archive_frame(days=120, max_lag=30).to_csv(index=False).encode()
+    return archive_frame(days=120, max_lag=70).to_csv(index=False).encode()
 
 
 def test_storing_an_archive_reports_its_columns_and_a_preview(session, archive_bytes):

@@ -169,6 +169,11 @@ class PreparationSpec:
     #: Also write the cleaned releases R passes to DelphiRF (cleaned_releases.csv),
     #: for checking that Python and R apply the same cleaning rules.
     write_cleaned_releases: bool = False
+    #: Train on, and forecast and score, only rows with a release actually
+    #: reported at that lag (DelphiRF's ``genuine_event``). False keeps rows the
+    #: daily grid carries forward; predictions record ``genuine_event`` either way.
+    genuine_training: bool = True
+    genuine_testing: bool = True
 
     def to_r_spec(self) -> dict:
         """The JSON handed to the R bridge (paths as strings, no provenance)."""
@@ -360,7 +365,9 @@ def build_spec(name: str, raw_csv: Path, output_dir: Path, *, reference_col: str
                weekday_groups: dict | None = None,
                confirm_target_lag: bool = False,
                as_of_date: str | None = None,
-               smoothed_target: bool | None = None) -> PreparationSpec:
+               smoothed_target: bool | None = None,
+               genuine_training: bool = True,
+               genuine_testing: bool = True) -> PreparationSpec:
     """Diagnose the archive and resolve every preprocessing argument.
 
     A keyword left at ``None`` is diagnosed from the archive; a keyword given
@@ -370,6 +377,9 @@ def build_spec(name: str, raw_csv: Path, output_dir: Path, *, reference_col: str
     """
     if value_type not in VALUE_TYPES:
         raise PreparationError(f"value_type must be one of {VALUE_TYPES}, got {value_type!r}")
+    for flag, value in (("genuine_training", genuine_training), ("genuine_testing", genuine_testing)):
+        if not isinstance(value, bool):
+            raise PreparationError(f"{flag} must be true or false, got {value!r}")
     if value_type == "fraction" and len(value_cols) not in (1, 2):
         raise PreparationError(
             "a fraction signal needs either one precomputed rate column or two columns, "
@@ -512,6 +522,7 @@ def build_spec(name: str, raw_csv: Path, output_dir: Path, *, reference_col: str
         experiment_end_date=experiment_end_date, triangle_format=triangle_format,
         min_location_rows=int(min_location_rows),
         as_of_date=None if as_of_date is None else str(pd.Timestamp(as_of_date).date()),
+        genuine_training=genuine_training, genuine_testing=genuine_testing,
         overrides=tuple(dict.fromkeys(overrides)),
         diagnosis={**diagnosis, "user_confirmed_target_lag": bool(confirm_target_lag),
                    "final_target_lag": resolved_lag})
@@ -602,8 +613,8 @@ def write_dataset_config(spec: PreparationSpec, config_path: Path,
         "prepared_dir": relative(spec.output_dir),
         "output_dir": relative(spec.output_dir.parent / "results"),
         "schedule_file": "test_dates.csv",
-        "genuine_training": True,
-        "genuine_testing": True,
+        "genuine_training": spec.genuine_training,
+        "genuine_testing": spec.genuine_testing,
         "model_methods": list(prediction_layers),
         "prediction_layers": list(prediction_layers),
         "method_params": {},
@@ -647,6 +658,8 @@ def prepare_dataset(spec: PreparationSpec, *, prediction_layers: tuple[str, ...]
         "raw_archive_state": _archive_identity(spec.raw_csv),
         "resolved_preprocessing": spec.to_r_spec(),
         "user_overrides": list(spec.overrides),
+        "case_selection": {"genuine_training": spec.genuine_training,
+                           "genuine_testing": spec.genuine_testing},
         "diagnosis": spec.diagnosis,
         # Both stages' cleaning audits. Their retained rows differ by scope
         # (lag bound, as-of date, experiment window), which each records.

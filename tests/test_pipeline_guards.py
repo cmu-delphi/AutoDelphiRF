@@ -229,9 +229,11 @@ def test_genuine_event_filtering_keeps_exactly_the_genuine_rows():
     filtered = build_cases(prepared, schedule, True)
     unfiltered = build_cases(prepared, schedule, False)
     assert len(unfiltered) == 6 and len(filtered) == 3
-    # build_cases does not carry genuine_event into its output, so identity is
-    # checked on the report dates that survived.
     assert set(filtered.report_date) == set(prepared[prepared.genuine_event].report_date)
+    # Every case records whether it came from a real release, so an unfiltered
+    # run can still be evaluated on the genuine rows alone.
+    assert filtered.genuine_event.all()
+    assert unfiltered.genuine_event.tolist() == prepared.genuine_event.tolist()
 
 
 def test_a_missing_genuine_event_flag_is_treated_as_not_genuine():
@@ -249,7 +251,8 @@ def test_a_triangle_without_a_genuine_event_column_is_not_filtered_away():
         log_value_target_7dav=1.0)
     schedule = schedule_frame(test_date=[pd.Timestamp("2024-01-01")],
                               experiment_end_date=[pd.Timestamp("2024-02-01")])
-    assert len(build_cases(prepared, schedule, True)) == 4
+    cases = build_cases(prepared, schedule, True)
+    assert len(cases) == 4 and cases.genuine_event.isna().all()
 
 
 def test_rows_with_no_available_target_value_remain_forecast_cases():

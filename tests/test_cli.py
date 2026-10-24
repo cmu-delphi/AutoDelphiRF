@@ -290,6 +290,36 @@ def test_a_fraction_signal_accepts_one_precomputed_rate_column(
     assert captured["spec"].value_cols == ("value",)
 
 
+@pytest.mark.parametrize("genuine_testing", [True, False])
+def test_raw_config_sets_genuine_testing_for_the_run(tmp_path, archive_csv, monkeypatch,
+                                                     genuine_testing):
+    """The raw config's case selection reaches the dataset JSON and preparation.json."""
+    def fake_bridge(spec, on_output=None):
+        spec.output_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr("autodelphirf.pre_diagnosis.preparation.run_r_bridge", fake_bridge)
+    config = tmp_path / "raw.json"
+    config.write_text(json.dumps({
+        "name": "sel", "archive": str(archive_csv), "work_dir": "work",
+        "preprocessing": {"target_lag": 21}, "genuine_testing": genuine_testing}))
+    assert cli.main(["prepare", "--raw-config", str(config)]) == 0
+    dataset = json.loads((tmp_path / "work" / "sel.json").read_text())
+    assert dataset["genuine_testing"] is genuine_testing
+    assert dataset["genuine_training"] is True
+    recorded = json.loads((tmp_path / "work" / "sel" / "preparation.json").read_text())
+    assert recorded["case_selection"] == {"genuine_training": True,
+                                          "genuine_testing": genuine_testing}
+
+
+def test_raw_config_rejects_a_non_boolean_genuine_testing(tmp_path, archive_csv, capsys):
+    config = tmp_path / "raw.json"
+    config.write_text(json.dumps({"name": "sel", "archive": str(archive_csv),
+                                  "preprocessing": {"target_lag": 21},
+                                  "genuine_testing": "false"}))
+    assert cli.main(["prepare", "--raw-config", str(config)]) == 2
+    assert "genuine_testing must be true or false" in capsys.readouterr().err
+
+
 def test_malformed_lag_terms_are_reported(tmp_path, archive_csv, capsys):
     assert cli.main(["prepare", "--archive", str(archive_csv), "--name", "d",
                      "--lag-terms", "7,fourteen", "--out", str(tmp_path / "w")]) == 2

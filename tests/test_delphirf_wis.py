@@ -169,3 +169,38 @@ def test_scores_and_scales_match_delphirf_exactly(tmp_path):
     np.testing.assert_allclose(wis(quantiles, truth), delphirf["wis"], rtol=1e-12)
     for scale in ("log_value", "log_ratio"):
         np.testing.assert_allclose(to_reporting_scale(working, scale), delphirf[scale], rtol=1e-12)
+
+
+def test_every_method_keeps_each_case_genuine_event_label():
+    """Wide-to-long conversion must carry the release label with its own case."""
+    labels = [True, False, False, True, False]
+    wide = pd.DataFrame({
+        "fold": [1] * 5, "cutoff": pd.to_datetime(["2024-01-01"] * 5),
+        "geo_value": ["a", "b", "c", "d", "e"],
+        "reference_date": pd.to_datetime(["2023-12-31", "2023-12-30", "2023-12-29",
+                                          "2023-12-28", "2023-12-27"]),
+        "report_date": pd.to_datetime(["2024-01-01"] * 5),
+        "target_date": pd.to_datetime(["2024-01-07"] * 5), "lag": [1, 2, 3, 4, 5],
+        "truth": np.log1p([20.0, 30.0, 40.0, 50.0, 60.0]), "Null": np.log1p([10.0] * 5),
+        "genuine_event": labels})
+    methods = {"delphirf": "RevRoute DelphiRF", "naive_delphirf": "Naive DelphiRF"}
+    for offset, method in enumerate(methods):
+        values = np.array([15.0, np.nan, 25.0, 35.0, 45.0]) + offset   # one unavailable case
+        wide[method] = values
+        wide[f"{method}_working"] = np.log1p(values)
+        for tau in ROUTED_TAUS:
+            wide[f"{method}_tau{tau:g}"] = values
+            wide[f"{method}_tau{tau:g}_working"] = np.log1p(values)
+    config = SimpleNamespace(
+        name="example", working_scale="log_value",
+        prediction_layers=("baseline_null", *methods), comparator_columns={},
+        comparator_methods=methods, comparator_quantile_template="q{tau:g}")
+    result = standardize_predictions(wide, config)
+    expected = dict(zip(wide.geo_value, labels))
+    assert set(result.method) == {"baseline_null", *methods}
+    for method, rows in result.groupby("method"):
+        assert len(rows) == 5, method
+        assert rows.genuine_event.tolist() == [expected[g] for g in rows.geo_value], method
+    # An unavailable forecast keeps its label too.
+    missing = result[~result.model_available.astype(bool)]
+    assert len(missing) == 2 and not missing.genuine_event.any()

@@ -84,9 +84,13 @@ def build_cases(prepared: pd.DataFrame, schedule: pd.DataFrame,
         visible["truth"] = pd.to_numeric(visible[target], errors="coerce")
         # Null carries forward the provisional value Y_itl on the target's scale.
         visible["Null"] = visible[provisional].astype(float)
-        rows.append(visible[KEYS + ["truth", "Null"]])
+        # Whether a release was actually reported at this lag (False for a value
+        # carried forward by the grid), so evaluation can always be split by it.
+        visible["genuine_event"] = (visible.genuine_event.fillna(False).astype(bool)
+                                    if "genuine_event" in visible else pd.NA)
+        rows.append(visible[KEYS + ["truth", "Null", "genuine_event"]])
     if not rows:
-        return pd.DataFrame(columns=KEYS + ["truth", "Null"])
+        return pd.DataFrame(columns=KEYS + ["truth", "Null", "genuine_event"])
     return pd.concat(rows, ignore_index=True)
 
 
@@ -218,6 +222,7 @@ def _method_rows(wide: pd.DataFrame, method: str, point: np.ndarray, quantiles: 
     null_working = (frame["Null"].to_numpy(float) if "Null" in frame else truth_working)
     provisional = _reporting(null_working, working_scale)
     out = {key: (frame[key].to_numpy() if key in frame else None) for key in KEYS}
+    out["genuine_event"] = frame["genuine_event"].to_numpy() if "genuine_event" in frame else None
     out.update(dataset=config.name, working_scale=working_scale,
                prediction_scale="reporting", method=method, truth=truth_raw, prediction=point_raw,
                absolute_error=np.abs(truth_raw - point_raw), has_distribution=has_distribution)

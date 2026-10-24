@@ -72,7 +72,8 @@ def _load_raw_config(arguments: argparse.Namespace) -> argparse.Namespace:
     if not isinstance(raw, dict):
         raise ValueError("raw dataset config must contain a JSON object")
     allowed = {"name", "archive", "work_dir", "columns", "value_type",
-               "preprocessing", "retraining", "model_methods"}
+               "preprocessing", "retraining", "model_methods",
+               "genuine_training", "genuine_testing"}
     unknown = {key for key in raw if not key.startswith("_")}.difference(allowed)
     if unknown:
         raise ValueError(f"unknown raw dataset config fields: {sorted(unknown)}")
@@ -143,6 +144,11 @@ def _load_raw_config(arguments: argparse.Namespace) -> argparse.Namespace:
     arguments.start_date = retraining.get("start_date")
     arguments.end_date = retraining.get("end_date")
     arguments.layers = _layers(",".join(methods))
+    for flag in ("genuine_training", "genuine_testing"):
+        value = raw.get(flag, True)
+        if not isinstance(value, bool):
+            raise ValueError(f"raw dataset config {flag} must be true or false")
+        setattr(arguments, flag, value)
     return arguments
 
 
@@ -268,7 +274,9 @@ def _spec_from_arguments(arguments: argparse.Namespace):
         end_date=arguments.end_date, triangle_format=arguments.triangle_format,
         min_location_rows=arguments.min_location_rows,
         weekday_groups=getattr(arguments, "weekday_groups", None),
-        as_of_date=getattr(arguments, "as_of_date", None))
+        as_of_date=getattr(arguments, "as_of_date", None),
+        genuine_training=getattr(arguments, "genuine_training", True),
+        genuine_testing=getattr(arguments, "genuine_testing", True))
 
 
 def _report_diagnosis(diagnosis: dict) -> None:
@@ -380,7 +388,8 @@ def _apply_frozen_update_settings(arguments: argparse.Namespace) -> argparse.Nam
     if not preparation.is_file() or not contract.is_file():
         raise FileNotFoundError(
             "returning-user update needs an earlier completed run in the configured work_dir")
-    resolved = json.loads(preparation.read_text())["resolved_preprocessing"]
+    recorded = json.loads(preparation.read_text())
+    resolved = recorded["resolved_preprocessing"]
     frozen = json.loads(contract.read_text())["settings"]
     arguments.target_lag = int(frozen["ref_lag"])
     arguments.confirm_target_lag = True
@@ -397,6 +406,16 @@ def _apply_frozen_update_settings(arguments: argparse.Namespace) -> argparse.Nam
     # they were originally detected or chosen by the user.
     arguments.weekday_groups = iso_weekday_groups(frozen.get("weekday_groups") or {})
     arguments.weekday_groups_source = resolved.get("weekday_groups_source")
+    # Case selection is frozen too; a preparation that predates the record used
+    # the defaults (both True).
+    selection = recorded.get("case_selection", {})
+    for flag in ("genuine_training", "genuine_testing"):
+        frozen_value = bool(selection.get(flag, True))
+        given = getattr(arguments, flag, frozen_value)
+        if given != frozen_value:
+            raise ValueError(f"{flag} is frozen at {frozen_value} by the first run; "
+                             f"the update config says {given}")
+        setattr(arguments, flag, frozen_value)
     return arguments
 
 

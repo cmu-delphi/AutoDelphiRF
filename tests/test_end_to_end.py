@@ -269,3 +269,121 @@ def test_a_csv_triangle_runs_the_same_as_a_parquet_one(tmp_path):
     frame = load_prepared_triangles(config.prepared_dir)
     assert len(frame) > 0
     assert {"geo_value", "reference_date", "report_date", "lag"} <= set(frame.columns)
+
+
+def sparse_release_archive(days, locations=("aa", "bb"), max_lag=30, halflife=7.0):
+    """An archive where about one release in three is missing.
+
+    The missing releases are staggered across reference dates, so every lag
+    still has actual releases elsewhere, and the daily grid carries the
+    previous value forward on the missing (reference date, report date) pairs.
+    Lag 0 is always reported.
+    """
+    complete = archive_frame(days=days, max_lag=max_lag, locations=locations, halflife=halflife)
+    lag = (complete.report_date - complete.reference_date).dt.days
+    offset = (complete.reference_date - complete.reference_date.min()).dt.days
+    keep = lag.eq(0) | ((offset + lag) % 3).ne(1)
+    return complete[keep].copy()
+
+
+def genuine_raw_config(path, archive, work, genuine_testing, methods, **retraining):
+    path.write_text(json.dumps({
+        "name": "carried",
+        "archive": str(archive), "work_dir": str(work),
+        "columns": {"reference_date": "reference_date", "report_date": "report_date",
+                    "geo_value": "geo_value", "values": ["value"]},
+        "value_type": "count",
+        "preprocessing": {"target_lag": 14, "training_days": 60, "triangle_format": "csv"},
+        "retraining": {"retrain_days": 30, **retraining},
+        "genuine_training": True, "genuine_testing": genuine_testing,
+        "model_methods": methods,
+    }, indent=2))
+    return path
+
+
+@requires_delphirf
+def test_genuine_testing_false_forecasts_carried_forward_rows_and_labels_them(tmp_path):
+    archive = tmp_path / "archive.csv"
+    raw = sparse_release_archive(days=150)
+    raw.to_csv(archive, index=False)
+    work = tmp_path / "work"
+    methods = ["baseline_null", "naive_delphirf", "global_delphirf"]
+    config = genuine_raw_config(tmp_path / "raw.json", archive, work, False, methods,
+                                start_date="2022-03-15", end_date="2022-04-14")
+    assert cli.main(["run", "--raw-config", str(config), "--no-post-assessment"]) == 0
+    results = work / "results"
+    predictions = pd.read_csv(results / "predictions.csv.gz")
+    predictions["genuine_event"] = predictions.genuine_event.astype(bool)
+
+    # Both kinds of case are forecast.
+    assert set(predictions.genuine_event) == {True, False}
+    # Carried-forward cases get real forecasts from every model, not placeholders.
+    carried = predictions[~predictions.genuine_event & predictions.method.ne("baseline_null")]
+    assert carried.model_available.astype(bool).all()
+    assert carried.prediction.notna().all() and carried["q0.5"].notna().all()
+    # Every method forecasts exactly the same genuine and carried-forward cases.
+    counts = predictions.groupby(["method", "genuine_event"]).size().unstack()
+    assert set(counts.index) == set(methods)
+    assert (counts.nunique() == 1).all() and counts.notna().all().all()
+
+    # The ledger keeps each forecast's label.
+    keys = ["method", "geo_value", "reference_date", "report_date", "lag"]
+    ledger = pd.read_csv(results / "forecast_ledger.csv.gz")
+    joined = predictions.merge(ledger, on=keys, suffixes=("", "_ledger"), validate="one_to_one")
+    assert len(joined) == len(predictions)
+    assert (joined.genuine_event == joined.genuine_event_ledger.astype(bool)).all()
+
+    # Filtering on the label leaves only actual releases, i.e. rows of the raw archive.
+    released = set(zip(raw.geo_value, raw.reference_date.dt.strftime("%Y-%m-%d"),
+                       raw.report_date.dt.strftime("%Y-%m-%d")))
+    def case_ids(frame):
+        return set(zip(frame.geo_value, pd.to_datetime(frame.reference_date).dt.strftime("%Y-%m-%d"),
+                       pd.to_datetime(frame.report_date).dt.strftime("%Y-%m-%d")))
+    genuine = predictions[predictions.genuine_event]
+    assert case_ids(genuine) <= released
+    assert not case_ids(predictions[~predictions.genuine_event]) & released
+
+
+@requires_delphirf
+def test_update_keeps_genuine_testing_false_frozen(tmp_path, capsys):
+    archive = tmp_path / "archive.csv"
+    complete = sparse_release_archive(days=180, locations=("aa",))
+    initial_as_of = pd.Timestamp("2022-05-15")
+    later_release = pd.Timestamp("2022-05-20")
+    operational = complete[complete.report_date.le(initial_as_of)
+                           | complete.report_date.eq(later_release)]
+    work = tmp_path / "work"
+    config = genuine_raw_config(tmp_path / "raw.json", archive, work, False,
+                                ["baseline_null", "naive_delphirf"],
+                                first_origin_date=str(initial_as_of.date()))
+    results = work / "results"
+
+    operational[operational.report_date.le(initial_as_of)].to_csv(archive, index=False)
+    assert cli.main(["update", "--raw-config", str(config),
+                     "--as-of-date", str(initial_as_of.date())]) == 0
+    before = pd.read_csv(results / "forecast_ledger.csv.gz")
+
+    operational.to_csv(archive, index=False)
+    assert cli.main(["update", "--raw-config", str(config),
+                     "--as-of-date", str(later_release.date())]) == 0
+    # The setting stays false in every record of the deployment.
+    assert json.loads((work / "carried.json").read_text())["genuine_testing"] is False
+    assert json.loads((work / "carried" / "preparation.json").read_text())[
+        "case_selection"]["genuine_testing"] is False
+    # Newly appended forecasts keep their labels, including carried-forward rows.
+    after = pd.read_csv(results / "forecast_ledger.csv.gz")
+    assert len(after) > len(before)
+    keys = ["method", "cutoff", "geo_value", "reference_date", "report_date", "lag"]
+    new = after.merge(before[keys], on=keys, how="left", indicator=True)
+    new = new[new._merge.eq("left_only")]
+    assert len(new) and new.genuine_event.notna().all()
+    assert not new.genuine_event.astype(bool).all()
+
+    # Switching the update config back to true is refused.
+    genuine_raw_config(config, archive, work, True, ["baseline_null", "naive_delphirf"],
+                       first_origin_date=str(initial_as_of.date()))
+    capsys.readouterr()
+    assert cli.main(["update", "--raw-config", str(config),
+                     "--as-of-date", str(later_release.date())]) != 0
+    assert "genuine_testing is frozen at False" in capsys.readouterr().err
+    assert pd.read_csv(results / "forecast_ledger.csv.gz").shape == after.shape

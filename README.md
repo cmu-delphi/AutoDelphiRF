@@ -240,6 +240,20 @@ automatic detection. Run the complete analysis with:
 autodelphirf run --raw-config mydata-raw.json
 ```
 
+Two top-level fields choose which rows are used:
+
+- `"genuine_training": true` trains only on actual releases, the rows where a
+  value was reported at that lag.
+- `"genuine_testing"` chooses the rows that are forecast and scored. `true`
+  forecasts only actual releases; `false` also forecasts the rows the daily
+  grid carries forward from an earlier release.
+
+Both default to `true`. Every prediction includes a `genuine_event` column
+(`true` for an actual release), so a run with `"genuine_testing": false` can
+later be evaluated on actual releases, on carried-forward rows, or on both.
+The choice is recorded in `preparation.json` and stays fixed for later
+`autodelphirf update` runs.
+
 Paths inside the raw configuration are resolved relative to the JSON file.
 Every analysis starts from a raw revision archive. `autodelphirf prepare` (or
 `run --archive`) builds the prepared triangle through DelphiRF and writes a

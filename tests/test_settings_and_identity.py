@@ -295,6 +295,8 @@ def test_no_post_assessment_writes_evaluated_predictions_and_stops(tmp_path):
     scored = predictions[predictions.truth.notna()]
     assert set(scored.method) == {"baseline_null", "naive_delphirf"}
     assert scored[["absolute_error", "wis_reporting", "relative_error_pct"]].notna().all().all()
+    # Each prediction records whether its case is a real release, for split evaluation.
+    assert predictions.genuine_event.notna().all() and predictions.genuine_event.astype(bool).all()
     manifest = json.loads((results / "run_manifest.json").read_text())
     assert manifest["post_assessment"] is False
     # Ready for a later `autodelphirf update`: deployment origin and issued forecasts.

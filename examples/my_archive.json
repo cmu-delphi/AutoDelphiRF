@@ -30,6 +30,7 @@
   },
   "genuine_training": true,
   "genuine_testing": true,
+  "revroute_min_pool_rows": 200,
   "model_methods": [
     "baseline_null",
     "delphirf"

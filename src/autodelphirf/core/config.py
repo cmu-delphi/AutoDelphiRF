@@ -34,6 +34,11 @@ class DatasetConfig:
     # Independent controls for DelphiRF model fitting and forecast cases.
     genuine_training: bool
     genuine_testing: bool
+    # Smallest number of training rows a RevRoute pool may have; smaller pools
+    # are merged into their nearest neighbouring pool. 0 keeps the pools as
+    # the similarity search builds them. Preparation always writes it; a
+    # dataset file without it predates the option and ran with no minimum.
+    revroute_min_pool_rows: int
     prediction_layers: tuple[str, ...]
     comparator_file: Path | None
     comparator_columns: dict[str, str]
@@ -95,11 +100,15 @@ def load_dataset_config(path: Path) -> DatasetConfig:
                         ("genuine_testing", genuine_testing)):
         if not isinstance(value, bool):
             raise ValueError(f"{name} must be true or false")
+    min_pool_rows = raw.get("revroute_min_pool_rows", 0)
+    if isinstance(min_pool_rows, bool) or not isinstance(min_pool_rows, int) or min_pool_rows < 0:
+        raise ValueError("revroute_min_pool_rows must be a nonnegative integer")
     return DatasetConfig(
         name=raw["name"], prepared_dir=resolve(raw["prepared_dir"]),
         output_dir=resolve(raw["output_dir"]), schedule_file=raw.get("schedule_file", "test_dates.csv"),
         working_scale=_working_scale_field(raw), initial_lag=raw.get("initial_lag"),
         genuine_training=genuine_training, genuine_testing=genuine_testing,
+        revroute_min_pool_rows=min_pool_rows,
         prediction_layers=tuple(raw.get("model_methods", raw.get("prediction_layers", ()))),
         comparator_file=resolve(raw.get("comparator_file")),
         comparator_columns=dict(raw.get("comparator_columns", {})),
@@ -142,6 +151,7 @@ def write_resolved_config(config: DatasetConfig, path: Path) -> Path:
         "initial_lag": config.initial_lag,
         "genuine_training": config.genuine_training,
         "genuine_testing": config.genuine_testing,
+        "revroute_min_pool_rows": config.revroute_min_pool_rows,
         "model_methods": list(config.prediction_layers),
         "prediction_layers": list(config.prediction_layers),
         "comparator_file": relative(config.comparator_file),

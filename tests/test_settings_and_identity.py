@@ -56,7 +56,7 @@ def test_revroute_trajectories_use_the_targets_smoothing_level(tmp_path, monkeyp
     schedule = pd.DataFrame({"test_date": pd.to_datetime(["2022-03-01"]),
                              "training_days": [180], "target_lag": [14],
                              "target_column": ["log_value_target"]})
-    pooling_plan.learn_task_pools(pd.DataFrame(), schedule, tmp_path / "pools.csv")
+    pooling_plan.learn_task_pools(pd.DataFrame(), schedule, tmp_path / "pools.csv", min_pool_rows=0)
     assert seen["target_column"] == "log_value_target"
     assert seen["value_column"] == "log_value_raw"
 
@@ -97,7 +97,8 @@ def test_preserved_pools_keep_leading_zeros(tmp_path, monkeypatch):
     schedule = pd.DataFrame({"test_date": pd.to_datetime(["2026-01-02", "2026-01-09"]),
                              "training_days": [30, 30], "target_lag": [28, 28],
                              "target_column": ["target", "target"]})
-    pooling_plan.learn_task_pools(pd.DataFrame(), schedule, output, preserve_existing=True)
+    pooling_plan.learn_task_pools(pd.DataFrame(), schedule, output, min_pool_rows=0,
+                                  preserve_existing=True)
     assert read_csv(output).geo_value.tolist() == ["01", "06"]
 
 

@@ -314,6 +314,57 @@ def coherence_preserving_pools(geometry: SparseTaskGeometry, threshold: float) -
     return labels
 
 
+def enforce_minimum_pool_rows(geometry: SparseTaskGeometry, labels, task_rows,
+                              minimum: int) -> np.ndarray:
+    """Merge pools with fewer than ``minimum`` training rows into a neighbour.
+
+    The similarity pooling never looks at sample size, so a task unlike every
+    neighbour (ILINet lag 0: 27 weekly rows) is fitted alone. Here the pool
+    with the fewest rows below ``minimum`` is merged into the candidate pool at
+    the smallest complete-linkage distance, until every pool reaches
+    ``minimum`` or has no candidate. Candidates are the pools holding a
+    structural neighbour (``N_0``) of any member, so a pool grows along the
+    same lag across locations or to adjacent lags in the same location. The
+    merge ignores ``T_NN``: it trades the coherence bound for sample size.
+    Ties go to the lowest sorted task identifiers, as in the agglomeration.
+    """
+    labels = np.asarray(labels, int)
+    task_rows = np.asarray(task_rows, int)
+    if minimum <= 0 or len(labels) <= 1:
+        return labels
+    members = {int(label): sorted(np.flatnonzero(labels == label).tolist())
+               for label in np.unique(labels)}
+    rows = {label: int(task_rows[index].sum()) for label, index in members.items()}
+
+    def order(label):
+        return (rows[label], sorted(geometry.tasks[i] for i in members[label]))
+
+    blocked = set()
+    while True:
+        small = [label for label in members if rows[label] < minimum and label not in blocked]
+        if not small:
+            break
+        label = min(small, key=order)
+        owner = {i: key for key, index in members.items() for i in index}
+        candidates = {owner[other] for i in members[label]
+                      for other in structural_candidates(geometry, i)} - {label}
+        if not candidates:
+            blocked.add(label)
+            continue
+        distance = {other: max(geometry.distance(i, j) for i in members[label]
+                               for j in members[other]) for other in candidates}
+        chosen = min(candidates, key=lambda other: (
+            distance[other], sorted(geometry.tasks[i] for i in members[other])))
+        members[chosen] = sorted(members[chosen] + members.pop(label))
+        rows[chosen] += rows.pop(label)
+        blocked.discard(chosen)
+    out = np.zeros(len(labels), int)
+    for new_label, key in enumerate(sorted(members, key=lambda k: sorted(
+            geometry.tasks[i] for i in members[k]))):
+        out[members[key]] = new_label
+    return out
+
+
 def sparse_task_pooling(training: pd.DataFrame, target_lag: int, **kwargs):
     """Build prototypes, calibrate locally, search sparsely, pool coherently."""
     prototypes = build_task_geometry(training, target_lag, distance_backend="prototypes",

@@ -240,19 +240,24 @@ automatic detection. Run the complete analysis with:
 autodelphirf run --raw-config mydata-raw.json
 ```
 
-Two top-level fields choose which rows are used:
+Three top-level fields control RevRoute training and forecasting:
 
 - `"genuine_training": true` trains only on actual releases, the rows where a
   value was reported at that lag.
 - `"genuine_testing"` chooses the rows that are forecast and scored. `true`
   forecasts only actual releases; `false` also forecasts the rows the daily
   grid carries forward from an earlier release.
+- `"revroute_min_pool_rows": 200` merges RevRoute pools with fewer than 200
+  training rows into their nearest structural neighbour. Set it to `0` to
+  keep the similarity-derived pools without a minimum size.
 
-Both default to `true`. Every prediction includes a `genuine_event` column
+The genuine-event fields default to `true`, and the minimum pool size defaults
+to `200`. Every prediction includes a `genuine_event` column
 (`true` for an actual release), so a run with `"genuine_testing": false` can
 later be evaluated on actual releases, on carried-forward rows, or on both.
-The choice is recorded in `preparation.json` and stays fixed for later
-`autodelphirf update` runs.
+These choices are recorded in `preparation.json` and stay fixed for later
+`autodelphirf update` runs. Preparations made by older versions without a
+recorded minimum retain their original behavior, equivalent to a value of `0`.
 
 Paths inside the raw configuration are resolved relative to the JSON file.
 Every analysis starts from a raw revision archive. `autodelphirf prepare` (or

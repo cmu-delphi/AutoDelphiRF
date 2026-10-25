@@ -19,9 +19,12 @@ def train_requested_delphirf(config, prepared: pd.DataFrame, schedule: pd.DataFr
     unknown = set(methods).difference(DELPHIRF_METHODS)
     if unknown:
         raise ValueError(f"not DelphiRF methods: {sorted(unknown)}")
-    pool_options = ({"preserve_existing": True} if model_mode != "train" else {})
-    pools = (prepare_revroute_delphirf(prepared, schedule, output, **pool_options)
-             if any(method in PRIMARY_METHODS for method in methods) else None)
+    pools = None
+    if any(method in PRIMARY_METHODS for method in methods):
+        pool_options = ({"preserve_existing": True} if model_mode != "train" else {})
+        pools = prepare_revroute_delphirf(prepared, schedule, output,
+                                          min_pool_rows=config.revroute_min_pool_rows,
+                                          **pool_options)
     persistence = {}
     if model_dir is not None:
         persistence["model_dir"] = model_dir

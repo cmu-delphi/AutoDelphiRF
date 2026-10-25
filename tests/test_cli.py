@@ -308,7 +308,8 @@ def test_raw_config_sets_genuine_testing_for_the_run(tmp_path, archive_csv, monk
     assert dataset["genuine_training"] is True
     recorded = json.loads((tmp_path / "work" / "sel" / "preparation.json").read_text())
     assert recorded["case_selection"] == {"genuine_training": True,
-                                          "genuine_testing": genuine_testing}
+                                          "genuine_testing": genuine_testing,
+                                          "revroute_min_pool_rows": 200}
 
 
 def test_raw_config_rejects_a_non_boolean_genuine_testing(tmp_path, archive_csv, capsys):
@@ -318,6 +319,32 @@ def test_raw_config_rejects_a_non_boolean_genuine_testing(tmp_path, archive_csv,
                                   "genuine_testing": "false"}))
     assert cli.main(["prepare", "--raw-config", str(config)]) == 2
     assert "genuine_testing must be true or false" in capsys.readouterr().err
+
+
+def test_raw_config_sets_revroute_min_pool_rows_for_the_run(tmp_path, archive_csv, monkeypatch):
+    def fake_bridge(spec, on_output=None):
+        spec.output_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr("autodelphirf.pre_diagnosis.preparation.run_r_bridge", fake_bridge)
+    config = tmp_path / "raw.json"
+    config.write_text(json.dumps({
+        "name": "sel", "archive": str(archive_csv), "work_dir": "work",
+        "preprocessing": {"target_lag": 21}, "revroute_min_pool_rows": 100}))
+    assert cli.main(["prepare", "--raw-config", str(config)]) == 0
+    dataset = json.loads((tmp_path / "work" / "sel.json").read_text())
+    assert dataset["revroute_min_pool_rows"] == 100
+    recorded = json.loads((tmp_path / "work" / "sel" / "preparation.json").read_text())
+    assert recorded["case_selection"]["revroute_min_pool_rows"] == 100
+
+
+@pytest.mark.parametrize("value", [-1, 1.5, True, "100"])
+def test_raw_config_rejects_an_invalid_revroute_min_pool_rows(tmp_path, archive_csv, capsys, value):
+    config = tmp_path / "raw.json"
+    config.write_text(json.dumps({"name": "sel", "archive": str(archive_csv),
+                                  "preprocessing": {"target_lag": 21},
+                                  "revroute_min_pool_rows": value}))
+    assert cli.main(["prepare", "--raw-config", str(config)]) == 2
+    assert "revroute_min_pool_rows must be a nonnegative integer" in capsys.readouterr().err
 
 
 def test_malformed_lag_terms_are_reported(tmp_path, archive_csv, capsys):
@@ -480,3 +507,33 @@ def test_a_missing_r_install_is_reported_as_guidance(tmp_path, archive_csv, monk
                      "--target-lag", "21", "--out", str(tmp_path / "w")]) == 2
     error = capsys.readouterr().err
     assert "install R" in error and "DelphiRF" in error
+
+
+def _frozen_run(tmp_path, case_selection):
+    (tmp_path / "sel").mkdir()
+    (tmp_path / "results").mkdir()
+    (tmp_path / "sel" / "preparation.json").write_text(json.dumps({
+        "resolved_preprocessing": {"start_date": "2022-01-01"},
+        "case_selection": case_selection}))
+    (tmp_path / "results" / "analysis_contract.json").write_text(json.dumps({"settings": {
+        "ref_lag": 21, "temporal_resol": "daily", "lag_terms": [7, 14],
+        "training_days": 365, "smoothed": False, "testing_days": 7}}))
+
+
+@pytest.mark.parametrize("case_selection, frozen", [
+    ({"revroute_min_pool_rows": 100}, 100),
+    # A first run prepared before the minimum existed ran without one.
+    ({}, 0)])
+def test_update_inherits_the_first_runs_revroute_min_pool_rows(tmp_path, case_selection, frozen):
+    import argparse
+    _frozen_run(tmp_path, case_selection)
+    arguments = cli._apply_frozen_update_settings(argparse.Namespace(out=str(tmp_path), name="sel"))
+    assert arguments.revroute_min_pool_rows == frozen
+
+
+def test_update_refuses_a_different_revroute_min_pool_rows(tmp_path):
+    import argparse
+    _frozen_run(tmp_path, {"revroute_min_pool_rows": 0})
+    with pytest.raises(ValueError, match="revroute_min_pool_rows is frozen at 0"):
+        cli._apply_frozen_update_settings(argparse.Namespace(
+            out=str(tmp_path), name="sel", revroute_min_pool_rows=200))

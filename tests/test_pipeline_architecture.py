@@ -50,7 +50,7 @@ def test_primary_dispatch_builds_revroute_pools_without_comparator_adapter(tmp_p
     pools = tmp_path / "revroute_pools.csv"
     captured = {}
     monkeypatch.setattr(dispatcher, "prepare_revroute_delphirf",
-                        lambda prepared, schedule, output: pools)
+                        lambda prepared, schedule, output, min_pool_rows: pools)
 
     def fake_backend(config, prepared, schedule, labels, output, pools=None):
         captured.update(labels=labels, pools=pools)
@@ -58,7 +58,7 @@ def test_primary_dispatch_builds_revroute_pools_without_comparator_adapter(tmp_p
 
     monkeypatch.setattr(dispatcher, "train_delphirf", fake_backend)
     _, _, provenance = dispatcher.train_requested_delphirf(
-        SimpleNamespace(), pd.DataFrame(), pd.DataFrame(), ("delphirf",),
+        SimpleNamespace(revroute_min_pool_rows=0), pd.DataFrame(), pd.DataFrame(), ("delphirf",),
         tmp_path / "predictions.csv.gz")
     assert captured == {"labels": {"delphirf": "RevRoute DelphiRF"}, "pools": pools}
     assert provenance["primary_method_id"] == "revroute_delphirf"

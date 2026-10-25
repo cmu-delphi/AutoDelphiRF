@@ -44,6 +44,7 @@ from .. import __version__
 from ..core.config import load_dataset_config
 from ..core.io import describe_skipped_locations, read_skipped_locations
 from ..pre_diagnosis.preparation import (DEFAULT_MIN_LOCATION_ROWS, DEFAULT_RETRAIN_DAYS,
+                                         DEFAULT_REVROUTE_MIN_POOL_ROWS,
                                          PreparationError, build_spec, diagnose_archive,
                                          iso_weekday_groups, prepare_dataset)
 from ..core.registry import DEFAULT_LAYERS, PREDICTION_LAYERS
@@ -73,7 +74,7 @@ def _load_raw_config(arguments: argparse.Namespace) -> argparse.Namespace:
         raise ValueError("raw dataset config must contain a JSON object")
     allowed = {"name", "archive", "work_dir", "columns", "value_type",
                "preprocessing", "retraining", "model_methods",
-               "genuine_training", "genuine_testing"}
+               "genuine_training", "genuine_testing", "revroute_min_pool_rows"}
     unknown = {key for key in raw if not key.startswith("_")}.difference(allowed)
     if unknown:
         raise ValueError(f"unknown raw dataset config fields: {sorted(unknown)}")
@@ -149,6 +150,14 @@ def _load_raw_config(arguments: argparse.Namespace) -> argparse.Namespace:
         if not isinstance(value, bool):
             raise ValueError(f"raw dataset config {flag} must be true or false")
         setattr(arguments, flag, value)
+    # Set only when the config states it, so an update inherits the frozen
+    # value of its first run instead of the current default.
+    if "revroute_min_pool_rows" in raw:
+        min_pool_rows = raw["revroute_min_pool_rows"]
+        if (isinstance(min_pool_rows, bool) or not isinstance(min_pool_rows, int)
+                or min_pool_rows < 0):
+            raise ValueError("raw dataset config revroute_min_pool_rows must be a nonnegative integer")
+        arguments.revroute_min_pool_rows = min_pool_rows
     return arguments
 
 
@@ -276,7 +285,9 @@ def _spec_from_arguments(arguments: argparse.Namespace):
         weekday_groups=getattr(arguments, "weekday_groups", None),
         as_of_date=getattr(arguments, "as_of_date", None),
         genuine_training=getattr(arguments, "genuine_training", True),
-        genuine_testing=getattr(arguments, "genuine_testing", True))
+        genuine_testing=getattr(arguments, "genuine_testing", True),
+        revroute_min_pool_rows=getattr(arguments, "revroute_min_pool_rows",
+                                       DEFAULT_REVROUTE_MIN_POOL_ROWS))
 
 
 def _report_diagnosis(diagnosis: dict) -> None:
@@ -416,6 +427,13 @@ def _apply_frozen_update_settings(arguments: argparse.Namespace) -> argparse.Nam
             raise ValueError(f"{flag} is frozen at {frozen_value} by the first run; "
                              f"the update config says {given}")
         setattr(arguments, flag, frozen_value)
+    # A preparation that predates the minimum pool size ran without one.
+    frozen_rows = int(selection.get("revroute_min_pool_rows", 0))
+    given_rows = getattr(arguments, "revroute_min_pool_rows", frozen_rows)
+    if given_rows != frozen_rows:
+        raise ValueError(f"revroute_min_pool_rows is frozen at {frozen_rows} by the first run; "
+                         f"the update config says {given_rows}")
+    arguments.revroute_min_pool_rows = frozen_rows
     return arguments
 
 

@@ -10,20 +10,24 @@ from __future__ import annotations
 from pathlib import Path
 import pandas as pd
 
-from .clustering import sparse_task_pooling
+from .clustering import enforce_minimum_pool_rows, sparse_task_pooling
 from ...core.history import rolling_completed_training
 from ...core.defaults import provisional_column
 from ...core.io import read_csv
 
 
 def learn_task_pools(prepared: pd.DataFrame, schedule: pd.DataFrame, output: Path,
-                     *, preserve_existing: bool = False) -> Path:
+                     *, min_pool_rows: int, preserve_existing: bool = False) -> Path:
     """Learn RevRoute pools independently at every scheduled origin.
 
     Operational updates must retain the routing decision issued at an earlier
     origin.  New raw releases can add test tasks to that origin, but they must
     not silently relabel its pools and thereby attach an old model filename to
     a different collection of tasks.
+
+    ``min_pool_rows`` > 0 merges each pool with fewer training rows into its
+    nearest neighbouring pool (``enforce_minimum_pool_rows``); 0 keeps the
+    similarity pools unchanged.
     """
     output = Path(output)
     old = (read_csv(output, parse_dates=["cutoff"]) if preserve_existing and output.exists()
@@ -47,7 +51,12 @@ def learn_task_pools(prepared: pd.DataFrame, schedule: pd.DataFrame, output: Pat
             train_genuine_events_only=True)
         if built is None:
             continue
-        geometry, labels, threshold, _, _ = built
+        geometry, labels, threshold, _, prototypes = built
+        if min_pool_rows > 0:
+            # Training rows per task are the completed episodes behind its
+            # prototype, the same rows the pool's DelphiRF fit trains on.
+            labels = enforce_minimum_pool_rows(
+                geometry, labels, [len(rows) for rows in prototypes.rows], min_pool_rows)
         task_frame = pd.DataFrame(geometry.tasks, columns=["geo_value", "lag"])
         task_frame["pool"] = labels
         pool_sizes = task_frame.groupby("pool", observed=True).size()
@@ -67,6 +76,7 @@ def learn_task_pools(prepared: pd.DataFrame, schedule: pd.DataFrame, output: Pat
             "tasks_singleton_pct": float(100 * pool_shape.loc[pool_shape.tasks.eq(1), "tasks"].sum() / represented_tasks),
             "threshold": float(threshold),
             "unrepresented_task_policy": "nearest lag in same location; nearest lag globally for new location",
+            "min_pool_rows": int(min_pool_rows),
             "small_pool_policy": "if <10 rows, expand to matching test lags; if still <10, use all fold rows with available target values",
             "fallback_is_engineering_extension": True})
         for (geo, lag), label in zip(geometry.tasks, labels):

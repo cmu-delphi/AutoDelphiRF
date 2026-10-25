@@ -45,6 +45,10 @@ DEFAULT_FIRST_ORIGIN_OFFSET_DAYS = 60
 #: and a target; they are reported in ``skipped_locations.csv``, not dropped
 #: silently.
 DEFAULT_MIN_LOCATION_ROWS = 100
+#: Smallest number of training rows a RevRoute pool may have; smaller pools are
+#: merged into their nearest neighbouring pool. Chosen in the minimum-pool
+#: trial (ILINet, NHSN, NSSP COVID-19, NSSP influenza): 200 beat 0 and 100.
+DEFAULT_REVROUTE_MIN_POOL_ROWS = 200
 
 #: Rows read to diagnose the archive. The diagnosis needs the whole revision
 #: history, so this is a guard against an accidental multi-gigabyte read
@@ -174,6 +178,8 @@ class PreparationSpec:
     #: daily grid carries forward; predictions record ``genuine_event`` either way.
     genuine_training: bool = True
     genuine_testing: bool = True
+    #: Smallest number of training rows a RevRoute pool may have (0: no minimum).
+    revroute_min_pool_rows: int = DEFAULT_REVROUTE_MIN_POOL_ROWS
 
     def to_r_spec(self) -> dict:
         """The JSON handed to the R bridge (paths as strings, no provenance)."""
@@ -367,7 +373,8 @@ def build_spec(name: str, raw_csv: Path, output_dir: Path, *, reference_col: str
                as_of_date: str | None = None,
                smoothed_target: bool | None = None,
                genuine_training: bool = True,
-               genuine_testing: bool = True) -> PreparationSpec:
+               genuine_testing: bool = True,
+               revroute_min_pool_rows: int = DEFAULT_REVROUTE_MIN_POOL_ROWS) -> PreparationSpec:
     """Diagnose the archive and resolve every preprocessing argument.
 
     A keyword left at ``None`` is diagnosed from the archive; a keyword given
@@ -380,6 +387,10 @@ def build_spec(name: str, raw_csv: Path, output_dir: Path, *, reference_col: str
     for flag, value in (("genuine_training", genuine_training), ("genuine_testing", genuine_testing)):
         if not isinstance(value, bool):
             raise PreparationError(f"{flag} must be true or false, got {value!r}")
+    if (isinstance(revroute_min_pool_rows, bool) or not isinstance(revroute_min_pool_rows, int)
+            or revroute_min_pool_rows < 0):
+        raise PreparationError("revroute_min_pool_rows must be a nonnegative integer, "
+                               f"got {revroute_min_pool_rows!r}")
     if value_type == "fraction" and len(value_cols) not in (1, 2):
         raise PreparationError(
             "a fraction signal needs either one precomputed rate column or two columns, "
@@ -523,6 +534,7 @@ def build_spec(name: str, raw_csv: Path, output_dir: Path, *, reference_col: str
         min_location_rows=int(min_location_rows),
         as_of_date=None if as_of_date is None else str(pd.Timestamp(as_of_date).date()),
         genuine_training=genuine_training, genuine_testing=genuine_testing,
+        revroute_min_pool_rows=revroute_min_pool_rows,
         overrides=tuple(dict.fromkeys(overrides)),
         diagnosis={**diagnosis, "user_confirmed_target_lag": bool(confirm_target_lag),
                    "final_target_lag": resolved_lag})
@@ -615,6 +627,7 @@ def write_dataset_config(spec: PreparationSpec, config_path: Path,
         "schedule_file": "test_dates.csv",
         "genuine_training": spec.genuine_training,
         "genuine_testing": spec.genuine_testing,
+        "revroute_min_pool_rows": spec.revroute_min_pool_rows,
         "model_methods": list(prediction_layers),
         "prediction_layers": list(prediction_layers),
         "method_params": {},
@@ -659,7 +672,8 @@ def prepare_dataset(spec: PreparationSpec, *, prediction_layers: tuple[str, ...]
         "resolved_preprocessing": spec.to_r_spec(),
         "user_overrides": list(spec.overrides),
         "case_selection": {"genuine_training": spec.genuine_training,
-                           "genuine_testing": spec.genuine_testing},
+                           "genuine_testing": spec.genuine_testing,
+                           "revroute_min_pool_rows": spec.revroute_min_pool_rows},
         "diagnosis": spec.diagnosis,
         # Both stages' cleaning audits. Their retained rows differ by scope
         # (lag bound, as-of date, experiment window), which each records.

@@ -127,7 +127,7 @@ def test_operational_pooling_preserves_issued_origins(tmp_path, monkeypatch):
                         calls.append(cutoff) or prepared)
     monkeypatch.setattr(pooling_plan, "sparse_task_pooling",
                         lambda *args, **kwargs: (Geometry(), [3], .4, None, None))
-    pooling_plan.learn_task_pools(pd.DataFrame(), schedule, output,
+    pooling_plan.learn_task_pools(pd.DataFrame(), schedule, output, min_pool_rows=0,
                                   preserve_existing=True)
     saved = pd.read_csv(output)
     assert calls == [pd.Timestamp("2026-01-09")]

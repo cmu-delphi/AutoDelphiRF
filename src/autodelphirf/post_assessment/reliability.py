@@ -345,7 +345,9 @@ def prospective_calibration(long: pd.DataFrame, methods: tuple[str, ...] | list[
         # copied per row.
         scale_columns = work_columns if has_working else raw_columns
         truth_column = "truth_working" if has_working else "truth"
-        completed = _HistoryByDate(data)
+        history_columns = list(dict.fromkeys(
+            ["target_date", "geo_value", "lag", "truth", truth_column, *scale_columns]))
+        completed = _HistoryByDate(data[history_columns])
         for (fold, issued), test in data.groupby(["fold", "report_date"], sort=True,
                                                   observed=True):
             history = completed.at(issued)
@@ -378,6 +380,243 @@ def prospective_calibration(long: pd.DataFrame, methods: tuple[str, ...] | list[
             frames.append(entry)
     return (pd.concat(frames, ignore_index=True) if frames
             else long.iloc[:0].copy())
+
+
+def _quantile_level_map(selected: pd.DataFrame, columns: list[str], truth_column: str,
+                        taus: np.ndarray) -> np.ndarray:
+    """Map requested probabilities to base-forecast probabilities.
+
+    ``coverage[j]`` is the historical frequency with which the observation was
+    below the forecast at ``taus[j]``.  Inverting that monotone reliability
+    curve gives the base quantile level whose historical coverage corresponds
+    to each requested level.  End anchors make the mapping defined throughout
+    [0, 1]; repeated empirical coverages are collapsed conservatively to their
+    mean nominal level before interpolation.
+    """
+    truth = selected[truth_column].to_numpy(float)
+    quantiles = selected[columns].to_numpy(float)
+    valid = np.isfinite(truth) & np.isfinite(quantiles).all(axis=1)
+    if not valid.any():
+        return taus.copy()
+    coverage = np.mean(truth[valid, None] <= quantiles[valid], axis=0)
+    coverage = np.maximum.accumulate(coverage)
+    frame = pd.DataFrame({"coverage": np.r_[0., coverage, 1.],
+                          "nominal": np.r_[0., taus, 1.]})
+    knots = frame.groupby("coverage", sort=True, as_index=False).nominal.mean()
+    return np.interp(taus, knots.coverage.to_numpy(float),
+                     knots.nominal.to_numpy(float))
+
+
+def _remap_quantiles(base: np.ndarray, source_levels: np.ndarray,
+                     taus: np.ndarray) -> np.ndarray:
+    """Evaluate each row's base quantile curve at remapped levels."""
+    anchors = np.r_[0., taus, 1.]
+    base = np.asarray(base, float)
+    # Constant extrapolation is deliberate: the fitted model supplies no
+    # information beyond its outer routed quantiles. Interpolation is
+    # vectorized across rows; only the nine target levels form the small axis.
+    values = np.column_stack([base[:, 0], base, base[:, -1]])
+    right = np.searchsorted(anchors, source_levels, side="right").clip(1, len(anchors) - 1)
+    left = right - 1
+    span = anchors[right] - anchors[left]
+    weight = np.divide(source_levels - anchors[left], span,
+                       out=np.zeros_like(source_levels), where=span > 0)
+    return values[:, left] + (values[:, right] - values[:, left]) * weight
+
+
+def _pool_strata(test: pd.DataFrame, history: pd.DataFrame, assignments: pd.DataFrame,
+                 minimum: int) -> dict:
+    """Comparable history from the current origin's RevRoute task pools.
+
+    Pool numbers are origin-local.  We therefore use the current assignment to
+    recover its member ``(location, lag)`` tasks and select historical rows by
+    task membership; numeric pool labels are never compared across origins.
+    """
+    keys = stratum_keys(test)
+    required = {"geo_value", "lag", "pool"}
+    if assignments is None or assignments.empty:
+        raise ValueError("pool calibration requires current-origin pool assignments")
+    missing = required - set(assignments.columns)
+    if missing:
+        raise ValueError(f"pool assignments missing columns: {sorted(missing)}")
+    members = {}
+    for pool, group in assignments.groupby("pool", observed=True):
+        members[pool] = set(zip(group.geo_value.astype(str), group.lag.astype(int)))
+    task_pool = {(str(row.geo_value), int(row.lag)): row.pool
+                 for row in assignments.itertuples(index=False)}
+    history_positions = {
+        (str(geo), int(lag)): positions
+        for (geo, lag), positions in
+        history.groupby(["geo_value", "lag"], observed=True).indices.items()
+    }
+    selected_by_pool = {}
+    for pool, wanted in members.items():
+        parts = [history_positions[task] for task in wanted if task in history_positions]
+        positions = np.concatenate(parts) if parts else np.empty(0, dtype=int)
+        selected_by_pool[pool] = history.take(positions)
+    out = {}
+    for key in keys.itertuples(index=False):
+        identity = (str(key.geo_value), int(key.lag))
+        pool = task_pool.get(identity)
+        if pool is None:
+            out[(key.geo_value, key.lag)] = (history.iloc[:0], "pool task unavailable")
+            continue
+        selected = selected_by_pool[pool]
+        source = "current-origin pool" if len(selected) >= minimum else "insufficient pool history"
+        out[(key.geo_value, key.lag)] = (selected, source)
+    return out
+
+
+def prospective_quantile_mapping(
+        long: pd.DataFrame, methods: tuple[str, ...] | list[str], *,
+        strategy: str, pool_assignments: pd.DataFrame | None = None,
+        taus: np.ndarray = ROUTED_TAUS, minimum: int | None = None,
+        adjacent_lag_radius: int | None = None,
+        working_scale: str | None = None) -> pd.DataFrame:
+    """Prospective monotone quantile mapping by location/lag or RevRoute pool.
+
+    Only forecasts whose targets were observable at issuance enter a mapping.
+    Insufficient strata retain their base quantiles and are explicitly marked.
+    """
+    if strategy not in {"location_lag", "pool"}:
+        raise ValueError("quantile-mapping strategy must be 'location_lag' or 'pool'")
+    if strategy == "pool" and pool_assignments is not None:
+        if not {"fold", "cutoff"}.intersection(pool_assignments.columns):
+            raise ValueError("pool assignments require an origin column: 'fold' or 'cutoff'")
+    minimum = DEFAULT_MINIMUM_HISTORY if minimum is None else int(minimum)
+    adjacent_lag_radius = (DEFAULT_ADJACENT_LAG_RADIUS if adjacent_lag_radius is None
+                           else int(adjacent_lag_radius))
+    taus = np.asarray(taus, float)
+    median_index = int(np.argmin(np.abs(taus - .5)))
+    raw_columns = [f"q{tau:g}" for tau in taus]
+    work_columns = [f"q{tau:g}_working" for tau in taus]
+    subset = long[long.method.isin(methods)]
+    if "model_available" in subset:
+        subset = subset[subset.model_available]
+    if "has_distribution" in subset:
+        subset = subset[subset.has_distribution]
+    frames = []
+    for method, data in subset.groupby("method", observed=True):
+        has_working = "truth_working" in data and all(c in data for c in work_columns)
+        transform = working_scale
+        if transform is None and "working_scale" in data:
+            values = data.working_scale.dropna().unique()
+            transform = values[0] if len(values) == 1 else None
+        if has_working and transform is None:
+            raise ValueError("working-scale calibration requires one resolved working_scale")
+        transform = transform or "identity"
+        columns = work_columns if has_working else raw_columns
+        truth_column = "truth_working" if has_working else "truth"
+        history_columns = list(dict.fromkeys(
+            ["target_date", "geo_value", "lag", "truth", truth_column, *columns]))
+        completed = _HistoryByDate(data[history_columns])
+        for (fold, issued), test in data.groupby(["fold", "report_date"], sort=True,
+                                                  observed=True):
+            history = completed.at(issued)
+            if strategy == "location_lag":
+                strata = resolve_strata(test, history, minimum, adjacent_lag_radius)
+            else:
+                current = pool_assignments
+                if current is not None and not current.empty:
+                    if "fold" in current:
+                        numeric = pd.to_numeric(current.fold, errors="coerce")
+                        fold_number = pd.to_numeric(pd.Series([fold]), errors="coerce").iloc[0]
+                        if pd.notna(fold_number) and numeric.notna().any():
+                            current = current[numeric.eq(fold_number)]
+                        else:
+                            current = current[current.fold.astype(str).eq(str(fold))]
+                    elif "cutoff" in current:
+                        current = current[pd.to_datetime(current.cutoff).eq(pd.Timestamp(test.cutoff.iloc[0]))]
+                if current is None or current.empty:
+                    raise ValueError(
+                        f"no pool assignments match fold={fold!r}, "
+                        f"cutoff={test.cutoff.iloc[0]!r}")
+                strata = _pool_strata(test, history, current, minimum)
+            mapped, sources, counts = {}, {}, {}
+            for key, (selected, source) in strata.items():
+                sources[key], counts[key] = source, len(selected)
+                if source.startswith("insufficient") or source.endswith("unavailable"):
+                    mapped[key] = taus.copy()
+                else:
+                    mapped[key] = _quantile_level_map(selected, columns, truth_column, taus)
+            keys = list(zip(test.geo_value, test.lag))
+            base = test[columns].to_numpy(float)
+            calibrated_working = np.empty_like(base)
+            positions = {}
+            for index, key in enumerate(keys):
+                positions.setdefault(key, []).append(index)
+            for key, index in positions.items():
+                calibrated_working[index] = _remap_quantiles(base[index], mapped[key], taus)
+            calibrated_working = enforce_non_crossing(calibrated_working, median_index)
+            calibrated = (to_reporting_scale(calibrated_working, transform) if has_working
+                          else calibrated_working)
+            entry = test.copy()
+            entry["calibration_strategy"] = f"quantile_map_{strategy}"
+            entry["calibration_source"] = [sources[k] for k in keys]
+            entry["calibration_n"] = [counts[k] for k in keys]
+            for index, tau in enumerate(taus):
+                entry[f"cal_q{tau:g}"] = calibrated[:, index]
+                entry[f"cal_q{tau:g}_working"] = calibrated_working[:, index]
+            entry["cal_wis_reporting"] = wis(calibrated, entry.truth.to_numpy(float))
+            entry["cal_wis_working"] = wis(
+                calibrated_working, entry[truth_column].to_numpy(float))
+            frames.append(entry)
+    return pd.concat(frames, ignore_index=True) if frames else long.iloc[:0].copy()
+
+
+def pit_diagnostics(calibrations: dict[str, pd.DataFrame],
+                    taus: np.ndarray = ROUTED_TAUS) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Quantile reliability and interval-censored PIT diagnostics.
+
+    Nine routed quantiles do not identify a continuous CDF.  Each PIT is
+    therefore reported as the probability bin containing the observation plus
+    its midpoint, rather than pretending an exact PIT value is available.
+    """
+    taus = np.asarray(taus, float)
+    reliability_rows, pit_frames = [], []
+    identity = ["method", "fold", "cutoff", "geo_value", "reference_date",
+                "report_date", "target_date", "lag"]
+    for strategy, frame in calibrations.items():
+        if frame is None or frame.empty:
+            continue
+        columns = ([f"q{tau:g}" for tau in taus] if strategy == "base"
+                   else [f"cal_q{tau:g}" for tau in taus])
+        available = frame.dropna(subset=["truth", *columns]).copy()
+        for method, group in available.groupby("method", observed=True):
+            truth = group.truth.to_numpy(float)
+            quantiles = group[columns].to_numpy(float)
+            for index, tau in enumerate(taus):
+                scale = np.maximum(np.abs(truth), np.abs(quantiles[:, index]))
+                tolerance = COVERAGE_BOUNDARY_TOLERANCE * scale
+                covered = truth <= quantiles[:, index] + tolerance
+                reliability_rows.append({
+                    "strategy": strategy, "method": method, "nominal_quantile": tau,
+                    "empirical_coverage": float(np.mean(covered)),
+                    "coverage_error": float(np.mean(covered) - tau),
+                    "n": len(group)})
+        values = available[columns].to_numpy(float)
+        truth = available.truth.to_numpy(float)
+        scale = np.maximum(np.abs(values), np.abs(truth[:, None]))
+        tolerance = COVERAGE_BOUNDARY_TOLERANCE * scale
+        tied = np.abs(values - truth[:, None]) <= tolerance
+        below = np.sum(values < truth[:, None] - tolerance, axis=1)
+        at_or_below = np.sum(values <= truth[:, None] + tolerance, axis=1)
+        has_tie = tied.any(axis=1)
+        lower_levels = np.r_[0., taus]
+        upper_levels = np.r_[taus, 1.]
+        records = available[[c for c in identity if c in available]].copy()
+        records["strategy"] = strategy
+        records["pit_lower"] = lower_levels[below]
+        ordinary_upper = upper_levels[below]
+        tied_upper = np.where(at_or_below > 0, taus[np.maximum(at_or_below - 1, 0)], 0.)
+        records["pit_upper"] = np.where(has_tie, tied_upper, ordinary_upper)
+        records["pit_midpoint"] = (records.pit_lower + records.pit_upper) / 2
+        records["pit_bin"] = below
+        records["pit_tied"] = has_tie
+        records["pit_tied_quantiles"] = tied.sum(axis=1)
+        pit_frames.append(records)
+    pit = (pd.concat(pit_frames, ignore_index=True) if pit_frames else pd.DataFrame())
+    return pd.DataFrame(reliability_rows), pit
 
 
 # Relative tolerance for interval-coverage boundary comparisons. Set well

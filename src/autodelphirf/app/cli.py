@@ -480,8 +480,16 @@ def command_update(arguments: argparse.Namespace) -> int:
 
 def command_assess(arguments: argparse.Namespace) -> int:
     from ..post_assessment.run import assess_results
-    output = assess_results(arguments.results, arguments.out)
-    print(f"Assessment complete. Report: {output / 'report' / 'report.html'}")
+    mode = ("pit" if arguments.pit_only else "recalibration"
+            if arguments.recalibration_only else "full")
+    output = assess_results(arguments.results, arguments.out, assessment_mode=mode,
+                            event_filter=arguments.event_filter)
+    if mode == "pit":
+        print(f"PIT diagnostics complete: {output}")
+    elif mode == "recalibration":
+        print(f"Recalibration assessment complete: {output}")
+    else:
+        print(f"Assessment complete. Report: {output / 'report' / 'report.html'}")
     return 0
 
 
@@ -585,6 +593,14 @@ def build_parser() -> argparse.ArgumentParser:
                         help="completed result directory containing predictions and resolved_config.json")
     assess.add_argument("--out", type=Path, metavar="DIR",
                         help="new assessment directory (default: RESULTS/assessments/<UTC timestamp>)")
+    mode = assess.add_mutually_exclusive_group()
+    mode.add_argument("--pit-only", action="store_true",
+                      help="run empirical quantile coverage and PIT diagnostics without recalibration")
+    mode.add_argument("--recalibration-only", action="store_true",
+                      help="run recalibration and its coverage/PIT comparisons without the full report")
+    assess.add_argument("--event-filter", choices=("genuine", "carried", "all"),
+                        default="genuine", help="forecasts to assess (default: genuine; "
+                        "carried selects only carried-forward rows; all includes both)")
     assess.set_defaults(handler=command_assess)
 
     web = subparsers.add_parser(

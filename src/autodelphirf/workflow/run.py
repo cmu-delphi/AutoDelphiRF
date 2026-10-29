@@ -17,7 +17,10 @@ from ..comparators.red_routing import attach_revision_progress
 from ..core.context import attach_issued_context
 from ..core.history import enforce_target_maturity, target_as_of_date, validate_target_dates
 from ..core.defaults import EVALUATION_DEFAULTS
-from ..post_assessment.reliability import add_interval_columns, prospective_calibration, reliability_history
+from ..post_assessment.reliability import (add_interval_columns, pit_diagnostics,
+                                           prospective_calibration,
+                                           prospective_quantile_mapping,
+                                           reliability_history)
 from ..post_assessment.inference import bootstrap, primary_comparison_pairs
 from ..post_assessment.validation import run_validation
 
@@ -376,7 +379,9 @@ def _load_reliability_reference(config: DatasetConfig, method: str | None = None
 
 
 def run_reliability_and_calibration(long: pd.DataFrame, config: DatasetConfig,
-                                    wide: pd.DataFrame | None = None) -> dict[str, pd.DataFrame]:
+                                    wide: pd.DataFrame | None = None,
+                                    pool_assignments: pd.DataFrame | None = None,
+                                    mode: str = "full") -> dict[str, pd.DataFrame]:
     """Interval calibration from completed revisions, risk-score/alert, bootstrap CIs.
 
     Wired into the standard pipeline output (not an optional side
@@ -385,14 +390,41 @@ def run_reliability_and_calibration(long: pd.DataFrame, config: DatasetConfig,
     predictive quantiles, and episode-clustered bootstrap CIs for whichever
     primary-comparison pairs the configured ``prediction_layers`` support.
     """
+    if mode not in {"full", "pit", "recalibration"}:
+        raise ValueError("mode must be 'full', 'pit', or 'recalibration'")
     eligible = set(DISTRIBUTION_METHODS)
     if config.comparator_quantile_template:
         eligible |= set(config.comparator_methods)
     distribution_methods = ([m for m in config.prediction_layers if m in eligible]
                             if config.uncertainty_layer else [])
+    if mode == "pit":
+        base = long[long.method.isin(distribution_methods)].copy()
+        if "model_available" in base:
+            base = base[base.model_available]
+        if "has_distribution" in base:
+            base = base[base.has_distribution]
+        quantile_reliability, pit = pit_diagnostics({"base": base})
+        empty = pd.DataFrame()
+        return {"calibration": empty, "calibration_variants": empty,
+                "calibration_comparison": empty,
+                "quantile_reliability": quantile_reliability, "pit_diagnostics": pit,
+                "interval_calibration": empty, "reliability": empty, "bootstrap": empty}
     calibration = (prospective_calibration(long, distribution_methods,
                                             working_scale=config.working_scale) if distribution_methods
                   else long.iloc[:0].copy())
+    if not calibration.empty:
+        calibration["calibration_strategy"] = "endpoint"
+    mapped_frames = []
+    for strategy in ("location_lag", "pool"):
+        if strategy == "pool" and (pool_assignments is None or pool_assignments.empty):
+            continue
+        mapped_frames.append(prospective_quantile_mapping(
+            long, distribution_methods, strategy=strategy,
+            pool_assignments=pool_assignments, working_scale=config.working_scale))
+    calibration_variants = (pd.concat([frame for frame in mapped_frames if not frame.empty],
+                                      ignore_index=True)
+                            if any(not frame.empty for frame in mapped_frames)
+                            else long.iloc[:0].copy())
     if not calibration.empty:
         base_intervals = add_interval_columns(calibration, LEVELS, prefix="")
         calibrated_source = calibration.drop(columns=[f"q{tau:g}" for tau in ROUTED_TAUS]).rename(
@@ -418,6 +450,39 @@ def run_reliability_and_calibration(long: pd.DataFrame, config: DatasetConfig,
         interval_calibration = pd.DataFrame(columns=["method", "status", "nominal", "n", "coverage",
                                                       "coverage_error", "mean_width", "median_width",
                                                       "lower_miss", "upper_miss", "mean_wis", "median_wis"])
+    comparison_rows = []
+    calibration_sets = {"base": calibration, "endpoint": calibration}
+    if not calibration_variants.empty:
+        for strategy, frame in calibration_variants.groupby("calibration_strategy", observed=True):
+            calibration_sets[strategy] = frame
+    for strategy, frame in calibration_sets.items():
+        if frame.empty:
+            continue
+        source = (frame if strategy == "base" else
+                  frame.drop(columns=[f"q{tau:g}" for tau in ROUTED_TAUS]).rename(
+                      columns={f"cal_q{tau:g}": f"q{tau:g}" for tau in ROUTED_TAUS}))
+        measured = add_interval_columns(source, LEVELS)
+        wis_column = "wis_reporting" if strategy == "base" else "cal_wis_reporting"
+        for method, group in measured.groupby("method", observed=True):
+            for level in LEVELS:
+                comparison_rows.append({
+                    "strategy": strategy, "method": method, "nominal": level / 100,
+                    "n": len(group), "coverage": group[f"coverage_{level}"].mean(),
+                    "coverage_error": group[f"coverage_{level}"].mean() - level / 100,
+                    "mean_width": group[f"width_{level}"].mean(),
+                    "median_width": group[f"width_{level}"].median(),
+                    "lower_miss": group[f"lower_miss_{level}"].mean(),
+                    "upper_miss": group[f"upper_miss_{level}"].mean(),
+                    "mean_wis": group[wis_column].mean()})
+    calibration_comparison = pd.DataFrame(comparison_rows)
+    quantile_reliability, pit = pit_diagnostics(calibration_sets)
+    if mode == "recalibration":
+        empty = pd.DataFrame()
+        return {"calibration": calibration, "calibration_variants": calibration_variants,
+                "calibration_comparison": calibration_comparison,
+                "quantile_reliability": quantile_reliability, "pit_diagnostics": pit,
+                "interval_calibration": interval_calibration,
+                "reliability": empty, "bootstrap": empty}
     reliability_frames = []
     for method in distribution_methods:
         error_reference, regret_reference = _load_reliability_reference(config, method)
@@ -441,51 +506,85 @@ def run_reliability_and_calibration(long: pd.DataFrame, config: DatasetConfig,
     validation = run_validation(long, wide=wide, calibration=calibration, reliability=reliability,
                                 point_pairs=point_pairs, distribution_pairs=distribution_pairs,
                                 taus=ROUTED_TAUS)
-    return {"calibration": calibration, "interval_calibration": interval_calibration,
+    return {"calibration": calibration, "calibration_variants": calibration_variants,
+            "calibration_comparison": calibration_comparison,
+            "quantile_reliability": quantile_reliability, "pit_diagnostics": pit,
+            "interval_calibration": interval_calibration,
             "reliability": reliability, "bootstrap": bootstrap_rows, **validation}
 
 
 def forecast_time_assessment(history: pd.DataFrame, newly_issued: pd.DataFrame,
-                             config: DatasetConfig) -> dict[str, pd.DataFrame]:
+                             config: DatasetConfig,
+                             pool_assignments: pd.DataFrame | None = None) -> dict[str, pd.DataFrame]:
     """Attach prospective calibration and reliability only to new forecasts.
 
     Accuracy, coverage, and realized-harm fields remain unavailable until a
     later archive exposes the target. Historical ledger rows supply only the
     information that would have been observable at the new forecast cutoff.
     """
-    if newly_issued.empty:
-        return {"calibration": newly_issued.copy(), "reliability": newly_issued.copy()}
+    assessment_history = _genuine_event_rows(history)
+    assessment_new = _genuine_event_rows(newly_issued)
+    if assessment_new.empty:
+        empty = newly_issued.iloc[:0].copy()
+        return {"calibration": empty, "calibration_variants": empty.copy(),
+                "quantile_reliability": empty.copy(), "pit_diagnostics": empty.copy(),
+                "reliability": empty.copy()}
     eligible = set(DISTRIBUTION_METHODS)
     if config.comparator_quantile_template:
         eligible |= set(config.comparator_methods)
     methods = ([method for method in config.prediction_layers if method in eligible]
                if config.uncertainty_layer else [])
     calibrated = (prospective_calibration(
-        history, methods, working_scale=config.working_scale) if methods
-                  else newly_issued.iloc[:0].copy())
+        assessment_history, methods, working_scale=config.working_scale) if methods
+                  else assessment_new.iloc[:0].copy())
+    if not calibrated.empty:
+        calibrated["calibration_strategy"] = "endpoint"
+    variants = []
+    for strategy in ("location_lag", "pool"):
+        if strategy == "pool" and (pool_assignments is None or pool_assignments.empty):
+            continue
+        variants.append(prospective_quantile_mapping(
+            assessment_history, methods, strategy=strategy, pool_assignments=pool_assignments,
+            working_scale=config.working_scale))
+    variants = (pd.concat([frame for frame in variants if not frame.empty], ignore_index=True)
+                if any(not frame.empty for frame in variants) else assessment_new.iloc[:0].copy())
     reliability_parts = []
     for method in methods:
         error_reference, regret_reference = _load_reliability_reference(config, method)
         reliability_parts.append(reliability_history(
-            history, method, error_reference=error_reference,
+            assessment_history, method, error_reference=error_reference,
             regret_reference=regret_reference))
     reliability = (pd.concat(reliability_parts, ignore_index=True)
-                   if reliability_parts else newly_issued.iloc[:0].copy())
+                   if reliability_parts else assessment_new.iloc[:0].copy())
     identity = ["method", "cutoff", "geo_value", "reference_date",
                 "report_date", "target_date", "lag"]
-    wanted = newly_issued[identity].drop_duplicates()
+    wanted = assessment_new[identity].drop_duplicates()
     def select(frame):
         if frame.empty:
             return frame
         selected = frame.merge(wanted.assign(_new=True), on=identity, how="inner")
         return selected.drop(columns="_new")
-    calibrated, reliability = select(calibrated), select(reliability)
-    for frame in (calibrated, reliability):
+    diagnostic_sets = {"base": calibrated, "endpoint": calibrated}
+    if not variants.empty:
+        for strategy, frame in variants.groupby("calibration_strategy", observed=True):
+            diagnostic_sets[strategy] = frame
+    quantile_reliability, pit = pit_diagnostics(diagnostic_sets)
+    calibrated, variants, reliability = select(calibrated), select(variants), select(reliability)
+    for frame in (calibrated, variants, reliability):
         for column in ("realized_ae", "realized_null_ae", "realized_regret",
                        "realized_harm", "qerr_covered", "mharm_covered"):
             if column in frame:
                 frame[column] = np.nan
-    return {"calibration": calibrated, "reliability": reliability}
+    return {"calibration": calibrated, "calibration_variants": variants,
+            "quantile_reliability": quantile_reliability, "pit_diagnostics": pit,
+            "reliability": reliability}
+
+
+def _genuine_event_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return genuine forecast events, preserving legacy inputs without provenance."""
+    if "genuine_event" not in frame:
+        return frame
+    return frame[frame.genuine_event.fillna(False).astype(bool)].copy()
 
 
 def write_runtime_tables(output: Path, timing: pd.DataFrame, params: dict, config: DatasetConfig,
@@ -835,15 +934,32 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
     if incremental_update:
         ledger = append_forecast_ledger(long, output)
         combined_ledger = read_forecast_ledger(output)
-        forecast_outputs = forecast_time_assessment(combined_ledger, long, config)
+        pool_path = output / "revroute_pools.csv"
+        pool_assignments = (read_csv(pool_path, parse_dates=["cutoff"])
+                            if pool_path.is_file() else None)
+        forecast_outputs = forecast_time_assessment(
+            combined_ledger, long, config, pool_assignments=pool_assignments)
         reliability_outputs = {
             "calibration": forecast_outputs["calibration"],
+            "calibration_variants": forecast_outputs["calibration_variants"],
+            "quantile_reliability": forecast_outputs["quantile_reliability"],
+            "pit_diagnostics": forecast_outputs["pit_diagnostics"],
             "reliability": forecast_outputs["reliability"],
+            "calibration_comparison": pd.DataFrame(),
             "interval_calibration": pd.DataFrame(), "bootstrap": pd.DataFrame(),
         }
     else:
+        pool_path = output / "revroute_pools.csv"
+        pool_assignments = (read_csv(pool_path, parse_dates=["cutoff"])
+                            if pool_path.is_file() else None)
+        # Calibration and PIT describe model-issued forecasts, not values that
+        # were merely carried forward.  The main report still receives the
+        # complete scored population below, preserving its historical scope.
+        assessment_long = _genuine_event_rows(scored_long)
+        assessment_wide = _genuine_event_rows(scored_wide)
         reliability_outputs = run_reliability_and_calibration(
-            scored_long, config, wide=scored_wide)
+            assessment_long, config, wide=assessment_wide,
+            pool_assignments=pool_assignments)
     record_stage("calibration_and_reliability", stage)
     wide.to_csv(output / "predictions_wide.csv.gz", index=False, compression="gzip")
     long.to_csv(output / "predictions.csv.gz", index=False, compression="gzip")
@@ -858,6 +974,14 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
     reliability_outputs["interval_calibration"].to_csv(output / "interval_calibration.csv", index=False)
     reliability_outputs["reliability"].to_csv(output / "reliability.csv.gz", index=False, compression="gzip")
     reliability_outputs["bootstrap"].to_csv(output / "bootstrap_pairwise_comparisons.csv", index=False)
+    reliability_outputs["calibration_variants"].to_csv(
+        output / "calibration_variants.csv.gz", index=False, compression="gzip")
+    reliability_outputs["calibration_comparison"].to_csv(
+        output / "calibration_strategy_comparison.csv", index=False)
+    reliability_outputs["quantile_reliability"].to_csv(
+        output / "quantile_reliability.csv", index=False)
+    reliability_outputs["pit_diagnostics"].to_csv(
+        output / "pit_diagnostics.csv.gz", index=False, compression="gzip")
     if incremental_update:
         (output / "forecast_assessment_status.json").write_text(json.dumps({
             "scope": "newly issued unresolved forecasts only",
@@ -895,6 +1019,8 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
         build_report(scored_long, output / "report", wide=scored_wide, runtime=runtime,
                     skipped_locations=skipped_locations,
                     interval_calibration=reliability_outputs["interval_calibration"],
+                    calibration_comparison=reliability_outputs["calibration_comparison"],
+                    quantile_reliability=reliability_outputs["quantile_reliability"],
                     reliability=reliability_outputs["reliability"],
                     bootstrap=reliability_outputs["bootstrap"], rr_regimes=rr_audit,
                     rr_clusters=rr_clusters,

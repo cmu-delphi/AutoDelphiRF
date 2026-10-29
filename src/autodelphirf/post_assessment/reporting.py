@@ -270,6 +270,8 @@ def validation_figures(validation, figures, palette, methods):
 
 def build_report(data: pd.DataFrame, output: Path, *, wide: pd.DataFrame|None=None,
                  runtime: pd.DataFrame|None=None, interval_calibration: pd.DataFrame|None=None,
+                 calibration_comparison: pd.DataFrame|None=None,
+                 quantile_reliability: pd.DataFrame|None=None,
                  reliability: pd.DataFrame|None=None, bootstrap: pd.DataFrame|None=None,
                  rr_regimes: pd.DataFrame|None=None,
                  rr_clusters: pd.DataFrame|None=None,
@@ -421,9 +423,15 @@ def build_report(data: pd.DataFrame, output: Path, *, wide: pd.DataFrame|None=No
     # (not an optional side computation); tables are empty rather than
     # absent when a dataset has no distribution-issuing methods configured.
     interval_calibration = pd.DataFrame() if interval_calibration is None else interval_calibration
+    calibration_comparison = (pd.DataFrame() if calibration_comparison is None
+                              else calibration_comparison)
+    quantile_reliability = (pd.DataFrame() if quantile_reliability is None
+                            else quantile_reliability)
     reliability = pd.DataFrame() if reliability is None else reliability
     bootstrap = pd.DataFrame() if bootstrap is None else bootstrap
     interval_calibration.to_csv(tables/"interval_calibration.csv", index=False)
+    calibration_comparison.to_csv(tables/"calibration_strategy_comparison.csv", index=False)
+    quantile_reliability.to_csv(tables/"quantile_reliability.csv", index=False)
     bootstrap.to_csv(tables/"bootstrap_pairwise_comparisons.csv", index=False)
     risk_group = pd.DataFrame()
     if not reliability.empty and "reliability_level" in reliability:
@@ -437,6 +445,11 @@ def build_report(data: pd.DataFrame, output: Path, *, wide: pd.DataFrame|None=No
             g=g.sort_values("nominal");ax.plot(g.nominal,g.coverage,marker="o",label=f"{label(method)} ({status})")
         ax.plot([.5,.95],[.5,.95],"--",color="black",label="Ideal")
         ax.set(xlabel="Nominal coverage",ylabel="Empirical coverage",title="Interval coverage before/after completed-revision calibration");ax.legend(fontsize=7);fig.tight_layout();fig.savefig(figures/"interval_calibration.png",dpi=180);plt.close(fig)
+    if not quantile_reliability.empty:
+        fig,ax=plt.subplots(figsize=(8,6));ax.plot([0,1],[0,1],"--",color="black",label="Ideal")
+        for (method,strategy),g in quantile_reliability.groupby(["method","strategy"],observed=True):
+            g=g.sort_values("nominal_quantile");ax.plot(g.nominal_quantile,g.empirical_coverage,marker="o",ms=3,label=f"{label(method)} — {strategy}")
+        ax.set(xlabel="Nominal quantile",ylabel="Observed proportion below quantile",title="Prospective quantile reliability by calibration strategy");ax.legend(fontsize=7);fig.tight_layout();fig.savefig(figures/"calibration_strategy_reliability.png",dpi=180);plt.close(fig)
 
     # RevRoute Delphi-RF: how many revision-state regimes each origin selected
     # and why, plus where test cases were actually routed. Rendered only when
@@ -504,4 +517,10 @@ def build_report(data: pd.DataFrame, output: Path, *, wide: pd.DataFrame|None=No
         f"<p class='note'>{len(skipped)} location(s) could not be prepared and are absent from every "
         "forecast and score in this report.</p>"+table(skipped))
     report=f"""<!doctype html><html><head><meta charset='utf-8'><title>AutoDelphiRF report</title><style>body{{font:14px system-ui;max-width:1320px;margin:30px auto;padding:0 18px;line-height:1.45}}table{{border-collapse:collapse;font-size:12px;display:block;overflow-x:auto;margin-bottom:20px}}th,td{{border:1px solid #ddd;padding:5px 7px;text-align:right}}th{{background:#f1f3f5}}td:first-child,th:first-child{{text-align:left}}img{{max-width:100%;border:1px solid #ddd;margin:8px 0 28px}}.note{{background:#fff7df;border-left:4px solid #d99800;padding:12px}}.muted{{color:#666}}</style></head><body><h1>{html.escape(str(data.dataset.iloc[0]))}: AutoDelphiRF forecast evaluation report</h1><p class='note'>Point accuracy is reported on BOTH the raw reporting scale (primary) and the model's working scale; they can rank methods differently because raw-scale error grows with the level of the series, so high-volume locations dominate it, while working-scale error weights locations roughly equally. Remaining metrics use the raw reporting scale. Point-only methods are excluded from WIS and calibration. Residual uncertainty includes only cases where that residual model was available.</p><h2>Locations skipped during preparation</h2>{skipped_section}<h2>Coverage and availability</h2>{table(availability)}<h2>Overall prediction comparison (raw reporting scale)</h2>{table(point)}<img src='figures/overall_accuracy.png'><h2>Overall prediction comparison (working scale)</h2><p class='note'>Same matched cases and same predictions as above, scored before the inverse transform. A method that helps most on high-volume locations looks better on the raw scale; one that helps uniformly across locations looks better here.</p>{table(point_working)}<h2>Accuracy by exact lag</h2><p class='note'>Mean and median, for AE and WIS, on both scales -- eight columns per lag in <code>comparison_by_lag.csv</code>. Means and medians disagree because revision error is heavy-tailed, so a method can win on one and lose the other. Raw-scale error grows with the level of the series, so high-volume locations dominate it; working-scale error weights locations roughly equally. At a given lag the two can rank methods differently, so read them together.</p><img src='figures/accuracy_by_lag.png'><img src='figures/wis_by_lag.png'>{table(by_lag)}<h2>Stability over time</h2><img src='figures/accuracy_over_time.png'><h2>Early-lag behavior by location</h2><img src='figures/location_gain.png'>{table(by_location)}<h2>Revision-magnitude analysis</h2>{table(by_magnitude)}<h2>Uncertainty: accuracy, calibration, sharpness, and miss direction</h2>{table(uncertainty)}<img src='figures/quantile_calibration.png'><img src='figures/coverage_and_width.png'><h2>Routing audit</h2>{table(routing)}<h2>Uncertainty and reliability: calibration, risk score, alerts, and bootstrap intervals</h2><p class='note'>Interval calibration expands each base quantile endpoint using historical errors from completed revisions (asymmetric, per side); the risk-score/alert layer stratifies forecasts by historical trustworthiness in comparable cases; bootstrap CIs use the reference-date episode as the resampling unit. None of this changes a point forecast.</p><h3>Interval coverage before/after calibration</h3>{table(interval_calibration)}{"<img src='figures/interval_calibration.png'>" if not interval_calibration.empty else ""}<h3>Risk-group validation</h3>{table(risk_group)}<h3>Reference-date clustered bootstrap comparisons</h3>{table(bootstrap)}{validation_section}{rr_section}<h2>Computation</h2><p class='note'>Shared RED routing/history cost is separated from residual-model incremental fit and prediction cost. Imported comparators are marked unavailable when no runtime was recorded.</p>{table(runtime)}<img src='figures/runtime_by_method.png'><h2>Artifacts</h2><p>All tables are under <code>report/tables</code>; figures under <code>report/figures</code>. Per-origin and pipeline-stage timings are stored beside this report.</p></body></html>"""
+    strategy_section=("<h3>Calibration strategy comparison</h3>"+
+                      table(calibration_comparison)+
+                      ("<img src='figures/calibration_strategy_reliability.png'>"
+                       if not quantile_reliability.empty else ""))
+    report=report.replace("<h3>Interval coverage before/after calibration</h3>",
+                          strategy_section+"<h3>Interval coverage before/after calibration</h3>")
     (output/"report.html").write_text(report)

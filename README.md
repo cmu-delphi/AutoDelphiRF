@@ -375,6 +375,75 @@ The report compares nowcast accuracy and, where available, probabilistic
 forecast performance over reporting lags, locations, and historical forecast
 origins.
 
+Calibration is model-free post-processing. The existing asymmetric endpoint
+correction remains the `endpoint` baseline; AutoDelphiRF also evaluates
+prospective monotone quantile mapping using the location/lag hierarchy and,
+when `revroute_pools.csv` is present, the current origin's RevRoute task pool.
+No strategy triggers model fitting. Their coverage, width, miss direction and
+WIS are compared in `calibration_strategy_comparison.csv`.
+
+Standalone assessment uses genuine test events by default. Rows with
+`genuine_event == false` (including carried-forward pseudo-origins) are removed
+before calibration and affect neither its historical strata nor its metrics.
+Selecting `genuine` or `carried` requires the saved predictions to contain the
+`genuine_event` column; AutoDelphiRF fails explicitly if that provenance is
+unavailable.
+
+`quantile_reliability.csv` and `pit_diagnostics.csv.gz` are diagnostic add-ons.
+Because DelphiRF exports nine quantiles rather than a continuous predictive
+CDF, PIT is reported as the probability bin containing the observation and
+its midpoint. When the truth ties one or more forecast quantiles within the
+same relative boundary tolerance used for interval coverage, `pit_lower` and
+`pit_upper` span the full tied probability range; `pit_tied` and
+`pit_tied_quantiles` make those cases explicit. This avoids assigning tied or
+discrete forecasts to a rounding-dependent single bin. An existing completed
+run can generate these artifacts without refitting models:
+
+```bash
+autodelphirf assess --results autodelphirf_work/results
+```
+
+PIT diagnostics can run independently on the original forecast quantiles:
+
+```bash
+autodelphirf assess \
+  --results autodelphirf_work/results \
+  --pit-only
+```
+
+To run endpoint recalibration, the two quantile-mapping strategies, and their
+empirical coverage/PIT comparisons—without bootstrap inference or the full
+report—use:
+
+```bash
+autodelphirf assess \
+  --results autodelphirf_work/results \
+  --recalibration-only
+```
+
+Assessment defaults to `--event-filter genuine`, so carried-forward forecasts
+are excluded. Use `--event-filter carried` to assess only carried-forward
+forecasts or `--event-filter all` to include both.
+
+PIT-only assessment writes `quantile_reliability.csv` and
+`pit_diagnostics.csv.gz`. Recalibration-only assessment additionally writes
+`calibration.csv.gz`,
+`calibration_variants.csv.gz`, `calibration_strategy_comparison.csv`,
+and `interval_calibration.csv`. Files go into a new timestamped assessment
+directory; the original predictions are not changed. `endpoint` only expands interval
+endpoints; `quantile_map_location_lag` and `quantile_map_pool` are symmetric
+quantile mappings that may widen or narrow the distribution. If a prospective
+stratum lacks sufficient completed history, its original quantiles are kept
+and the fallback source and history count are recorded.
+
+Normal retrospective runs generate them with the rest of the assessment. A
+returning-user update refreshes the diagnostics from the cumulative forecast
+ledger as outcomes become observable and applies prospective calibration to
+new genuine forecasts using only genuine outcomes available at their issue
+time. Carried-forward predictions remain in the prediction ledger and main
+report, but an update containing only carried-forward rows intentionally emits
+no calibrated intervals for that update.
+
 ## Development
 
 Install development dependencies and run the tests:

@@ -164,19 +164,38 @@ def test_assess_reports_missing_frozen_inputs(tmp_path, capsys):
     assert "predictions.csv.gz" in capsys.readouterr().err
 
 
-def test_assess_cli_passes_both_directories_and_prints_the_report(tmp_path, capsys, monkeypatch):
+@pytest.mark.parametrize("flag, mode, message", [
+    (None, "full", "report.html"),
+    ("--pit-only", "pit", "PIT diagnostics complete"),
+    ("--recalibration-only", "recalibration", "Recalibration assessment complete"),
+])
+def test_assess_cli_passes_mode_filter_and_directories(
+        tmp_path, capsys, monkeypatch, flag, mode, message):
     results = tmp_path / "results"
     output = tmp_path / "fresh-assessment"
     called = {}
 
-    def fake_assess(results_dir, output_dir):
-        called["arguments"] = (results_dir, output_dir)
+    def fake_assess(results_dir, output_dir, *, assessment_mode, event_filter):
+        called["arguments"] = (results_dir, output_dir, assessment_mode, event_filter)
         return output_dir
 
     monkeypatch.setattr("autodelphirf.post_assessment.run.assess_results", fake_assess)
-    assert cli.main(["assess", "--results", str(results), "--out", str(output)]) == 0
-    assert called["arguments"] == (results, output)
-    assert str(output / "report" / "report.html") in capsys.readouterr().out
+    arguments = ["assess", "--results", str(results), "--out", str(output),
+                 "--event-filter", "all"]
+    if flag:
+        arguments.append(flag)
+    assert cli.main(arguments) == 0
+    assert called["arguments"] == (results, output, mode, "all")
+    assert message in capsys.readouterr().out
+
+
+def test_assess_cli_rejects_pit_and_recalibration_modes_together(capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["assess", "--results", "results", "--pit-only",
+                  "--recalibration-only"])
+
+    assert exit_info.value.code == 2
+    assert "not allowed with" in capsys.readouterr().err
 
 
 def test_a_config_pointing_at_no_prepared_dataset_explains_what_was_expected(tmp_path, capsys):

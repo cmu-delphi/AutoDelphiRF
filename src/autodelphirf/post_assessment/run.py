@@ -143,9 +143,8 @@ def assess_results(results_dir: Path, output_dir: Path | None = None, *,
     pools_path = results / "revroute_pools.csv"
     pools = (read_csv(pools_path, parse_dates=["cutoff"])
              if pools_path.is_file() else None)
-    assessment_options = ({"pool_assignments": pools} if pools is not None else {})
-    assessment_options["mode"] = mode
-    outputs = run_reliability_and_calibration(long, config, wide=wide, **assessment_options)
+    outputs = run_reliability_and_calibration(
+        long, config, wide=wide, pool_assignments=pools, mode=mode)
     save_assessment_outputs(outputs, output, mode=mode)
     runtime_path = results / "runtime_by_method.csv"
     runtime = pd.read_csv(runtime_path) if runtime_path.is_file() else None

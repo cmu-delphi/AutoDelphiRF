@@ -198,6 +198,14 @@ def test_assess_cli_rejects_pit_and_recalibration_modes_together(capsys):
     assert "not allowed with" in capsys.readouterr().err
 
 
+def test_removed_calibration_only_alias_is_rejected(capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["assess", "--results", "results", "--calibration-only"])
+
+    assert exit_info.value.code == 2
+    assert "unrecognized arguments" in capsys.readouterr().err
+
+
 def test_a_config_pointing_at_no_prepared_dataset_explains_what_was_expected(tmp_path, capsys):
     config = tmp_path / "d.json"
     config.write_text(json.dumps({"name": "d", "prepared_dir": "input", "output_dir": "out",

@@ -181,9 +181,10 @@ def test_assessment_restarts_from_predictions_without_model_fitting(tmp_path, mo
     empty = pd.DataFrame()
     called = {}
 
-    def fake_assessment(long, config, wide=None, mode="full"):
+    def fake_assessment(long, config, wide=None, pool_assignments=None, mode="full"):
         called["rows"] = (len(long), len(wide))
         called["mode"] = mode
+        called["pool_assignments"] = pool_assignments
         called["date_types"] = (long.cutoff.dtype, wide.reference_date.dtype)
         return {"calibration": empty, "interval_calibration": empty,
                 "reliability": empty, "bootstrap": empty,
@@ -200,6 +201,7 @@ def test_assessment_restarts_from_predictions_without_model_fitting(tmp_path, mo
     output = assess_results(results, tmp_path / "assessment")
     assert called["rows"] == (1, 1)
     assert called["mode"] == "full"
+    assert called["pool_assignments"] is None
     assert all(str(dtype).startswith("datetime64") for dtype in called["date_types"])
     assert called["runtime"].standalone_total_seconds.tolist() == [12.5]
     assert list(called["validation"]) == ["v1_example"]
@@ -283,6 +285,32 @@ def test_recalibration_only_writes_exact_recalibration_file_set(tmp_path):
         "calibration_variants.csv.gz", "calibration_strategy_comparison.csv",
         "quantile_reliability.csv", "pit_diagnostics.csv.gz",
     }
+
+
+def test_recalibration_only_runs_from_frozen_predictions_without_a_report(tmp_path):
+    results, _, _ = write_restart_bundle(tmp_path)
+    frame = pd.read_csv(results / "predictions.csv.gz")
+    frame["method"] = "delphirf"
+    frame["truth"] = 1.
+    frame["wis_reporting"] = 0.
+    for tau in (.01, .025, .1, .25, .5, .75, .9, .975, .99):
+        frame[f"q{tau:g}"] = tau
+    frame.to_csv(results / "predictions.csv.gz", index=False, compression="gzip")
+    frame.to_csv(results / "predictions_wide.csv.gz", index=False, compression="gzip")
+
+    output = assess_results(
+        results, tmp_path / "recalibration", assessment_mode="recalibration")
+
+    names = {path.name for path in output.iterdir()}
+    assert "calibration.csv.gz" in names
+    assert "calibration_variants.csv.gz" in names
+    assert "quantile_reliability.csv" in names
+    assert "pit_diagnostics.csv.gz" in names
+    assert "reliability.csv.gz" not in names
+    assert "bootstrap_pairwise_comparisons.csv" not in names
+    assert not (output / "report").exists()
+    manifest = json.loads((output / "assessment_manifest.json").read_text())
+    assert manifest["assessment_mode"] == "recalibration"
 
 
 @pytest.mark.parametrize("mode", ["pit", "recalibration"])
@@ -422,6 +450,11 @@ def test_run_pipeline_and_forecast_assessment_share_the_genuine_event_filter():
     filtered = _genuine_event_rows(frame)
 
     assert filtered.value.tolist() == [1]
+
+
+def test_genuine_event_filter_rejects_missing_provenance():
+    with pytest.raises(ValueError, match="requires a genuine_event column"):
+        _genuine_event_rows(pd.DataFrame({"value": [1]}))
 
 
 @pytest.mark.parametrize("missing", ["predictions.csv.gz", "resolved_config.json"])

@@ -245,14 +245,13 @@ def test_a_missing_genuine_event_flag_is_treated_as_not_genuine():
     assert len(build_cases(prepared, schedule, True)) == 2
 
 
-def test_a_triangle_without_a_genuine_event_column_is_not_filtered_away():
-    """The column is optional; its absence must not empty the case set."""
+def test_a_triangle_without_a_genuine_event_column_is_rejected():
     prepared = prepared_frame(rows=4).drop(columns=["genuine_event"]).assign(
         log_value_target_7dav=1.0)
     schedule = schedule_frame(test_date=[pd.Timestamp("2024-01-01")],
                               experiment_end_date=[pd.Timestamp("2024-02-01")])
-    cases = build_cases(prepared, schedule, True)
-    assert len(cases) == 4 and cases.genuine_event.isna().all()
+    with pytest.raises(ValueError, match="requires a genuine_event column"):
+        build_cases(prepared, schedule, True)
 
 
 def test_rows_with_no_available_target_value_remain_forecast_cases():

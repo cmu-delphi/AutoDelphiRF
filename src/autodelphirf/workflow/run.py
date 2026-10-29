@@ -65,6 +65,8 @@ def build_cases(prepared: pd.DataFrame, schedule: pd.DataFrame,
     ``enforce_target_maturity``): it is forecast, and scored only once a later
     archive supplies its target.
     """
+    if "genuine_event" not in prepared:
+        raise ValueError("prepared forecast data requires a genuine_event column")
     target = str(schedule.target_column.iloc[0])
     rows = []
     ordered = schedule.sort_values("test_date").reset_index(drop=True)
@@ -76,7 +78,7 @@ def build_cases(prepared: pd.DataFrame, schedule: pd.DataFrame,
             end = (pd.Timestamp(ordered.test_date.iloc[index + 1])
                    if index + 1 < len(ordered) else pd.Timestamp(item.experiment_end_date))
         visible = prepared[prepared.report_date.ge(cutoff) & prepared.report_date.lt(end)].copy()
-        if genuine_only and "genuine_event" in visible:
+        if genuine_only:
             visible = visible[visible.genuine_event.fillna(False).astype(bool)]
         provisional = provisional_column(target)
         visible = visible[visible.log_value_7dav.notna() & visible[provisional].notna()].copy()
@@ -89,8 +91,7 @@ def build_cases(prepared: pd.DataFrame, schedule: pd.DataFrame,
         visible["Null"] = visible[provisional].astype(float)
         # Whether a release was actually reported at this lag (False for a value
         # carried forward by the grid), so evaluation can always be split by it.
-        visible["genuine_event"] = (visible.genuine_event.fillna(False).astype(bool)
-                                    if "genuine_event" in visible else pd.NA)
+        visible["genuine_event"] = visible.genuine_event.fillna(False).astype(bool)
         rows.append(visible[KEYS + ["truth", "Null", "genuine_event"]])
     if not rows:
         return pd.DataFrame(columns=KEYS + ["truth", "Null", "genuine_event"])
@@ -581,9 +582,9 @@ def forecast_time_assessment(history: pd.DataFrame, newly_issued: pd.DataFrame,
 
 
 def _genuine_event_rows(frame: pd.DataFrame) -> pd.DataFrame:
-    """Return genuine forecast events, preserving legacy inputs without provenance."""
+    """Return genuine forecast events and require explicit event provenance."""
     if "genuine_event" not in frame:
-        return frame
+        raise ValueError("genuine-event assessment requires a genuine_event column")
     return frame[frame.genuine_event.fillna(False).astype(bool)].copy()
 
 

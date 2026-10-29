@@ -398,7 +398,11 @@ def _quantile_level_map(selected: pd.DataFrame, columns: list[str], truth_column
     valid = np.isfinite(truth) & np.isfinite(quantiles).all(axis=1)
     if not valid.any():
         return taus.copy()
-    coverage = np.mean(truth[valid, None] <= quantiles[valid], axis=0)
+    valid_truth = truth[valid, None]
+    valid_quantiles = quantiles[valid]
+    scale = np.maximum(np.abs(valid_truth), np.abs(valid_quantiles))
+    tolerance = COVERAGE_BOUNDARY_TOLERANCE * scale
+    coverage = np.mean(valid_truth <= valid_quantiles + tolerance, axis=0)
     coverage = np.maximum.accumulate(coverage)
     frame = pd.DataFrame({"coverage": np.r_[0., coverage, 1.],
                           "nominal": np.r_[0., taus, 1.]})
@@ -607,9 +611,11 @@ def pit_diagnostics(calibrations: dict[str, pd.DataFrame],
         records = available[[c for c in identity if c in available]].copy()
         records["strategy"] = strategy
         records["pit_lower"] = lower_levels[below]
-        ordinary_upper = upper_levels[below]
-        tied_upper = np.where(at_or_below > 0, taus[np.maximum(at_or_below - 1, 0)], 0.)
-        records["pit_upper"] = np.where(has_tie, tied_upper, ordinary_upper)
+        # A tie from routed quantiles k through m leaves every probability in
+        # the adjacent bins [tau_(k-1), tau_(m+1)] compatible with the
+        # observation.  Using tau_m as the upper endpoint would widen only the
+        # lower side and bias tied PIT midpoints downward.
+        records["pit_upper"] = upper_levels[at_or_below]
         records["pit_midpoint"] = (records.pit_lower + records.pit_upper) / 2
         records["pit_bin"] = below
         records["pit_tied"] = has_tie

@@ -93,6 +93,18 @@ def test_quantile_mapping_can_narrow_an_overwide_forecast():
     assert mapped[TAUS.index(.75)] < .75
 
 
+def test_quantile_mapping_uses_the_same_boundary_tolerance_as_reliability():
+    taus = np.asarray(TAUS)
+    columns = [f"q{tau:g}" for tau in taus]
+    exact = pd.DataFrame({"truth": [1.], **{column: [1.] for column in columns}})
+    roundoff = pd.DataFrame({
+        "truth": [1.], **{column: [1. - 5e-10] for column in columns}})
+
+    assert np.array_equal(
+        _quantile_level_map(exact, columns, "truth", taus),
+        _quantile_level_map(roundoff, columns, "truth", taus))
+
+
 def test_remap_quantiles_uses_constant_extrapolation_beyond_outer_quantiles():
     taus = np.asarray(TAUS)
     base = np.asarray([[10., 20., 30., 40., 50., 60., 70., 80., 90.]])
@@ -187,8 +199,8 @@ def test_pit_is_reported_as_a_bin_for_a_nine_quantile_forecast():
     reliability, pit = pit_diagnostics({"base": frame, "endpoint": frame})
     assert set(reliability.strategy) == {"base", "endpoint"}
     row = pit[pit.strategy.eq("base")].iloc[0]
-    assert row.pit_lower == .25 and row.pit_upper == .5
-    assert row.pit_midpoint == .375
+    assert row.pit_lower == .25 and row.pit_upper == .75
+    assert row.pit_midpoint == .5
 
 
 def test_pit_ties_span_every_equal_quantile_with_boundary_tolerance():
@@ -204,6 +216,6 @@ def test_pit_ties_span_every_equal_quantile_with_boundary_tolerance():
     assert row.pit_tied
     assert row.pit_tied_quantiles == 3
     assert row.pit_lower == .025
-    assert row.pit_upper == .5
+    assert row.pit_upper == .75
     coverage = reliability.set_index("nominal_quantile").empirical_coverage
     assert coverage.loc[.1] == 1.0

@@ -18,6 +18,7 @@ from ..core.context import attach_issued_context
 from ..core.history import enforce_target_maturity, target_as_of_date, validate_target_dates
 from ..core.defaults import EVALUATION_DEFAULTS
 from ..post_assessment.reliability import (add_interval_columns, pit_diagnostics,
+                                           LEVELS,
                                            prospective_calibration,
                                            prospective_quantile_mapping,
                                            reliability_history)
@@ -29,7 +30,6 @@ from ..comparators.schema import validate_comparator_file
 from ..pre_diagnosis.diagnosis import diagnose_prepared_data, resolve_target_lag
 from ..core.registry import LAYER_COLUMNS, PREDICTION_LAYERS, point_layer
 from .methods import DELPHIRF_METHODS, train_requested_delphirf
-from ..post_assessment.reporting import LEVELS, build_report
 
 KEYS = ["fold", "cutoff", "geo_value", "reference_date", "report_date", "target_date", "lag"]
 
@@ -54,6 +54,12 @@ BOOTSTRAP_ROLE_BY_METHOD = {
     "delphirf": "candidate",
     "global_delphirf": "global",
 }
+
+
+def build_report(*args, **kwargs):
+    """Load plotting dependencies only for runs that actually build a report."""
+    from ..post_assessment.reporting import build_report as render_report
+    return render_report(*args, **kwargs)
 
 
 def build_cases(prepared: pd.DataFrame, schedule: pd.DataFrame,

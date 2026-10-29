@@ -275,10 +275,21 @@ autodelphirf diagnose --raw-config examples/my_archive.json
 autodelphirf run --raw-config examples/my_archive.json
 ```
 
-The example fixes the user-selected target lag at 28 days, starts its monthly
-historical forecast origins on September 5, 2025, and lets AutoDelphiRF
-diagnose the remaining preprocessing settings. It writes its results under
-`autodelphirf_work/readme_example`.
+The checked-in example is a compact CHNG outpatient fraction archive with
+three pseudonymized locations (`AB`, `CD`, and `EF`). It fixes the target lag
+at 60 days and runs three monthly historical forecast origins from October 29
+through December 28, 2021. The numerator counts were transformed with fixed,
+location-specific multipliers; the location labels are replaced, while the
+dates, denominators, and revision timing are retained. The checked-in archive
+is self-contained. Results are written under `autodelphirf_work/readme_example`.
+
+For the checked-in archive, the report scores 14,981 genuine forecast cases.
+Its overall mean absolute error is 0.000333 for DelphiRF and 0.000437 for the
+last-report baseline (23.8% lower for DelphiRF); DelphiRF also has lower mean
+absolute error at each of the three origins. The paired bootstrap estimate for
+`DelphiRF - baseline` is -0.000103 (95% interval -0.000128 to -0.000078).
+These numbers document this fixed example rather than promising the same
+improvement for other archives.
 
 ## Returning-user workflow
 
@@ -426,7 +437,11 @@ are excluded. Use `--event-filter carried` to assess only carried-forward
 forecasts or `--event-filter all` to include both.
 
 PIT-only assessment writes `quantile_reliability.csv` and
-`pit_diagnostics.csv.gz`. Recalibration-only assessment additionally writes
+`pit_diagnostics.csv.gz`. It reads only the columns required from
+`predictions.csv.gz`; it does not load `predictions_wide.csv.gz`, pool
+assignments, runtime tables, or plotting dependencies. Its assessment manifest
+therefore lists only the inputs actually consumed by PIT diagnostics.
+Recalibration-only assessment additionally writes
 `calibration.csv.gz`,
 `calibration_variants.csv.gz`, `calibration_strategy_comparison.csv`,
 and `interval_calibration.csv`. Files go into a new timestamped assessment

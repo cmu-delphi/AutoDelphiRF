@@ -84,7 +84,7 @@ def test_synthetic_reference_dates_are_removed_and_daily_releases_kept(tmp_path)
     # Every release before the target lag is a genuine row, on every weekday.
     raw = pd.read_csv(archive, parse_dates=["reference_date", "report_date"])
     assert triangle.genuine_event.sum() == (raw.report_date - raw.reference_date).dt.days.lt(21).sum()
-    assert triangle.report_date.dt.dayofweek.nunique() == 7
+    assert triangle.report_date.dt.day_of_week.nunique() == 7
     # The value features are the values themselves, not diluted by zero days.
     assert np.allclose(triangle.value_7dav, triangle.value_raw)
     row = triangle[(triangle.reference_date == "2022-03-05") & (triangle.lag == 3)].iloc[0]

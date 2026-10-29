@@ -11,8 +11,8 @@ import matplotlib
 # web application on macOS, CI workers, and servers without a display.
 matplotlib.use("Agg", force=True)
 import matplotlib.pyplot as plt
+from .reliability import LEVELS
 
-LEVELS = {50: (.25, .75), 80: (.1, .9), 95: (.025, .975)}
 TAUS = [.01, .025, .1, .25, .5, .75, .9, .975, .99]
 LABELS = {"baseline_null": "Latest reported value", "delphirf": "RevRoute pooling + DelphiRF", "naive_delphirf": "Naive DelphiRF", "similarity_weighted_delphirf": "Similarity-weighted DelphiRF",
           "red": "Revision-pattern matching", "residual_calendar": "Revision-pattern matching + calendar residual RF",
@@ -405,7 +405,10 @@ def build_report(data: pd.DataFrame, output: Path, *, wide: pd.DataFrame|None=No
     if "baseline_null" in pivot:
         fig,ax=plt.subplots(figsize=(10,max(8,.22*len(pivot))));y=np.arange(len(pivot));others=[m for m in methods if m!="baseline_null"]
         for off,method in zip(np.linspace(-.3,.3,len(others)),others):ax.scatter(100*(pivot["baseline_null"]-pivot[method])/pivot["baseline_null"].replace(0,np.nan),y+off,s=15,label=label(method),color=palette[method])
-        ax.axvline(0,color="black");ax.set(yticks=y,yticklabels=pivot.index,xlabel="Mean-AE gain versus Null (%)",ylabel="Location",title="Early-lag performance by location (lag ≤ 14)");ax.legend(fontsize=8);fig.tight_layout();fig.savefig(figures/"location_gain.png",dpi=180);plt.close(fig)
+        ax.axvline(0,color="black");ax.set(yticks=y,yticklabels=pivot.index,xlabel="Mean-AE gain versus Null (%)",ylabel="Location",title="Early-lag performance by location (lag ≤ 14)")
+        handles, labels = ax.get_legend_handles_labels()
+        if handles: ax.legend(handles, labels, fontsize=8)
+        fig.tight_layout();fig.savefig(figures/"location_gain.png",dpi=180);plt.close(fig)
     if not calibration.empty:
         fig,ax=plt.subplots(figsize=(6.5,5.5));ax.plot([0,1],[0,1],"--",color="black",label="Ideal")
         for method in calibration.method.unique():

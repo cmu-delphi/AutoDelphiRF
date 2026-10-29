@@ -15,6 +15,7 @@ DEFAULT_ADJACENT_LAG_RADIUS = CALIBRATION_DEFAULTS.get("adjacent_lag_radius", 1)
 DEFAULT_ETA = CALIBRATION_DEFAULTS.get("eta", .9)
 DEFAULT_CAUTION_CUT = CALIBRATION_DEFAULTS.get("caution_cut", .7)
 DEFAULT_HIGH_RISK_CUT = CALIBRATION_DEFAULTS.get("high_risk_cut", .9)
+LEVELS = {50: (.25, .75), 80: (.1, .9), 95: (.025, .975)}
 
 
 # ---------------------------------------------------------------------------
@@ -577,7 +578,7 @@ def pit_diagnostics(calibrations: dict[str, pd.DataFrame],
     its midpoint, rather than pretending an exact PIT value is available.
     """
     taus = np.asarray(taus, float)
-    reliability_rows, pit_frames = [], []
+    reliability_frames, pit_frames = [], []
     identity = ["method", "fold", "cutoff", "geo_value", "reference_date",
                 "report_date", "target_date", "lag"]
     for strategy, frame in calibrations.items():
@@ -586,22 +587,30 @@ def pit_diagnostics(calibrations: dict[str, pd.DataFrame],
         columns = ([f"q{tau:g}" for tau in taus] if strategy == "base"
                    else [f"cal_q{tau:g}" for tau in taus])
         available = frame.dropna(subset=["truth", *columns]).copy()
-        for method, group in available.groupby("method", observed=True):
-            truth = group.truth.to_numpy(float)
-            quantiles = group[columns].to_numpy(float)
-            for index, tau in enumerate(taus):
-                scale = np.maximum(np.abs(truth), np.abs(quantiles[:, index]))
-                tolerance = COVERAGE_BOUNDARY_TOLERANCE * scale
-                covered = truth <= quantiles[:, index] + tolerance
-                reliability_rows.append({
-                    "strategy": strategy, "method": method, "nominal_quantile": tau,
-                    "empirical_coverage": float(np.mean(covered)),
-                    "coverage_error": float(np.mean(covered) - tau),
-                    "n": len(group)})
         values = available[columns].to_numpy(float)
         truth = available.truth.to_numpy(float)
         scale = np.maximum(np.abs(values), np.abs(truth[:, None]))
         tolerance = COVERAGE_BOUNDARY_TOLERANCE * scale
+        covered = truth[:, None] <= values + tolerance
+        # Match pandas groupby's historical deterministic method ordering so
+        # vectorization changes performance, not the emitted CSV row order.
+        method_codes, methods = pd.factorize(available.method, sort=True)
+        valid_method = method_codes >= 0
+        if valid_method.any():
+            counts = np.bincount(method_codes[valid_method], minlength=len(methods))
+            successes = np.column_stack([
+                np.bincount(method_codes[valid_method], weights=covered[valid_method, index],
+                            minlength=len(methods))
+                for index in range(len(taus))])
+            rates = successes / counts[:, None]
+            reliability_frames.append(pd.DataFrame({
+                "strategy": strategy,
+                "method": np.repeat(methods.to_numpy(), len(taus)),
+                "nominal_quantile": np.tile(taus, len(methods)),
+                "empirical_coverage": rates.ravel(),
+                "coverage_error": (rates - taus).ravel(),
+                "n": np.repeat(counts, len(taus)),
+            }))
         tied = np.abs(values - truth[:, None]) <= tolerance
         below = np.sum(values < truth[:, None] - tolerance, axis=1)
         at_or_below = np.sum(values <= truth[:, None] + tolerance, axis=1)
@@ -622,7 +631,9 @@ def pit_diagnostics(calibrations: dict[str, pd.DataFrame],
         records["pit_tied_quantiles"] = tied.sum(axis=1)
         pit_frames.append(records)
     pit = (pd.concat(pit_frames, ignore_index=True) if pit_frames else pd.DataFrame())
-    return pd.DataFrame(reliability_rows), pit
+    reliability = (pd.concat(reliability_frames, ignore_index=True)
+                   if reliability_frames else pd.DataFrame())
+    return reliability, pit
 
 
 # Relative tolerance for interval-coverage boundary comparisons. Set well

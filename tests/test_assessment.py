@@ -369,7 +369,7 @@ def test_assessment_defaults_to_genuine_events_and_can_include_all(tmp_path, mon
     empty = pd.DataFrame()
 
     def fake_assessment(long, config, wide=None, **kwargs):
-        seen.append((len(long), len(wide), kwargs))
+        seen.append((len(long), None if wide is None else len(wide), kwargs))
         return {"calibration": empty, "interval_calibration": empty,
                 "reliability": empty, "bootstrap": empty,
                 "calibration_variants": empty, "calibration_comparison": empty,
@@ -382,10 +382,29 @@ def test_assessment_defaults_to_genuine_events_and_can_include_all(tmp_path, mon
     assess_results(results, tmp_path / "carried", assessment_mode="pit",
                    event_filter="carried")
 
-    assert seen[0][0:2] == (1, 1)
+    assert seen[0][0:2] == (1, None)
     assert seen[0][2]["mode"] == "pit"
-    assert seen[1][0:2] == (2, 2)
-    assert seen[2][0:2] == (1, 1)
+    assert seen[1][0:2] == (2, None)
+    assert seen[2][0:2] == (1, None)
+
+
+def test_pit_only_does_not_read_or_hash_wide_predictions(tmp_path, monkeypatch):
+    results, _, _ = write_restart_bundle(tmp_path)
+    (results / "predictions_wide.csv.gz").write_bytes(b"not a gzip file")
+    empty = pd.DataFrame()
+    monkeypatch.setattr(
+        "autodelphirf.post_assessment.run.run_reliability_and_calibration",
+        lambda *args, **kwargs: {
+            "calibration": empty, "interval_calibration": empty,
+            "reliability": empty, "bootstrap": empty,
+            "calibration_variants": empty, "calibration_comparison": empty,
+            "quantile_reliability": empty, "pit_diagnostics": empty})
+
+    output = assess_results(results, tmp_path / "pit", assessment_mode="pit")
+
+    manifest = json.loads((output / "assessment_manifest.json").read_text())
+    assert set(manifest["inputs"]) == {"predictions.csv.gz", "resolved_config.json"}
+    assert manifest["rows"]["wide"] is None
 
 
 def test_carried_filter_requires_event_provenance(tmp_path):

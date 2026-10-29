@@ -364,8 +364,9 @@ def test_update_keeps_genuine_testing_false_frozen(tmp_path, capsys):
     before = pd.read_csv(results / "forecast_ledger.csv.gz")
 
     operational.to_csv(archive, index=False)
-    assert cli.main(["update", "--raw-config", str(config),
-                     "--as-of-date", str(later_release.date())]) == 0
+    with pytest.warns(RuntimeWarning, match="DelphiRF left 1 test row"):
+        assert cli.main(["update", "--raw-config", str(config),
+                         "--as-of-date", str(later_release.date())]) == 0
     # The setting stays false in every record of the deployment.
     assert json.loads((work / "carried.json").read_text())["genuine_testing"] is False
     assert json.loads((work / "carried" / "preparation.json").read_text())[

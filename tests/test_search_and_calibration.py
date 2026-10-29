@@ -219,3 +219,21 @@ def test_pit_ties_span_every_equal_quantile_with_boundary_tolerance():
     assert row.pit_upper == .75
     coverage = reliability.set_index("nominal_quantile").empirical_coverage
     assert coverage.loc[.1] == 1.0
+
+
+def test_vectorized_pit_reliability_keeps_methods_separate():
+    frame = pd.DataFrame({
+        "method": ["second", "second", "first", "first"],
+        "truth": [0., 2., 0., 2.],
+    })
+    for tau in TAUS:
+        frame[f"q{tau:g}"] = [1., 1., 3., 3.]
+
+    reliability, _ = pit_diagnostics({"base": frame})
+    median = reliability[reliability.nominal_quantile.eq(.5)].set_index("method")
+
+    assert reliability.method.drop_duplicates().tolist() == ["first", "second"]
+    assert median.loc["first", "n"] == 2
+    assert median.loc["first", "empirical_coverage"] == 1.
+    assert median.loc["second", "n"] == 2
+    assert median.loc["second", "empirical_coverage"] == .5

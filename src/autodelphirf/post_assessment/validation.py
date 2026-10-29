@@ -28,6 +28,15 @@ EARLY_LAG_MAX = EVALUATION_DEFAULTS.get("early_lag_max", 14)
 DEFAULT_ETA = CALIBRATION_DEFAULTS.get("eta", .9)
 
 
+def _spearman(left, right) -> float:
+    """Spearman correlation, undefined without variation on both axes."""
+    pairs = pd.DataFrame({"left": left, "right": right}).replace(
+        [np.inf, -np.inf], np.nan).dropna()
+    if len(pairs) < 2 or pairs.left.nunique() < 2 or pairs.right.nunique() < 2:
+        return np.nan
+    return float(pairs.left.corr(pairs.right, method="spearman"))
+
+
 def _subsets(long: pd.DataFrame, early_lag_max: int = EARLY_LAG_MAX):
     """(name, frame) for the evaluation subsets the protocol requires."""
     yield "overall", long
@@ -310,10 +319,8 @@ def risk_discrimination(reliability: pd.DataFrame, bins: int = 5,
                 usable = group[np.isfinite(group[signal]) & np.isfinite(group.realized_ae)]
                 if len(usable) < 10:
                     continue
-                spearman = float(pd.Series(usable[signal]).corr(
-                    pd.Series(usable.realized_ae), method="spearman"))
-                spearman_regret = float(pd.Series(usable[signal]).corr(
-                    pd.Series(usable.realized_regret), method="spearman"))
+                spearman = _spearman(usable[signal], usable.realized_ae)
+                spearman_regret = _spearman(usable[signal], usable.realized_regret)
                 # QUANTILE bins, per spec V2.1 ("quantile bins of q_err").
                 # Fixed [0,1] edges were right for the retired percentile
                 # risk_score but meaningless for q_err, which carries target
@@ -449,8 +456,7 @@ def harm_frequency_discrimination(reliability: pd.DataFrame, bins: int = 5,
         for method, group in frame.groupby("method", observed=True):
             issued = group.f_harm.astype(float)
             realized = (group.realized_regret > 0).astype(float)
-            spearman = (float(pd.Series(issued).corr(realized, method="spearman"))
-                        if issued.nunique() > 1 else np.nan)
+            spearman = _spearman(issued, realized)
             # Temporal stability of the base rate, per spec V2b item (4).
             drift = np.nan
             if "cutoff" in group:
@@ -505,8 +511,7 @@ def interval_width_value_added(reliability: pd.DataFrame, long: pd.DataFrame,
         return pd.DataFrame()
     rows = []
     for method, group in merged.groupby("method", observed=True):
-        marginal = float(pd.Series(group.q_error).corr(pd.Series(group.interval_width),
-                                                       method="spearman"))
+        marginal = _spearman(group.q_error, group.interval_width)
         try:
             width_bins = pd.qcut(group.interval_width, 3, labels=False, duplicates="drop")
         except ValueError:
@@ -529,8 +534,8 @@ def interval_width_value_added(reliability: pd.DataFrame, long: pd.DataFrame,
                 "ae_highest_qerr_tercile": float(trend.iloc[-1]),
                 "within_band_ae_ratio": float(trend.iloc[-1] / trend.iloc[0]) if trend.iloc[0] > 0 else np.nan,
                 "stratifies_within_band": bool(trend.iloc[-1] > trend.iloc[0]),
-                "spearman_qerr_vs_ae_within_band": float(
-                    pd.Series(cell.q_error).corr(pd.Series(cell.realized_ae), method="spearman"))})
+                "spearman_qerr_vs_ae_within_band": _spearman(
+                    cell.q_error, cell.realized_ae)})
     return pd.DataFrame(rows)
 
 
@@ -565,7 +570,7 @@ def harm_severity_validation(reliability: pd.DataFrame, eta: float = DEFAULT_ETA
                 continue
             severity = harmed.realized_regret.to_numpy(float)
             issued = harmed.m_harm.to_numpy(float)
-            spearman = float(pd.Series(issued).corr(pd.Series(severity), method="spearman"))
+            spearman = _spearman(issued, severity)
             bins = min(5, max(2, len(harmed) // 20))
             try:
                 labels = pd.qcut(pd.Series(issued), bins, labels=False, duplicates="drop")
@@ -612,9 +617,8 @@ def opposed_objective_diagnostic(reliability: pd.DataFrame,
                 continue
             harm = (group.realized_regret > 0).astype(float)
             def rank(a, b):
-                return (float(pd.Series(a).corr(pd.Series(b).reset_index(drop=True),
-                                                method="spearman"))
-                        if pd.Series(a).nunique() > 1 else np.nan)
+                return _spearman(pd.Series(a).reset_index(drop=True),
+                                 pd.Series(b).reset_index(drop=True))
             error = group.q_error.reset_index(drop=True)
             rows.append({
                 "subset": subset, "method": method, "n": len(group),

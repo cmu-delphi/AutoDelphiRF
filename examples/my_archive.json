@@ -1,32 +1,38 @@
 {
-  "_comment": "Runnable example for the repository's my_archive.csv. Paths are relative to this file.",
-  "name": "mydata",
+  "_comment": "Runnable three-origin CHNG-fraction example. Paths are relative to this file.",
+  "name": "chng_readme",
   "archive": "../my_archive.csv",
   "work_dir": "../autodelphirf_work/readme_example",
   "columns": {
-    "reference_date": "reference_date",
-    "report_date": "report_date",
+    "reference_date": "time_value",
+    "report_date": "issue_date",
     "geo_value": "geo_value",
     "values": [
-      "value"
+      "value_covid",
+      "value_total"
     ]
   },
-  "value_type": "count",
+  "value_type": "fraction",
   "preprocessing": {
-    "target_lag": 28,
+    "target_lag": 60,
     "confirm_target_lag": true,
-    "temporal_resolution": null,
-    "lag_terms": null,
-    "training_days": null,
-    "smoothed": null,
+    "temporal_resolution": "daily",
+    "lag_terms": [1, 7],
+    "training_days": 180,
+    "smoothed": false,
+    "smoothed_target": true,
+    "weekday_groups": {
+      "Mon": [1],
+      "Weekends": [6, 7]
+    },
     "min_location_rows": 100,
     "triangle_format": "parquet"
   },
   "retraining": {
-    "first_origin_date": "2025-09-05",
+    "first_origin_date": null,
     "retrain_days": 30,
-    "start_date": null,
-    "end_date": null
+    "start_date": "2021-10-29",
+    "end_date": "2021-12-28"
   },
   "genuine_training": true,
   "genuine_testing": true,

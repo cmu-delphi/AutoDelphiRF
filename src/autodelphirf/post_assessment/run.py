@@ -14,10 +14,21 @@ from .. import __version__
 from ..core.config import DatasetConfig, load_dataset_config, write_resolved_config
 from ..core.io import read_csv
 from ..workflow.run import run_reliability_and_calibration
-from .reporting import build_report
+from .reliability import ROUTED_TAUS
 
 
 DATE_COLUMNS = ("cutoff", "reference_date", "report_date", "target_date")
+PIT_COLUMNS = frozenset({
+    "method", "fold", "cutoff", "geo_value", "reference_date", "report_date",
+    "target_date", "lag", "truth", "genuine_event", "model_available",
+    "has_distribution", *(f"q{tau:g}" for tau in ROUTED_TAUS),
+})
+
+
+def build_report(*args, **kwargs):
+    """Load the plotting/report stack only when a full report is requested."""
+    from .reporting import build_report as render_report
+    return render_report(*args, **kwargs)
 
 
 def sha256(path: Path) -> str:
@@ -28,8 +39,12 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _read_predictions(path: Path) -> pd.DataFrame:
-    frame = read_csv(path)
+def _read_predictions(path: Path, columns: set[str] | frozenset[str] | None = None) -> pd.DataFrame:
+    if columns is None:
+        frame = read_csv(path)
+    else:
+        available = read_csv(path, nrows=0).columns
+        frame = read_csv(path, usecols=[column for column in available if column in columns])
     for column in DATE_COLUMNS:
         if column in frame:
             frame[column] = pd.to_datetime(frame[column])
@@ -119,9 +134,11 @@ def assess_results(results_dir: Path, output_dir: Path | None = None, *,
                 f"{reliability_path}")
     # Assessment scores only forecasts whose target exists, exactly as the run
     # that produced these predictions did.
-    long = _read_predictions(results / "predictions.csv.gz")
+    long = _read_predictions(
+        results / "predictions.csv.gz", columns=PIT_COLUMNS if mode == "pit" else None)
     wide_path = results / "predictions_wide.csv.gz"
-    wide = _read_predictions(wide_path) if wide_path.is_file() else None
+    wide = (_read_predictions(wide_path)
+            if mode != "pit" and wide_path.is_file() else None)
     if event_filter != "all" and "genuine_event" not in long:
         raise ValueError(
             f"--event-filter {event_filter} requires a genuine_event column in predictions")
@@ -142,15 +159,15 @@ def assess_results(results_dir: Path, output_dir: Path | None = None, *,
         wide = wide[wide.truth.notna()].copy()
     pools_path = results / "revroute_pools.csv"
     pools = (read_csv(pools_path, parse_dates=["cutoff"])
-             if pools_path.is_file() else None)
+             if mode != "pit" and pools_path.is_file() else None)
     outputs = run_reliability_and_calibration(
         long, config, wide=wide, pool_assignments=pools, mode=mode)
     save_assessment_outputs(outputs, output, mode=mode)
-    runtime_path = results / "runtime_by_method.csv"
-    runtime = pd.read_csv(runtime_path) if runtime_path.is_file() else None
-    skipped_path = results / "skipped_locations.csv"
-    skipped = read_csv(skipped_path) if skipped_path.is_file() else None
     if mode == "full":
+        runtime_path = results / "runtime_by_method.csv"
+        runtime = pd.read_csv(runtime_path) if runtime_path.is_file() else None
+        skipped_path = results / "skipped_locations.csv"
+        skipped = read_csv(skipped_path) if skipped_path.is_file() else None
         build_report(long, output / "report", wide=wide, runtime=runtime,
                      skipped_locations=skipped,
                      interval_calibration=outputs["interval_calibration"],
@@ -163,7 +180,10 @@ def assess_results(results_dir: Path, output_dir: Path | None = None, *,
     assessment_config = replace(config, output_dir=output)
     write_resolved_config(assessment_config, output / "resolved_config.json")
     inputs = {}
-    for name in ("predictions.csv.gz", "predictions_wide.csv.gz", "resolved_config.json"):
+    input_names = ["predictions.csv.gz", "resolved_config.json"]
+    if mode != "pit":
+        input_names.insert(1, "predictions_wide.csv.gz")
+    for name in input_names:
         path = results / name
         if not path.is_file():
             continue
@@ -173,7 +193,7 @@ def assess_results(results_dir: Path, output_dir: Path | None = None, *,
         inputs["reliability_reference"] = {
             "path": str(reliability_path), "sha256": sha256(reliability_path),
             "bytes": reliability_path.stat().st_size}
-    if pools_path.is_file():
+    if mode != "pit" and pools_path.is_file():
         inputs["revroute_pools.csv"] = {
             "path": str(pools_path), "sha256": sha256(pools_path),
             "bytes": pools_path.stat().st_size}

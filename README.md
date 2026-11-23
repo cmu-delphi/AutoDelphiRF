@@ -13,8 +13,8 @@ information across indicators.
 revision archive → diagnosis → forecasting → assessment tables
 ```
 
-For a **first-time retrospective analysis**, AutoDelphiRF moves through past
-report dates and recreates the forecasts that could have been made at each
+When setting up a new indicator retrospectively, AutoDelphiRF moves through
+past report dates and recreates the forecasts that could have been made at each
 date. Future reports are kept hidden, so the evaluation reflects historical
 real-time use. When later releases arrive, the same analysis can be updated
 without discarding its saved models or previously issued forecasts.
@@ -68,11 +68,11 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[parquet]"
 ```
 
-## First-time retrospective workflow
+## Retrospective nowcasting setup and diagnosis for a new indicator
 
-A first-time user needs one revision-history file containing multiple releases
-of the same indicator. Each row records the value for a location and reference
-date as it appeared on a particular report date.
+To set up a new indicator, provide one revision-history file containing
+multiple releases of the same indicator. Each row records the value for a
+location and reference date as it appeared on a particular report date.
 
 The easiest way to begin is the local web application. It asks for the file and
 settings step by step. The same analysis can also be run from one terminal
@@ -294,7 +294,7 @@ absolute error at each of the three origins. The paired bootstrap estimate for
 These numbers document this fixed example rather than promising the same
 improvement for other archives.
 
-## Returning-user workflow
+## Continue nowcasting for an existing indicator
 
 Use this workflow when the first retrospective run is complete and a newer
 release of the same revision archive becomes available. The new file must be a
@@ -377,7 +377,7 @@ autodelphirf_work/
     └── run_manifest.json
 ```
 
-The important files for a first-time user are:
+The important files for a new indicator are:
 
 - `results/web_tables/`: score summaries for the web results view;
 - `results/reassessment_decisions.csv.gz`: forecast-to-forecast decisions;
@@ -501,9 +501,9 @@ quantile mappings that may widen or narrow the distribution. If a prospective
 stratum lacks sufficient completed history, its original quantiles are kept
 and the fallback source and history count are recorded.
 
-Normal retrospective runs generate them with the rest of the assessment. A
-returning-user update refreshes the diagnostics from the cumulative forecast
-ledger as outcomes become observable and applies prospective calibration to
+Normal retrospective runs generate them with the rest of the assessment. An
+update for an existing indicator refreshes the diagnostics from the cumulative
+forecast ledger as outcomes become observable and applies prospective calibration to
 new genuine forecasts using only genuine outcomes available at their issue
 time. Carried-forward predictions remain in the prediction ledger, but an
 update containing only carried-forward rows intentionally emits

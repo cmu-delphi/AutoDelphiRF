@@ -399,7 +399,8 @@ def _apply_frozen_update_settings(arguments: argparse.Namespace) -> argparse.Nam
     contract = Path(arguments.out) / "results" / "analysis_contract.json"
     if not preparation.is_file() or not contract.is_file():
         raise FileNotFoundError(
-            "returning-user update needs an earlier completed run in the configured work_dir")
+            "continuing nowcasting for an existing indicator needs an earlier completed "
+            "run in the configured work_dir")
     recorded = json.loads(preparation.read_text())
     resolved = recorded["resolved_preprocessing"]
     frozen = json.loads(contract.read_text())["settings"]

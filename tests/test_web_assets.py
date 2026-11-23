@@ -158,7 +158,8 @@ def test_intro_explains_automation_independence_and_retrospective_use(html):
     copy = " ".join(html.split())
     assert "without preliminary data exploration" in copy
     assert "independent for downstream use" in copy
-    assert "mimics real-time forecasting" in copy
+    assert "retrospective nowcasting setup and diagnosis for a new indicator" in copy
+    assert "mimicking real-time forecasting" in copy
     assert "rolling training and evaluation windows" in copy
     assert "This web interface is in development" in html
     assert "Feedback" in html and "welcome" in html

@@ -27,8 +27,8 @@ from autodelphirf.app.web import (ALLOWED_SUFFIXES, DEFAULT_LAYERS, AutoDelphiRF
 from conftest import archive_frame
 
 
-def test_web_run_skips_html_report_and_keeps_results(tmp_path, monkeypatch):
-    from autodelphirf.post_assessment.reporting import write_web_metrics
+def test_web_run_saves_score_tables_and_keeps_results(tmp_path, monkeypatch):
+    from autodelphirf.post_assessment.web_metrics import write_web_metrics
 
     result = tmp_path / "results"
     result.mkdir()
@@ -44,11 +44,6 @@ def test_web_run_skips_html_report_and_keeps_results(tmp_path, monkeypatch):
     write_web_metrics(data, result)
     assert not (result / "report").exists()
     assert len(results_summary(result)["tables"]["web_metrics_by_lag"]) == 8
-    (result / "report" / "tables").mkdir(parents=True)
-    (result / "report" / "report.html").write_text("stale")
-    (result / "run_manifest.json").write_text(json.dumps({"report_generated": False}))
-    assert results_summary(result)["report_available"] is False
-    assert "by_origin" not in results_summary(result)["tables"]
 
     session = Session(tmp_path / "work")
     session.archive_path = tmp_path / "archive.csv"
@@ -70,9 +65,7 @@ def test_web_run_skips_html_report_and_keeps_results(tmp_path, monkeypatch):
     session._run({"reference_col": "reference_date", "report_col": "report_date",
                   "value_cols": ["value"]})
     assert session.job.state == "done"
-    assert called["generate_report"] is False
-    assert session.job.report_available is False
-    assert session.report_root is None
+    assert "generate_report" not in called
     assert "Results written" in session.job.log[-1]
 
 
@@ -356,30 +349,25 @@ def test_the_default_run_scores_revroutes_predictor_against_the_reference():
 def test_results_of_a_run_that_wrote_nothing_are_empty_not_an_error(tmp_path):
     summary = results_summary(tmp_path)
     assert summary["tables"] == {} and summary["n_origins"] == 0
-    assert summary["report_available"] is False
 
 
 def test_results_read_back_the_tables_a_run_wrote(tmp_path):
-    (tmp_path / "report" / "tables").mkdir(parents=True)
-    (tmp_path / "v1_pairwise_point.csv").write_text(
-        "subset,comparison,mean_delta,win_probability\n"
-        "overall,rr_delphirf3 - baseline_null,-12.5,0.81\n"
-        "early,rr_delphirf3 - baseline_null,-9.0,0.77\n")
-    (tmp_path / "report" / "tables" / "comparison_by_origin.csv").write_text(
-        "cutoff,method,n,mean_ae\n2020-01-01,rr_delphirf3,4,1.5\n2020-02-01,rr_delphirf3,4,1.1\n")
+    tables = tmp_path / "web_tables"
+    tables.mkdir()
+    (tables / "web_metrics_by_origin_lag.csv").write_text(
+        "cutoff,lag,method,metric,n_locations,median,q10,q90\n"
+        "2020-01-01,1,delphirf,ae,4,1.5,1.0,2.0\n"
+        "2020-02-01,1,delphirf,ae,4,1.1,0.8,1.5\n")
     (tmp_path / "revroute_pool_summary.csv").write_text(
         "fold,cutoff,k_selected,tasks\n1,2020-01-01,3,9\n2,2020-02-01,4,9\n")
     summary = results_summary(tmp_path)
-    # Only the pooled line: the per-subset breakdown belongs to the report.
-    assert len(summary["tables"]["headline"]) == 1
-    assert summary["tables"]["headline"][0]["subset"] == "overall"
     assert summary["n_origins"] == 2
     # RevRoute relearns its pools every retraining, so there is one row per origin.
     assert len(summary["tables"]["revroute_pools"]) == 2
 
 
 def test_results_read_location_bands_for_the_web_evaluation(tmp_path):
-    tables = tmp_path / "report" / "tables"
+    tables = tmp_path / "web_tables"
     tables.mkdir(parents=True)
     (tables / "web_metrics_by_lag.csv").write_text(
         "lag,method,metric,n_locations,median,q10,q90\n"
@@ -429,38 +417,25 @@ def test_results_derive_pool_composition_from_saved_assignments(tmp_path):
 
 
 def test_empty_optional_result_table_does_not_hide_the_other_results(tmp_path):
-    """An inapplicable report table is written as an empty CSV, not a failed run."""
-    tables = tmp_path / "report" / "tables"
+    """An inapplicable web table is an empty CSV, not a failed run."""
+    tables = tmp_path / "web_tables"
     tables.mkdir(parents=True)
-    (tables / "comparison_by_origin.csv").write_text(
-        "cutoff,method,n,mean_ae\n2020-01-01,delphirf,4,1.5\n")
-    (tables / "rr_delphirf_cluster_profile.csv").write_text("\n")
+    (tables / "web_metrics_by_lag.csv").write_text(
+        "lag,method,metric,n_locations,median,q10,q90\n1,delphirf,ae,4,1.5,1.0,2.0\n")
+    (tables / "web_metrics_by_location.csv").write_text("\n")
     summary = results_summary(tmp_path)
-    assert summary["n_origins"] == 1
-    assert len(summary["tables"]["by_origin"]) == 1
-    assert "revroute_pool_profile" not in summary["tables"]
+    assert len(summary["tables"]["web_metrics_by_lag"]) == 1
+    assert "web_metrics_by_location" not in summary["tables"]
 
 
-def test_headline_can_be_read_from_the_report_tables_directory(tmp_path):
-    """Newer reports need not duplicate validation tables at the run root."""
-    tables = tmp_path / "report" / "tables"
-    tables.mkdir(parents=True)
-    (tables / "v1_pairwise_point.csv").write_text(
-        "subset,comparison,mean_delta,win_probability\n"
-        "overall,delphirf - baseline_null,-1.5,0.7\n")
-    summary = results_summary(tmp_path)
-    assert summary["tables"]["headline"][0]["comparison"] == (
-        "delphirf - baseline_null")
-
-
-def test_a_huge_pool_profile_is_truncated_rather_than_sent_whole(tmp_path):
-    rows = "\n".join(f"1,2020-01-01,{i}" for i in range(web.MAX_RESULT_ROWS + 50))
-    profile = tmp_path / "report" / "tables" / "rr_delphirf_cluster_profile.csv"
+def test_a_huge_web_table_is_truncated_rather_than_sent_whole(tmp_path):
+    rows = "\n".join(f"{i},delphirf,ae,1,1,1,1" for i in range(web.MAX_RESULT_ROWS + 50))
+    profile = tmp_path / "web_tables" / "web_metrics_by_lag.csv"
     profile.parent.mkdir(parents=True)
-    profile.write_text(f"fold,cutoff,pool\n{rows}\n")
+    profile.write_text(f"lag,method,metric,n_locations,median,q10,q90\n{rows}\n")
     summary = results_summary(tmp_path)
-    assert len(summary["tables"]["revroute_pool_profile"]) == web.MAX_RESULT_ROWS
-    assert "revroute_pool_profile" in summary["truncated"]
+    assert len(summary["tables"]["web_metrics_by_lag"]) == web.MAX_RESULT_ROWS
+    assert "web_metrics_by_lag" in summary["truncated"]
 
 
 def test_two_runs_at_once_are_refused(session, archive_bytes, monkeypatch):
@@ -641,61 +616,8 @@ def test_an_unknown_route_is_404(server):
     assert request(server, "/nope", token=None)[0] == 404
 
 
-def test_the_report_route_refuses_before_a_report_exists(server):
+def test_the_report_route_is_not_served(server):
     assert request(server, "/report/report/report.html", token=None)[0] == 404
-
-
-def test_the_report_route_cannot_walk_out_of_the_report_directory(server, tmp_path):
-    secret = tmp_path / "secret.txt"
-    secret.write_text("private")
-    root = tmp_path / "work" / "results"
-    (root / "report").mkdir(parents=True)
-    (root / "report" / "report.html").write_text("<html>report</html>")
-    server.session.report_root = root
-
-    assert request(server, "/report/report/report.html", token=None)[0] == 200
-    for attempt in ("/report/../secret.txt", "/report/..%2F..%2Fsecret.txt",
-                    "/report/report/../../../secret.txt"):
-        status, _ = request(server, attempt, token=None)
-        assert status == 404, attempt
-
-
-# --- matplotlib backend ---------------------------------------------------
-
-def test_the_server_defaults_matplotlib_to_a_non_interactive_backend():
-    """A GUI backend blocks forever when driven from a worker thread.
-
-    The report stage draws figures, and Session._run is a background thread.
-    With the macOS default (MacOSX) or Tk, that deadlocks after the tables are
-    written and before report.html exists -- a run that looks finished but
-    never completes.
-    """
-    import os
-
-    assert os.environ.get("MPLBACKEND") == "Agg"
-
-
-def test_the_backend_is_forced_even_if_matplotlib_was_imported_first():
-    """MPLBACKEND is read at import, so it is too late for an embedding process."""
-    import matplotlib
-
-    matplotlib.use("Agg", force=True)          # baseline
-    web._force_non_interactive_backend()
-    assert matplotlib.get_backend().lower() == "agg"
-
-
-def test_forcing_the_backend_is_safe_when_matplotlib_is_absent(monkeypatch):
-    import builtins
-
-    real_import = builtins.__import__
-
-    def refuse(name, *args, **kwargs):
-        if name == "matplotlib":
-            raise ImportError("no matplotlib")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", refuse)
-    web._force_non_interactive_backend()       # must not raise
 
 
 # --- stdout routing -------------------------------------------------------

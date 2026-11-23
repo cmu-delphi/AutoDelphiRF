@@ -59,7 +59,7 @@ requires_delphirf = pytest.mark.skipif(
 
 
 @requires_delphirf
-def test_one_command_turns_a_raw_archive_into_a_report(tmp_path):
+def test_one_command_turns_a_raw_archive_into_assessment_tables(tmp_path):
     """The documented one-liner, run exactly as a new user would run it."""
     archive = tmp_path / "archive.csv"
     # Slow enough revision that a multi-week target lag can be recommended, and long
@@ -89,7 +89,7 @@ def test_one_command_turns_a_raw_archive_into_a_report(tmp_path):
     config = load_dataset_config(work / "example.json")
     assert config.prepared_dir == prepared
 
-    # The run produced its predictions, its evaluation, and its report.
+    # The run produced predictions, scores, and assessment tables.
     assert (results / "predictions.csv.gz").is_file()
     assert (results / "diagnostics" / "summary.json").is_file()
     assert (results / "run_manifest.json").is_file()
@@ -97,9 +97,9 @@ def test_one_command_turns_a_raw_archive_into_a_report(tmp_path):
     deployment = json.loads((results / "deployment_state.json").read_text())
     schedule = pd.read_csv(prepared / "test_dates.csv")
     assert deployment["latest_trained_origin"] == schedule.test_date.max()
-    report = results / "report" / "report.html"
-    assert report.is_file() and report.stat().st_size > 1000
-    assert list((results / "report" / "tables").glob("*.csv"))
+    assert not (results / "report").exists()
+    assert (results / "web_tables" / "web_metrics_by_lag.csv").is_file()
+    assert (results / "reassessment_by_age.csv").is_file()
 
     # Both requested methods were actually scored.
     predictions = pd.read_csv(results / "predictions.csv.gz")

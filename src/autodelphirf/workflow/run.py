@@ -54,12 +54,6 @@ BOOTSTRAP_ROLE_BY_METHOD = {
 }
 
 
-def build_report(*args, **kwargs):
-    """Load plotting dependencies only for runs that actually build a report."""
-    from ..post_assessment.reporting import build_report as render_report
-    return render_report(*args, **kwargs)
-
-
 def build_cases(prepared: pd.DataFrame, schedule: pd.DataFrame,
                 genuine_only: bool = True) -> pd.DataFrame:
     """Build forecast cases from states visible in each test window.
@@ -361,7 +355,7 @@ def run_reliability_and_calibration(long: pd.DataFrame, config: DatasetConfig,
                                     mode: str = "full") -> dict[str, pd.DataFrame]:
     """Interval calibration from completed revisions, PIT diagnostics, bootstrap CIs.
 
-    The legacy full report produces calibration, quantile reliability and
+    Full assessment produces calibration, quantile reliability and
     episode-clustered bootstrap comparisons. PIT and recalibration can also
     be requested independently from frozen forecasts.
     """
@@ -559,7 +553,7 @@ def write_runtime_tables(output: Path, timing: pd.DataFrame, params: dict, confi
 
 def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_stop=None,
                  *, model_mode: str = "train", incremental_update: bool = False,
-                 post_assessment: bool = True, generate_report: bool = True) -> dict:
+                 post_assessment: bool = True) -> dict:
     started = perf_counter()
     pipeline_timings = []
     def record_stage(name, began):
@@ -786,7 +780,6 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
     wide, timing = replay(cases, prepared, training_windows,
                           should_stop=should_stop, **params)
     record_stage("revroute_execution", stage)
-    rr_audit = rr_clusters = None
     if config.comparator_file:
         stage = perf_counter()
         comparator = read_csv(config.comparator_file)
@@ -871,7 +864,6 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
                     "wall_seconds": perf_counter() - started, "method_params": params,
                     "delphirf_provenance": delphirf_provenance, "model_mode": model_mode,
                     "post_assessment": False, "forecast_ledger": ledger,
-                    "report_generated": False,
                     "delphirf_seconds": delphirf_seconds,
                     "skipped_locations": skipped_locations.to_dict("records")}
         (output / "run_manifest.json").write_text(json.dumps(manifest, indent=2, default=str))
@@ -898,8 +890,8 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
         pool_assignments = (read_csv(pool_path, parse_dates=["cutoff"])
                             if pool_path.is_file() else None)
         # Calibration and PIT describe model-issued forecasts, not values that
-        # were merely carried forward. Web score tables and an explicitly
-        # requested report receive the complete scored population below.
+        # were merely carried forward. Web score tables use the complete
+        # scored population below.
         assessment_long = _genuine_event_rows(scored_long)
         assessment_wide = _genuine_event_rows(scored_wide)
         reliability_outputs = run_reliability_and_calibration(
@@ -939,8 +931,8 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
             "truth_rows_corrected_this_update": truth_update["corrected_rows"],
             "truth_rows_withheld_until_target_date": truth_update["withheld_rows"],
         }, indent=2) + "\n")
-    runtime = write_runtime_tables(output, timing, params, config, requested_delphirf,
-                                   delphirf_seconds)
+    write_runtime_tables(output, timing, params, config, requested_delphirf,
+                         delphirf_seconds)
     manifest = {"dataset": config.name, "cases": len(wide), "origins": int(wide.cutoff.nunique()),
                 "methods": list(config.prediction_layers), "evaluation_scale": "reporting",
                 "working_scale": config.working_scale, "wall_seconds": perf_counter() - started,
@@ -949,7 +941,6 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
                 "uncertainty_layer": config.uncertainty_layer,
                 "model_mode": model_mode, "forecast_ledger": ledger,
                 "reassessment": reassessment,
-                "report_generated": bool(generate_report and not incremental_update),
                 "incremental_update": incremental_update,
                 "retraining_required": retraining_required,
                 "new_forecasts": len(long) if incremental_update else None,
@@ -958,18 +949,9 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
                 "skipped_locations": skipped_locations.to_dict("records")}
     (output / "run_manifest.json").write_text(json.dumps(manifest, indent=2, default=str))
     stage = perf_counter()
-    if not incremental_update and generate_report:
-        build_report(scored_long, output / "report", wide=scored_wide, runtime=runtime,
-                    skipped_locations=skipped_locations,
-                    interval_calibration=reliability_outputs["interval_calibration"],
-                    calibration_comparison=reliability_outputs["calibration_comparison"],
-                    quantile_reliability=reliability_outputs["quantile_reliability"],
-                    bootstrap=reliability_outputs["bootstrap"], rr_regimes=rr_audit,
-                    rr_clusters=rr_clusters,
-                    dataset_name=config.name)
-    elif not incremental_update:
-        from ..post_assessment.reporting import write_web_metrics
+    if not incremental_update:
+        from ..post_assessment.web_metrics import write_web_metrics
         write_web_metrics(scored_long, output)
-    record_stage("report_generation", stage)
+    record_stage("web_metrics", stage)
     pd.DataFrame(pipeline_timings).to_csv(output / "runtime_pipeline_stages.csv", index=False)
     return manifest

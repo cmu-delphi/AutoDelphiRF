@@ -625,13 +625,6 @@ figure figcaption { display: flex; flex-direction: column; gap: 2px; margin-bott
   color: var(--text-secondary);
 }
 
-.report-link {
-  display: inline-block; margin-top: 12px;
-  padding: 11px 20px; border-radius: 8px;
-  background: var(--good); color: #fff; font-weight: 600; text-decoration: none;
-}
-.report-link:hover { filter: brightness(1.07); }
-
 .outputs { margin-top: 12px; font-size: 13.5px; color: var(--text-secondary); }
 .outputs code { word-break: break-all; }
 

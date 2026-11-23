@@ -8,31 +8,11 @@ import pytest
 
 from autodelphirf.post_assessment.run import (assess_results,
                                               save_assessment_outputs, sha256)
-from autodelphirf.post_assessment import reporting
-from autodelphirf.post_assessment.reporting import (_early_lag_location_summary,
-                                                     _location_quantile_summary)
+from autodelphirf.post_assessment.web_metrics import (_early_lag_location_summary,
+                                                      _location_quantile_summary)
 from autodelphirf.core.config import load_dataset_config, write_resolved_config
 from autodelphirf.workflow.run import (_genuine_event_rows, forecast_time_assessment,
                                        run_reliability_and_calibration)
-
-
-def test_reporting_uses_a_headless_matplotlib_backend():
-    import matplotlib
-
-    assert reporting.plt.get_backend().lower() == "agg"
-    assert matplotlib.get_backend().lower() == "agg"
-
-
-def test_report_with_no_matured_outcomes_explains_the_pending_state(tmp_path):
-    """A real-time first origin can issue forecasts before any target matures."""
-    output = tmp_path / "report"
-
-    reporting.build_report(pd.DataFrame(), output, dataset_name="new-deployment")
-
-    report = (output / "report.html").read_text()
-    assert "new-deployment" in report
-    assert "No forecast outcomes are observable yet" in report
-    assert (output / "tables" / "forecast_evaluation_status.csv").is_file()
 
 
 def test_web_score_bands_weight_locations_equally_after_within_location_averaging():
@@ -128,8 +108,6 @@ def test_resolved_config_round_trips_every_assessment_setting(tmp_path):
 
 def test_assessment_restarts_from_predictions_without_model_fitting(tmp_path, monkeypatch):
     results, _ = write_restart_bundle(tmp_path)
-    pd.DataFrame({"method": ["delphirf"], "standalone_total_seconds": [12.5]}).to_csv(
-        results / "runtime_by_method.csv", index=False)
     empty = pd.DataFrame()
     called = {}
 
@@ -141,19 +119,12 @@ def test_assessment_restarts_from_predictions_without_model_fitting(tmp_path, mo
         return {"calibration": empty, "interval_calibration": empty,
                 "bootstrap": empty}
 
-    def fake_report(data, output, **kwargs):
-        called["runtime"] = kwargs["runtime"]
-        output.mkdir(parents=True)
-        (output / "report.html").write_text("ok")
-
     monkeypatch.setattr("autodelphirf.post_assessment.run.run_reliability_and_calibration", fake_assessment)
-    monkeypatch.setattr("autodelphirf.post_assessment.run.build_report", fake_report)
     output = assess_results(results, tmp_path / "assessment", assessment_mode="full")
     assert called["rows"] == (1, 1)
     assert called["mode"] == "full"
     assert called["pool_assignments"] is None
     assert all(str(dtype).startswith("datetime64") for dtype in called["date_types"])
-    assert called["runtime"].standalone_total_seconds.tolist() == [12.5]
     manifest = json.loads((output / "assessment_manifest.json").read_text())
     assert manifest["model_fitting_performed"] is False
     assert set(manifest["inputs"]) == {
@@ -161,7 +132,8 @@ def test_assessment_restarts_from_predictions_without_model_fitting(tmp_path, mo
     for name, record in manifest["inputs"].items():
         assert record["sha256"] == sha256(results / name)
         assert record["bytes"] == (results / name).stat().st_size
-    assert (output / "report" / "report.html").is_file()
+    assert (output / "bootstrap_pairwise_comparisons.csv").is_file()
+    assert not (output / "report").exists()
     with pytest.raises(FileExistsError, match="not empty"):
         assess_results(results, output, assessment_mode="full")
 

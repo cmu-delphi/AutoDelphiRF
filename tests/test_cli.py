@@ -54,8 +54,8 @@ def test_every_subcommand_has_help(command, capsys):
 def test_readme_raw_example_names_the_repository_archive_and_update_workspace():
     root = Path(__file__).parents[1]
     example = json.loads((root / "examples" / "my_archive.json").read_text())
-    assert (root / "my_archive.csv").is_file()
-    assert example["archive"] == "../my_archive.csv"
+    assert (root / "examples" / "my_archive.csv").is_file()
+    assert example["archive"] == "my_archive.csv"
     assert example["work_dir"] == "../autodelphirf_work/readme_example"
     assert example["preprocessing"]["target_lag"] == 60
 

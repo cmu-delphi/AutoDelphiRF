@@ -10,7 +10,7 @@ keeps revision adjustment independent from any later analysis that combines
 information across indicators.
 
 ```text
-revision archive → diagnosis → forecasting → evaluation report
+revision archive → diagnosis → forecasting → assessment tables
 ```
 
 For a **first-time retrospective analysis**, AutoDelphiRF moves through past
@@ -101,8 +101,7 @@ The application leads you through five steps:
 5. **Review the results.** Compare forecast errors across reporting lags,
    locations, and time.
 
-The web application saves its score tables and reassessment results without
-generating an HTML report or report figures.
+The web application saves score tables and reassessment results.
 
 Two dates and two lags appear throughout the workflow:
 
@@ -125,24 +124,24 @@ automatically.
 
 ### Alternative: run the same workflow from the terminal
 
-For an archive using the default column names shown below, replace
-`my_archive.csv` with the path to your file and run:
+For your own archive using the default column names shown below, replace
+`path/to/your_archive.csv` with the path to your file and run:
 
 ```bash
 autodelphirf run \
-  --archive my_archive.csv \
+  --archive path/to/your_archive.csv \
   --name mydata \
   --target-lag 28
 ```
 
 This single command checks the archive, prepares the data, recreates the
-historical forecasts, and writes the predictions and evaluation report. Results
+historical forecasts, and writes predictions and assessment tables. Results
 are written to `autodelphirf_work` by default.
 
 If you have not chosen a target lag, inspect the evidence first:
 
 ```bash
-autodelphirf diagnose --archive my_archive.csv
+autodelphirf diagnose --archive path/to/your_archive.csv
 ```
 
 AutoDelphiRF shows a suggested range rather than choosing the target lag for
@@ -190,7 +189,7 @@ the names in your archive:
 
 ```bash
 autodelphirf run \
-  --archive my_archive.csv \
+  --archive path/to/your_archive.csv \
   --name mydata \
   --geo-col location_id \
   --reference-col event_date \
@@ -271,7 +270,7 @@ prepared artifacts and does not reread the raw archive. A prepared triangle
 built outside AutoDelphiRF is not supported.
 
 The repository includes a runnable version of this configuration for
-`my_archive.csv`. From the repository root, run:
+`examples/my_archive.csv`. From the repository root, run:
 
 ```bash
 autodelphirf diagnose --raw-config examples/my_archive.json
@@ -286,7 +285,7 @@ location-specific multipliers; the location labels are replaced, while the
 dates, denominators, and revision timing are retained. The checked-in archive
 is self-contained. Results are written under `autodelphirf_work/readme_example`.
 
-For the checked-in archive, the report scores 14,981 genuine forecast cases.
+For the checked-in archive, the assessment scores 14,981 genuine forecast cases.
 Its overall mean absolute error is 0.000333 for DelphiRF and 0.000437 for the
 last-report baseline (23.8% lower for DelphiRF); DelphiRF also has lower mean
 absolute error at each of the three origins. The paired bootstrap estimate for
@@ -369,7 +368,9 @@ autodelphirf_work/
     ├── analysis_contract.json
     ├── forecast_ledger.csv.gz
     ├── model_manifest.json
-    ├── report/report.html
+    ├── web_tables/
+    ├── reassessment_decisions.csv.gz
+    ├── reassessment_by_age.csv
     ├── predictions.csv.gz
     ├── resolved_config.json
     └── run_manifest.json
@@ -377,7 +378,9 @@ autodelphirf_work/
 
 The important files for a first-time user are:
 
-- `results/report/report.html`: the evaluation report;
+- `results/web_tables/`: score summaries for the web results view;
+- `results/reassessment_decisions.csv.gz`: forecast-to-forecast decisions;
+- `results/reassessment_by_age.csv`: evaluation by days since forecast issue;
 - `results/predictions.csv.gz`: row-level forecasts produced by the latest
   successful run or update;
 - `results/forecast_ledger.csv.gz`: forecasts preserved across later archive
@@ -385,9 +388,15 @@ The important files for a first-time user are:
 - `results/resolved_config.json`: the settings actually used by the run; and
 - `results/run_manifest.json`: the run and input provenance record.
 
-The report compares nowcast accuracy and, where available, probabilistic
-forecast performance over reporting lags, locations, and historical forecast
-origins.
+The R training output for each invocation is saved under `results/logs/` as a
+`delphirf_*.log` file. The run manifest records its exact path under
+`delphirf_provenance.training_log_file`. Failed fits and missing-predictor rows
+also remain available as structured `.fit_failures.csv` and
+`.dropped_test_rows.csv` files beside the model predictions. DelphiRF fitting
+shows only aggregate warnings with paths to those files in the console.
+
+The saved prediction and assessment tables support comparisons over reporting
+lags, locations, and historical forecast origins.
 
 Calibration is model-free post-processing. The existing asymmetric endpoint
 correction remains the `endpoint` baseline; AutoDelphiRF also evaluates
@@ -464,8 +473,7 @@ autodelphirf assess \
 ```
 
 To run endpoint recalibration, the two quantile-mapping strategies, and their
-empirical coverage/PIT comparisons—without bootstrap inference or the full
-report—use:
+empirical coverage/PIT comparisons without bootstrap inference, use:
 
 ```bash
 autodelphirf assess \
@@ -496,8 +504,8 @@ Normal retrospective runs generate them with the rest of the assessment. A
 returning-user update refreshes the diagnostics from the cumulative forecast
 ledger as outcomes become observable and applies prospective calibration to
 new genuine forecasts using only genuine outcomes available at their issue
-time. Carried-forward predictions remain in the prediction ledger and main
-report, but an update containing only carried-forward rows intentionally emits
+time. Carried-forward predictions remain in the prediction ledger, but an
+update containing only carried-forward rows intentionally emits
 no calibrated intervals for that update.
 
 ## Development

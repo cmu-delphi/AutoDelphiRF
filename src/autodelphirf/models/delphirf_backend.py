@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
 from time import perf_counter
+from uuid import uuid4
 import warnings
 
 import pandas as pd
@@ -83,15 +85,23 @@ def train_delphirf(config, prepared: pd.DataFrame, schedule: pd.DataFrame,
         if len(folds) != 1:
             raise ValueError("a selected update schedule must contain exactly one origin")
         command += ["--fold", str(int(folds[0]))]
+    log_dir = Path(output).parent / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    log_path = log_dir / f"delphirf_{stamp}_{uuid4().hex[:8]}.log"
     began = perf_counter()
-    result = subprocess.run(command, check=False)
+    with log_path.open("w", encoding="utf-8") as log:
+        result = subprocess.run(command, check=False, stdout=log, stderr=subprocess.STDOUT)
     if result.returncode:
-        raise PreparationError(f"DelphiRF model training failed (Rscript exit {result.returncode})")
+        raise PreparationError(
+            f"DelphiRF model training failed (Rscript exit {result.returncode}); "
+            f"R output: {log_path}")
     seconds = perf_counter() - began
     provenance_path = Path(str(output) + ".provenance.json")
     provenance = json.loads(provenance_path.read_text()) if provenance_path.is_file() else {}
     provenance["model_save_dir"] = str(model_dir)
     provenance["model_mode"] = model_mode
+    provenance["training_log_file"] = str(log_path)
     failure_count = int(provenance.get("fit_failure_count", 0))
     if failure_count:
         failure_file = provenance.get("fit_failures_file", str(output) + ".fit_failures.csv")

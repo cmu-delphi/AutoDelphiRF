@@ -1,4 +1,4 @@
-"""A local web UI: drop an archive in, answer the questions, get a report.
+"""A local web UI: drop an archive in, answer the questions, view results.
 
 ``autodelphirf web`` starts a small HTTP server on localhost and opens a page that
 walks one dataset through the whole workflow. It exists because the workflow
@@ -9,8 +9,7 @@ never converts the diagnostic range into a target automatically.
 The server runs the real pipeline in this process: it calls
 ``prepare.diagnose_archive``, then ``prepare.prepare_dataset`` (which shells
 out to DelphiRF), then ``workflow.run_pipeline``. Nothing is uploaded
-anywhere; the archive is copied into a working directory on this machine and
-the generated report is served from there.
+anywhere; the archive is copied into a working directory on this machine.
 
 Security. This server writes files and runs subprocesses on behalf of
 whoever can reach it, so it is deliberately not a general-purpose service:
@@ -50,16 +49,6 @@ from urllib.parse import parse_qs, unquote, urlparse
 import webbrowser
 
 import pandas as pd
-
-# The report stage draws figures with matplotlib, and this server runs it on a
-# background thread. A GUI backend -- MacOSX is the default on macOS, and Tk
-# elsewhere -- must do its drawing on the main thread, so from a worker thread
-# it does not raise: it blocks forever, leaving a run that has written its
-# tables sitting at 0 figures and no report.html. Agg draws to a file and needs
-# no main thread, which is all this server ever wants. Set before anything
-# imports pyplot, and only defaulted, so a user who deliberately chose a
-# backend keeps it.
-os.environ.setdefault("MPLBACKEND", "Agg")
 
 from ..pre_diagnosis.preparation import (DEFAULT_FIRST_ORIGIN_OFFSET_DAYS,
                                          DEFAULT_MIN_LOCATION_ROWS, DEFAULT_RETRAIN_DAYS,
@@ -303,18 +292,11 @@ def environment_report() -> dict:
 #: Every one is optional -- which exist depends on which layers ran -- so a
 #: missing file means "that layer was not requested", never an error.
 RESULT_TABLES = {
-    # Validation tables are copied beside the run in some pipeline versions
-    # and exist only under report/tables in others. Read either layout so a
-    # completed run remains viewable across that harmless artifact change.
-    "headline": ("v1_pairwise_point.csv", "report/tables/v1_pairwise_point.csv"),
-    "by_origin": ("report/tables/comparison_by_origin.csv",),
-    "web_metrics_by_lag": ("web_tables/web_metrics_by_lag.csv", "report/tables/web_metrics_by_lag.csv"),
-    "web_metrics_by_origin_lag": ("web_tables/web_metrics_by_origin_lag.csv", "report/tables/web_metrics_by_origin_lag.csv"),
-    "web_metrics_by_location": ("web_tables/web_metrics_by_location.csv", "report/tables/web_metrics_by_location.csv"),
-    "availability": ("report/tables/model_availability.csv",),
+    "web_metrics_by_lag": ("web_tables/web_metrics_by_lag.csv",),
+    "web_metrics_by_origin_lag": ("web_tables/web_metrics_by_origin_lag.csv",),
+    "web_metrics_by_location": ("web_tables/web_metrics_by_location.csv",),
     "revroute_pools": ("revroute_pool_summary.csv",),
     "_revroute_assignments": ("revroute_pools.csv",),
-    "revroute_pool_profile": ("report/tables/rr_delphirf_cluster_profile.csv",),
     # Locations preparation could not build: absent from every result below.
     "skipped_locations": ("skipped_locations.csv",),
 }
@@ -379,27 +361,17 @@ def results_summary(output_dir) -> dict:
     produces the results view.
     """
     root = Path(output_dir)
-    manifest_path = root / "run_manifest.json"
-    manifest = json.loads(manifest_path.read_text()) if manifest_path.is_file() else {}
     tables, truncated = {}, []
     for key, alternatives in RESULT_TABLES.items():
         path = next((root / relative for relative in alternatives
-                     if (manifest.get("report_generated", True)
-                         or not relative.startswith("report/"))
-                     and (root / relative).is_file()), None)
+                     if (root / relative).is_file()), None)
         if path is None:
             continue
         try:
             frame = pd.read_csv(path)
         except pd.errors.EmptyDataError:
-            # The report writes an empty CSV for optional analyses that do not
-            # apply to the selected methods. That means "no rows to show",
-            # not that the completed run or its other tables are unreadable.
+            # Optional analyses may have no rows to show.
             continue
-        if key == "headline" and "subset" in frame:
-            # The per-subset breakdown is in the report; the page wants the
-            # one line per comparison that answers "did it help overall".
-            frame = frame[frame.subset.eq("overall")]
         if key == "web_metrics_by_origin_lag" and "lag" in frame:
             # Show the earliest well-supported lag and the first supported lag
             # at or beyond day 7. Cadence alignment can make an exact lag
@@ -435,12 +407,9 @@ def results_summary(output_dir) -> dict:
                 extra = shape_lookup.get((summary.get("fold"), summary.get("cutoff")), {})
                 summary.update({key: extra.get(key) for key in
                                 ("largest_pool", "singleton_pools")})
-    origins = tables.get("by_origin") or []
-    report_available = (manifest.get("report_generated", True)
-                        and (root / "report" / "report.html").is_file())
+    origins = tables.get("web_metrics_by_origin_lag") or []
     return {"output_dir": str(root), "tables": tables, "truncated": truncated,
-            "n_origins": len({row.get("cutoff") for row in origins if row.get("cutoff")}),
-            "report_available": report_available}
+            "n_origins": len({row.get("cutoff") for row in origins if row.get("cutoff")})}
 
 
 @dataclass
@@ -450,7 +419,6 @@ class Job:
     stage: str = ""
     log: list = field(default_factory=list)
     error: str = ""
-    report_available: bool = False
     output_dir: str = ""
     started: float = 0.0
     finished: float = 0.0
@@ -483,7 +451,7 @@ class Job:
         remaining = (round(replay_elapsed / done * (total - done), 1)
                      if self.state == "running" and done >= 2 and total else None)
         return {"state": self.state, "stage": self.stage, "log": list(self.log),
-                "error": self.error, "report_available": self.report_available,
+                "error": self.error,
                 "output_dir": self.output_dir, "elapsed_seconds": round(elapsed, 1),
                 "origins_done": done, "origins_total": total,
                 "origins_scheduled": self.origins_scheduled,
@@ -502,7 +470,6 @@ class Session:
         self.columns: list[str] = []
         self.diagnosis: dict | None = None
         self.job = Job()
-        self.report_root: Path | None = None
         self.last_request: dict | None = None
 
     def snapshot(self) -> dict:
@@ -546,7 +513,6 @@ class Session:
         self.columns = [str(column) for column in preview.columns]
         self.diagnosis = None
         self.job = Job()
-        self.report_root = None
         self.last_request = None
         return {
             "name": stem,
@@ -678,16 +644,13 @@ class Session:
                        "follow-up to score a forecast will be excluded from evaluation.")
             # run_pipeline reports progress on stdout; route it into the log so
             # the page can show which fold is running.
-            _force_non_interactive_backend()
             from ..core.config import load_dataset_config
             from ..workflow.run import run_pipeline
             config = load_dataset_config(config_path)
             with _capture_stdout(job.append):
-                run_pipeline(config, should_stop=self._check_stop, generate_report=False)
+                run_pipeline(config, should_stop=self._check_stop)
 
-            self.report_root = None
             job.output_dir = str(config.output_dir)
-            job.report_available = False
             job.stage = "done"
             job.state = "done"
             job.append("")
@@ -707,22 +670,6 @@ class Session:
             traceback.print_exc()
         finally:
             job.finished = time.time()
-
-
-def _force_non_interactive_backend() -> None:
-    """Switch matplotlib to Agg even if it was imported before MPLBACKEND was set.
-
-    ``os.environ.setdefault`` above covers the normal case. This covers the
-    one where something imported matplotlib first -- an embedding process, or
-    a test that touched the report module -- because by then the environment
-    variable has already been read and ignored.
-    """
-    try:
-        import matplotlib
-    except ImportError:
-        return
-    if matplotlib.get_backend().lower() != "agg":
-        matplotlib.use("Agg", force=True)
 
 
 class _capture_stdout:
@@ -848,8 +795,6 @@ class Handler(BaseHTTPRequestHandler):
                             "expensive": name in EXPENSIVE_LAYERS}
                            for name in LAYER_DESCRIPTIONS
                            if name in PREDICTION_LAYERS and name not in WEB_HIDDEN_LAYERS]}))
-        elif path.startswith("/report"):
-            self._serve_report(path[len("/report"):])
         else:
             self._json({"error": "not found"}, 404)
 
@@ -922,7 +867,7 @@ class Handler(BaseHTTPRequestHandler):
             traceback.print_exc()
             self._json({"error": f"the run's output could not be read: {error}"}, 500)
 
-    # -- static & report ---------------------------------------------------
+    # -- static assets -----------------------------------------------------
 
     def _serve_index(self) -> None:
         html = resource_path("web/index.html").read_text()
@@ -942,30 +887,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         self._bytes(path.read_bytes(), content_type)
-
-    def _serve_report(self, relative: str) -> None:
-        """Serve the generated report directory, and nothing else.
-
-        Every path is resolved and checked to be inside the report root, so a
-        crafted ``..`` cannot walk out of it into the rest of the filesystem.
-        """
-        root = self.server.session.report_root
-        if root is None:
-            self._json({"error": "no report yet"}, 404)
-            return
-        relative = unquote(relative).lstrip("/") or "report/report.html"
-        target = (Path(root) / relative).resolve()
-        try:
-            target.relative_to(Path(root).resolve())
-        except ValueError:
-            self._json({"error": "not found"}, 404)
-            return
-        if not target.is_file():
-            self._json({"error": "not found"}, 404)
-            return
-        content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-        self._bytes(target.read_bytes(), content_type)
-
 
 class AutoDelphiRFServer(ThreadingHTTPServer):
     """The server, plus the single session it is working on."""

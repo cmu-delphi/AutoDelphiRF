@@ -24,7 +24,7 @@ def backend(tmp_path, monkeypatch):
             "value_cols": ["value"], "value_type": "count", "lag_terms": [1, 7]}}))
     captured = {}
 
-    def fake_run(command, check=False):
+    def fake_run(command, **kwargs):
         captured["command"] = command
         return SimpleNamespace(returncode=0)
 

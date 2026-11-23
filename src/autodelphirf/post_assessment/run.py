@@ -25,12 +25,6 @@ PIT_COLUMNS = frozenset({
 })
 
 
-def build_report(*args, **kwargs):
-    """Load the plotting/report stack only when a full report is requested."""
-    from .reporting import build_report as render_report
-    return render_report(*args, **kwargs)
-
-
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with Path(path).open("rb") as handle:
@@ -75,7 +69,7 @@ def save_assessment_outputs(outputs: dict[str, pd.DataFrame], output: Path,
 def assess_results(results_dir: Path, output_dir: Path | None = None, *,
                    assessment_mode: str = "reassessment",
                    event_filter: str = "genuine") -> Path:
-    """Recompute assessment and report files without fitting any model."""
+    """Recompute assessment tables without fitting any model."""
     mode = assessment_mode
     if mode not in {"reassessment", "full", "pit", "recalibration"}:
         raise ValueError("assessment_mode must be 'reassessment', 'full', 'pit', or 'recalibration'")
@@ -153,18 +147,6 @@ def assess_results(results_dir: Path, output_dir: Path | None = None, *,
     outputs = run_reliability_and_calibration(
         long, config, wide=wide, pool_assignments=pools, mode=mode)
     save_assessment_outputs(outputs, output, mode=mode)
-    if mode == "full":
-        runtime_path = results / "runtime_by_method.csv"
-        runtime = pd.read_csv(runtime_path) if runtime_path.is_file() else None
-        skipped_path = results / "skipped_locations.csv"
-        skipped = read_csv(skipped_path) if skipped_path.is_file() else None
-        build_report(long, output / "report", wide=wide, runtime=runtime,
-                     skipped_locations=skipped,
-                     interval_calibration=outputs["interval_calibration"],
-                     calibration_comparison=outputs.get("calibration_comparison"),
-                     quantile_reliability=outputs.get("quantile_reliability"),
-                     bootstrap=outputs["bootstrap"],
-                     dataset_name=config.name)
     assessment_config = replace(config, output_dir=output)
     write_resolved_config(assessment_config, output / "resolved_config.json")
     inputs = {}

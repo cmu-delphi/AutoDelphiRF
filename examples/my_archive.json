@@ -1,7 +1,7 @@
 {
   "_comment": "Runnable three-origin CHNG-fraction example. Paths are relative to this file.",
   "name": "chng_readme",
-  "archive": "../my_archive.csv",
+  "archive": "my_archive.csv",
   "work_dir": "../autodelphirf_work/readme_example",
   "columns": {
     "reference_date": "time_value",

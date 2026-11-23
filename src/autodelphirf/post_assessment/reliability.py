@@ -592,7 +592,7 @@ def add_interval_columns(data: pd.DataFrame, levels: dict[int, tuple[int, int]],
     ``levels`` maps a nominal percent (e.g. 50, 80, 95) to the (lower,
     upper) tau VALUES bounding that central interval, e.g.
     ``{50: (.25, .75), 80: (.1, .9), 95: (.025, .975)}`` -- the same
-    convention already used by ``autodelphirf.post_assessment.reporting``.
+    convention used by the assessment tables.
     """
     data = data.copy()
     truth = data.truth

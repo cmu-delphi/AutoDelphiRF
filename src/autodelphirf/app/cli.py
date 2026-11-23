@@ -6,7 +6,7 @@ Seven subcommands, in the order a new user meets them:
                          with it. Pure Python, no R, nothing written.
   ``autodelphirf prepare``   build the prepared triangle, rolling schedule, and
                          dataset JSON from a raw archive, by calling DelphiRF.
-  ``autodelphirf run``       train, test, evaluate, and produce the final report.
+  ``autodelphirf run``       train, test, evaluate, and save assessment tables.
                          Given ``--archive`` it prepares first; given ``--config``
                          it reruns a dataset that ``autodelphirf prepare`` built.
   ``autodelphirf update``    ingest a later release of the same raw archive,
@@ -20,13 +20,13 @@ Seven subcommands, in the order a new user meets them:
 
 ``autodelphirf run --archive`` is the one-line path:
 
-    autodelphirf run --archive my_archive.csv --name mydata --out work/
+    autodelphirf run --archive path/to/archive.csv --name mydata --out work/
 
 which diagnoses the archive, preprocesses it through DelphiRF, runs rolling
-training and testing, and writes ``work/results/report/report.html``.
+training and testing, and writes forecasts and assessment tables under ``work/results``.
 
 ``autodelphirf web`` asks the questions on a page and saves compact web score
-tables without generating an HTML report.
+tables.
 For target lag, diagnosis supplies an evidence range and waits for the user's
 explicit choice.
 """
@@ -360,7 +360,7 @@ def command_prepare(arguments: argparse.Namespace) -> int:
 
 def command_run(arguments: argparse.Namespace) -> int:
     # Imported here, not at module scope: `autodelphirf diagnose` and `--help`
-    # should not pay for the pipeline's scipy/matplotlib import chain.
+    # should not pay for the pipeline's model import chain.
     from ..workflow.run import run_pipeline
 
     if arguments.raw_config is not None:
@@ -389,7 +389,7 @@ def command_run(arguments: argparse.Namespace) -> int:
         print(f"\nDone. Evaluated predictions: {config.output_dir / 'predictions.csv.gz'} "
               "(post-assessment skipped)")
         return 0
-    print(f"\nDone. Report: {config.output_dir / 'report' / 'report.html'}")
+    print(f"\nDone. Results: {config.output_dir}")
     return 0
 
 
@@ -531,7 +531,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Read a raw revision archive and report what AutoDelphiRF would do with it: "
                     "cadence, genuine-revision rate, feature lags, and the recommended "
                     "target lag L. Pure Python -- R and DelphiRF are not needed.")
-    diagnose.add_argument("--json", action="store_true", help="print the full report as JSON")
+    diagnose.add_argument("--json", action="store_true", help="print the full diagnosis as JSON")
     diagnose.set_defaults(handler=command_diagnose, layers=DEFAULT_LAYERS)
 
     prepare = subparsers.add_parser(
@@ -548,9 +548,9 @@ def build_parser() -> argparse.ArgumentParser:
     # group opposite --config; every other preparation option is inherited.
     run = subparsers.add_parser(
         "run", parents=[preparation_options(include_archive=False)],
-        help="train, test, evaluate, and report; prepare the data first if needed",
+        help="train, test, evaluate, and save results; prepare the data first if needed",
         description="Run the rolling AutoDelphiRF pipeline. Pass --archive to go from a "
-                    "raw archive to a report in one command, or --config to rerun a dataset that "
+                    "raw archive to saved results in one command, or --config to rerun a dataset that "
                     "autodelphirf prepare built.")
     source = run.add_mutually_exclusive_group(required=True)
     source.add_argument("--config", type=Path, metavar="JSON",
@@ -567,7 +567,7 @@ def build_parser() -> argparse.ArgumentParser:
                      help="validate the input and stop before fitting anything")
     run.add_argument("--no-post-assessment", action="store_true",
                      help="fit, predict and evaluate, then stop before calibration, "
-                          "PIT diagnostics, bootstrap and the report")
+                          "PIT diagnostics, bootstrap and reassessment")
     run.set_defaults(handler=command_run)
 
     update = subparsers.add_parser(
@@ -587,7 +587,7 @@ def build_parser() -> argparse.ArgumentParser:
     update.set_defaults(handler=command_update, layers=DEFAULT_LAYERS)
 
     assess = subparsers.add_parser(
-        "assess", help="rerun assessment and reporting without fitting models",
+        "assess", help="rerun assessment without fitting models",
         description="Assess newer forecasts against earlier genuine forecasts of the same "
                     "target (up to 14 days apart). This never invokes R or refits a model.")
     assess.add_argument("--results", type=Path, required=True, metavar="DIR",
@@ -598,7 +598,7 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--pit-only", action="store_true",
                       help="run empirical quantile coverage and PIT diagnostics without recalibration")
     mode.add_argument("--recalibration-only", action="store_true",
-                      help="run recalibration and its coverage/PIT comparisons without the full report")
+                      help="run recalibration and its coverage/PIT comparisons")
     assess.add_argument("--event-filter", choices=("genuine", "carried", "all"),
                         default="genuine", help="forecasts to assess (default: genuine; "
                         "carried selects only carried-forward rows; all includes both)")

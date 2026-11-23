@@ -1,6 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 import json
+import subprocess
 import warnings
 
 import numpy as np
@@ -190,11 +191,10 @@ def test_delphirf_training_builds_an_installed_package_command(tmp_path, monkeyp
     (prepared_dir / "test_dates.csv").write_text("test_date\n")
     captured = {}
     monkeypatch.setattr("autodelphirf.models.delphirf_backend.rscript_executable", lambda: "Rscript")
-    monkeypatch.setattr("autodelphirf.models.delphirf_backend.subprocess.run",
-                        lambda command, check=False: captured.setdefault("command", command) or SimpleNamespace(returncode=0))
-    # Make the fake result object explicit despite dict truthiness.
-    def fake_run(command, check=False):
+    def fake_run(command, check=False, stdout=None, stderr=None):
         captured["command"] = command
+        assert stderr == subprocess.STDOUT
+        stdout.write("11 test rows not forecast\n")
         return SimpleNamespace(returncode=0)
     monkeypatch.setattr("autodelphirf.models.delphirf_backend.subprocess.run", fake_run)
     config = SimpleNamespace(prepared_dir=prepared_dir, schedule_file="test_dates.csv",
@@ -209,6 +209,9 @@ def test_delphirf_training_builds_an_installed_package_command(tmp_path, monkeyp
     assert command[command.index("--genuine-testing") + 1] == "true"
     assert not any("DelphiRF" in part and Path(part).is_dir() for part in command)
     assert "primary_method_id" not in provenance
+    log = Path(provenance["training_log_file"])
+    assert log.parent == tmp_path / "logs"
+    assert log.read_text() == "11 test rows not forecast\n"
 
 
 def test_delphirf_training_warns_when_r_reports_partial_fit_failures(tmp_path, monkeypatch):
@@ -228,7 +231,7 @@ def test_delphirf_training_warns_when_r_reports_partial_fit_failures(tmp_path, m
 
     monkeypatch.setattr("autodelphirf.models.delphirf_backend.rscript_executable", lambda: "Rscript")
     monkeypatch.setattr("autodelphirf.models.delphirf_backend.subprocess.run",
-                        lambda command, check=False: SimpleNamespace(returncode=0))
+                        lambda command, **kwargs: SimpleNamespace(returncode=0))
     config = SimpleNamespace(prepared_dir=prepared_dir, schedule_file="test_dates.csv",
                              genuine_training=True, genuine_testing=True)
 
@@ -240,6 +243,33 @@ def test_delphirf_training_warns_when_r_reports_partial_fit_failures(tmp_path, m
     assert provenance["fit_failure_count"] == 2
     assert len(caught) == 1
     assert "predictions are incomplete" in str(caught[0].message)
+
+
+def test_delphirf_failure_points_to_saved_r_output(tmp_path, monkeypatch):
+    from autodelphirf.models.delphirf_backend import train_delphirf as backend
+    from autodelphirf.pre_diagnosis.preparation import PreparationError
+    import pytest
+
+    prepared_dir = tmp_path / "prepared"
+    prepared_dir.mkdir()
+    (prepared_dir / "preparation.json").write_text(json.dumps({
+        "raw_archive": str(tmp_path / "raw.csv"), "resolved_preprocessing": {
+            "reference_col": "reference_date", "report_col": "report_date",
+            "value_cols": ["value"], "value_type": "count", "lag_terms": [1, 7]}}))
+    monkeypatch.setattr("autodelphirf.models.delphirf_backend.rscript_executable", lambda: "Rscript")
+
+    def failed_run(command, *, stdout, stderr, check):
+        stdout.write("R model failure details\n")
+        return SimpleNamespace(returncode=1)
+
+    monkeypatch.setattr("autodelphirf.models.delphirf_backend.subprocess.run", failed_run)
+    config = SimpleNamespace(prepared_dir=prepared_dir, schedule_file="test_dates.csv")
+    with pytest.raises(PreparationError, match="R output: ") as exc:
+        backend(config, pd.DataFrame(), pd.DataFrame(),
+                {"delphirf": "RevRoute DelphiRF"}, tmp_path / "predictions.csv.gz")
+    log = next((tmp_path / "logs").glob("delphirf_*.log"))
+    assert str(log) in str(exc.value)
+    assert log.read_text() == "R model failure details\n"
 
 
 def test_single_location_training_passes_a_string_geo_and_constant_label(tmp_path, monkeypatch):
@@ -255,7 +285,7 @@ def test_single_location_training_passes_a_string_geo_and_constant_label(tmp_pat
     (prepared_dir / "test_dates.csv").write_text("test_date\n")
     captured = {}
 
-    def fake_run(command, check=False):
+    def fake_run(command, **kwargs):
         captured["command"] = command
         return SimpleNamespace(returncode=0)
 

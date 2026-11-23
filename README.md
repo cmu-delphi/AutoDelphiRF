@@ -46,13 +46,14 @@ practical, omit it and use `--triangle-format csv`; Python `pyarrow` and R
 Create a Python virtual environment and install AutoDelphiRF from GitHub:
 
 ```bash
-python3 -m venv .venv
+python3.10 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install "autodelphirf[parquet] @ git+https://github.com/cmu-delphi/AutoDelphiRF.git@dev"
 ```
 
-The `python3` used to create the environment must be version 3.10 or newer.
+Use an installed Python 3.10 or newer to create the environment (replace
+`python3.10` in these commands if your interpreter has another name).
 Activate the environment again with `source .venv/bin/activate` before using
 AutoDelphiRF in a new terminal session.
 
@@ -61,7 +62,7 @@ Or install an editable copy for development:
 ```bash
 git clone -b dev https://github.com/cmu-delphi/AutoDelphiRF.git
 cd AutoDelphiRF
-python3 -m venv .venv
+python3.10 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e ".[parquet]"
@@ -513,13 +514,13 @@ no calibrated intervals for that update.
 Install development dependencies and run the tests:
 
 ```bash
-python3.11 -m venv .venv
+python3.10 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[dev]"
 python -m pytest
 ```
 
-Python 3.11 is the repository's test interpreter. The slower integration tests
+Python 3.10 or newer is supported. The slower integration tests
 also require R and a compatible DelphiRF installation.
 
 ## License

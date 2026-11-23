@@ -14,9 +14,6 @@
   "calibration_reliability": {
     "minimum_history": 10,
     "adjacent_lag_radius": 1,
-    "eta": 0.9,
-    "caution_cut": 0.7,
-    "high_risk_cut": 0.9,
     "reference_policy": "completed pre-evaluation inner rolling origins only"
   },
   "evaluation": {

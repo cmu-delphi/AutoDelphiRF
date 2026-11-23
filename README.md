@@ -101,6 +101,9 @@ The application leads you through five steps:
 5. **Review the results.** Compare forecast errors across reporting lags,
    locations, and time.
 
+The web application saves its score tables and reassessment results without
+generating an HTML report or report figures.
+
 Two dates and two lags appear throughout the workflow:
 
 - **Reference date:** when the measured event or surveillance period occurred.
@@ -318,7 +321,7 @@ file used for its first run. AutoDelphiRF then:
 5. fits one new pooling plan and model set only when a new retraining origin is
    due; otherwise it loads only the latest applicable models;
 6. forecasts only newly received records whose target is not yet observable;
-7. writes prospective calibration and reliability information for those new
+7. writes prospective calibration and PIT diagnostics for those new
    forecasts; and
 8. atomically appends the new forecasts to the cumulative ledger.
 
@@ -335,10 +338,10 @@ On a scheduled retraining date with no new raw release, run the command with
 forecast rows. In an automated deployment, trigger ordinary updates from the
 raw-data ingestion job and schedule the quiet-date command separately.
 
-Realized accuracy, coverage, and harm assessments cannot be calculated for an
+Realized accuracy and coverage assessments cannot be calculated for an
 unresolved forecast. They are filled in by a later update after its target
-becomes observable. The update-specific `calibration.csv.gz`,
-`reliability.csv.gz`, and `forecast_assessment_status.json` therefore describe
+becomes observable. The update-specific `calibration.csv.gz` and
+`forecast_assessment_status.json` therefore describe
 only forecasts issued by the latest update.
 
 If the archive has not changed, the command exits without rebuilding the data
@@ -393,6 +396,48 @@ when `revroute_pools.csv` is present, the current origin's RevRoute task pool.
 No strategy triggers model fitting. Their coverage, width, miss direction and
 WIS are compared in `calibration_strategy_comparison.csv`.
 
+The standard run writes `reassessment_decisions.csv.gz` and
+`reassessment_by_age.csv` from original DelphiRF forecasts in the forecast
+ledger. Each new release compares its median with earlier forecasts for the
+same location and target issued 1–14 days ago. A flag means the new median
+lies outside the old central 80% interval; the normalized median jump uses
+the model's working scale. Target values only grade earlier intervals after
+they become observable. The age summary uses 1,000 release-date bootstrap
+resamples. Run the assessment independently from saved forecasts:
+
+```bash
+autodelphirf assess --results autodelphirf_work/results
+```
+
+For a minimal test case, suppose a genuine forecast issued on January 1 has
+working-scale 10th, 50th, and 90th percentiles of 1.0, 1.5, and 2.0. On
+January 8, a new forecast for the same location and reference date has median
+2.3. The new median exceeds the earlier 90th percentile, so the 7-day decision
+is flagged; its normalized jump is `(2.3 - 1.5) / (2.0 - 1.0) = 0.8`.
+On a `log1p` working scale, the earlier reporting-scale interval is approximately
+`[1.72, 6.39]`. A later target value of 7 makes its retrospective interval-miss
+label 1. The target value does not enter the flag or jump calculation:
+
+```python
+import numpy as np
+import pandas as pd
+from autodelphirf.post_assessment.reassessment import reassess
+
+forecasts = pd.DataFrame({
+    "geo_value": ["ca", "ca"],
+    "reference_date": ["2023-12-31", "2023-12-31"],
+    "report_date": ["2024-01-01", "2024-01-08"],
+    "target_date": ["2024-01-28", "2024-01-28"],
+    "q0.1_working": [1.0, 1.8],
+    "q0.5_working": [1.5, 2.3],
+    "q0.9_working": [2.0, 2.8],
+    "miss": [1.0, np.nan],  # grade the old forecast after truth is available
+})
+decision = reassess(forecasts).iloc[0]
+assert decision.age == 7 and decision.flag == 1
+assert np.isclose(decision.jump, 0.8) and decision.miss == 1
+```
+
 Standalone assessment uses genuine test events by default. Rows with
 `genuine_event == false` (including carried-forward pseudo-origins) are removed
 before calibration and affect neither its historical strata nor its metrics.
@@ -408,11 +453,7 @@ same relative boundary tolerance used for interval coverage, `pit_lower` and
 `pit_upper` span the full tied probability range; `pit_tied` and
 `pit_tied_quantiles` make those cases explicit. This avoids assigning tied or
 discrete forecasts to a rounding-dependent single bin. An existing completed
-run can generate these artifacts without refitting models:
-
-```bash
-autodelphirf assess --results autodelphirf_work/results
-```
+run can generate these optional artifacts without refitting models.
 
 PIT diagnostics can run independently on the original forecast quantiles:
 
@@ -432,8 +473,8 @@ autodelphirf assess \
   --recalibration-only
 ```
 
-Assessment defaults to `--event-filter genuine`, so carried-forward forecasts
-are excluded. Use `--event-filter carried` to assess only carried-forward
+The default reassessment accepts genuine forecasts only. For optional PIT and
+recalibration, use `--event-filter carried` to assess only carried-forward
 forecasts or `--event-filter all` to include both.
 
 PIT-only assessment writes `quantile_reliability.csv` and

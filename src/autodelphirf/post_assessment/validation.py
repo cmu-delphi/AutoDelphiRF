@@ -1,40 +1,27 @@
-"""Prospective validation protocol V1-V2 (RRDelphiRF_post_prediction_validation_expanded.tex).
+"""Prospective prediction-validity tables (V1).
 
 Pure post-processing. Every function here consumes forecasts that were already
-issued and scored -- the standardized long prediction table and the per-case
-reliability record -- and uses finalized values only to evaluate them. Nothing is
-re-predicted, no model is fitted, and no threshold is tuned on these outputs.
+issued and scored -- the standardized long prediction table -- and uses target
+values only to evaluate them. Nothing is re-predicted, no model is fitted, and no
+threshold is tuned on these outputs.
 
-  V1  Prediction validity (Sec. "V1"): point quality against the flat-line
-      baseline, pairwise win/tie/loss and loss saved, and interval calibration
-      resolved by lag and over the early-lag set.
-  V2  Forecast-alert validity (Sec. "V2"): whether the risk quantities have
-      their stated upper-tail meaning, whether realized performance worsens
-      across the categorical alert, whether the continuous risk score ranks
-      forecasts, and the operational binary summaries at the frozen thresholds.
+  V1  Prediction validity: point quality against the flat-line baseline,
+      pairwise win/tie/loss and loss saved, interval calibration resolved by lag
+      and over the early-lag set, and regime-stratified differences.
 
-The alert assigned at issuance is never recomputed here; V2 only reads it.
+The forecast-level reliability and alert layer (former V2) was removed; the
+post-forecast re-assessment of issued forecasts lives in ``reassessment.py``.
 """
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
-from ..core.defaults import CALIBRATION_DEFAULTS, EVALUATION_DEFAULTS
+from ..core.defaults import EVALUATION_DEFAULTS
 
 #: Nominal central levels and the routed taus bounding them.
 LEVELS = {50: (.25, .75), 80: (.1, .9), 95: (.025, .975)}
 EARLY_LAG_MAX = EVALUATION_DEFAULTS.get("early_lag_max", 14)
-DEFAULT_ETA = CALIBRATION_DEFAULTS.get("eta", .9)
-
-
-def _spearman(left, right) -> float:
-    """Spearman correlation, undefined without variation on both axes."""
-    pairs = pd.DataFrame({"left": left, "right": right}).replace(
-        [np.inf, -np.inf], np.nan).dropna()
-    if len(pairs) < 2 or pairs.left.nunique() < 2 or pairs.right.nunique() < 2:
-        return np.nan
-    return float(pairs.left.corr(pairs.right, method="spearman"))
 
 
 def _subsets(long: pd.DataFrame, early_lag_max: int = EARLY_LAG_MAX):
@@ -211,189 +198,13 @@ def regime_stratified_differences(long: pd.DataFrame, wide: pd.DataFrame, pairs,
 
 
 # ---------------------------------------------------------------------------
-# V2: forecast-alert validity
+# All V1 tables
 # ---------------------------------------------------------------------------
-
-def reliability_coverage(reliability: pd.DataFrame, eta: float = DEFAULT_ETA,
-                         early_lag_max: int = EARLY_LAG_MAX) -> pd.DataFrame:
-    """Do the upper-tail risk quantities mean what they claim?
-
-    ``Cov_eta^err`` is the share of cases whose realized error falls at or below
-    the issued ``q_error`` (spec V2.1); for eta = 0.9, a value near 0.90
-    supports the stated historical upper-tail interpretation. The companion
-    check for ``q_regret`` is gone with the quantity itself; conditional harm
-    severity is checked by ``harm_severity_validation`` instead, because its
-    upper-tail claim holds only among realized-harm cases.
-    """
-    if reliability is None or reliability.empty:
-        return pd.DataFrame()
-    rows = []
-    subsets = list(_subsets(reliability, early_lag_max))
-    if "lag" in reliability:
-        subsets.extend((f"lag={int(lag)}", frame) for lag, frame in reliability.groupby("lag", observed=True))
-    for subset, frame in subsets:
-        for method, group in frame.groupby("method", observed=True):
-            usable = group[np.isfinite(group.get("q_error", np.nan))]
-            if usable.empty:
-                continue
-            rows.append({
-                "subset": subset, "method": method, "eta": eta, "n": len(usable),
-                "coverage_error_quantity": float(usable.qerr_covered.mean())
-                if "qerr_covered" in usable else np.nan,
-                "coverage_error_gap": (float(usable.qerr_covered.mean()) - eta)
-                if "qerr_covered" in usable else np.nan,
-                "mean_q_error": float(usable.q_error.mean()),
-                "mean_realized_ae": float(usable.realized_ae.mean()),
-                "realized_harm_frequency": float((usable.realized_regret > 0).mean()),
-                "mean_n_err": float(usable.n_err.mean()) if "n_err" in usable else np.nan,
-                "mharm_issuable_share": (float(np.isfinite(usable.m_harm).mean())
-                                         if "m_harm" in usable else np.nan),
-            })
-    return pd.DataFrame(rows)
-
-
-def alert_stratification(reliability: pd.DataFrame, long: pd.DataFrame | None = None,
-                         early_lag_max: int = EARLY_LAG_MAX) -> pd.DataFrame:
-    """Realized performance by the categorical forecast alert.
-
-    The intended ordering is supported < caution < high risk in realized error,
-    in distribution. WIS is merged in from the long table when available; the
-    reliability record itself carries only point quantities.
-    """
-    if reliability is None or reliability.empty or "reliability_level" not in reliability:
-        return pd.DataFrame()
-    frame = reliability
-    if long is not None and "wis_reporting" in long:
-        key = [c for c in ("method", "fold", "geo_value", "reference_date", "report_date", "lag")
-               if c in frame and c in long]
-        if key:
-            frame = frame.merge(long[key + ["wis_reporting"]].drop_duplicates(key), on=key, how="left")
-    rows = []
-    for subset, subframe in _subsets(frame, early_lag_max):
-        for (method, level), group in subframe.groupby(["method", "reliability_level"],
-                                                       observed=True):
-            rows.append({
-                "subset": subset, "method": method, "reliability_level": level, "n": len(group),
-                "mean_ae": float(group.realized_ae.mean()),
-                "median_ae": float(group.realized_ae.median()),
-                "mean_wis": float(group.wis_reporting.mean()) if "wis_reporting" in group else np.nan,
-                "median_wis": float(group.wis_reporting.median()) if "wis_reporting" in group else np.nan,
-                "harm_probability": float((group.realized_regret > 0).mean()),
-                "mean_regret": float(group.realized_regret.mean()),
-                "median_regret": float(group.realized_regret.median()),
-                "p90_regret": float(group.realized_regret.quantile(.9)),
-            })
-    return pd.DataFrame(rows)
-
-
-def risk_discrimination(reliability: pd.DataFrame, bins: int = 5,
-                        early_lag_max: int = EARLY_LAG_MAX) -> pd.DataFrame:
-    """Does the continuous risk signal rank forecasts by realized badness?
-
-    Bins the issued risk quantities and reports realized loss across ordered
-    bins, plus the rank association the spec names (Spearman). Categorical
-    thresholds are secondary to this.
-    """
-    if reliability is None or reliability.empty:
-        return pd.DataFrame()
-    rows = []
-    subsets = list(_subsets(reliability, early_lag_max))
-    if "lag" in reliability:
-        subsets.extend((f"lag={int(lag)}", frame) for lag, frame in reliability.groupby("lag", observed=True))
-    for subset, frame in subsets:
-        for method, group in frame.groupby("method", observed=True):
-            # Risk-score bin edges are frozen a priori on its [0, 1] scale.
-            # q-error/regret bins require method-specific inner-reference
-            # cutpoints and are intentionally not estimated from outer outcomes.
-            # Revised-harm spec V2.1: discrimination is evaluated on the
-            # difficulty component q_err only. ``q_regret`` was REMOVED by the
-            # spec ("did not discriminate realized regret reliably"), and the
-            # measurement here agreed: non-monotone in realized AE on 6 of 6
-            # datasets. ``f_harm`` is judged by discrimination in
-            # ``harm_frequency_discrimination`` -- never by probability
-            # accuracy, since it is not offered as a probability; ``M_harm`` by
-            # ``harm_severity_validation``.
-            for signal in ("q_error",):
-                if signal not in group:
-                    continue
-                usable = group[np.isfinite(group[signal]) & np.isfinite(group.realized_ae)]
-                if len(usable) < 10:
-                    continue
-                spearman = _spearman(usable[signal], usable.realized_ae)
-                spearman_regret = _spearman(usable[signal], usable.realized_regret)
-                # QUANTILE bins, per spec V2.1 ("quantile bins of q_err").
-                # Fixed [0,1] edges were right for the retired percentile
-                # risk_score but meaningless for q_err, which carries target
-                # units -- on nssp (values ~0-0.08) they put 99% of cases in
-                # one bin. Quantile edges use only the issued signal, never
-                # the outer outcome, so they remain admissible.
-                try:
-                    labels = pd.qcut(usable[signal], bins, duplicates="drop", labels=False)
-                except ValueError:
-                    continue
-                if labels.isna().all():
-                    continue
-                for index, bucket in usable.groupby(labels, observed=True):
-                    rows.append({
-                        "subset": subset, "method": method, "signal": signal,
-                        "bin": int(index), "n": len(bucket),
-                        "signal_min": float(bucket[signal].min()),
-                        "signal_max": float(bucket[signal].max()),
-                        "mean_ae": float(bucket.realized_ae.mean()),
-                        "median_ae": float(bucket.realized_ae.median()),
-                        "mean_regret": float(bucket.realized_regret.mean()),
-                        "harm_probability": float((bucket.realized_regret > 0).mean()),
-                        "spearman_signal_vs_ae": spearman,
-                        "spearman_signal_vs_regret": spearman_regret})
-    return pd.DataFrame(rows)
-
-
-def operational_alert_summary(reliability: pd.DataFrame,   # RETIRED: see note below
-                              alert_levels=("caution", "high risk"),
-                              early_lag_max: int = EARLY_LAG_MAX) -> pd.DataFrame:
-    """Sensitivity, specificity, PPV, NPV and false-alert rate at frozen thresholds.
-
-    The "bad forecast" event is ``realized_regret > 0`` -- the forecast did
-    worse than the flat-line baseline it was meant to improve on. This is a
-    prespecified, outcome-independent definition, and these binary summaries
-    describe the frozen alert operating point; they do not replace the
-    continuous calibration above.
-    """
-    if reliability is None or reliability.empty or "reliability_level" not in reliability:
-        return pd.DataFrame()
-    rows = []
-    for subset, frame in _subsets(reliability, early_lag_max):
-        for method, group in frame.groupby("method", observed=True):
-            usable = group[np.isfinite(group.realized_regret)]
-            if usable.empty:
-                continue
-            bad = (usable.realized_regret > 0).to_numpy()
-            alert = usable.reliability_level.isin(alert_levels).to_numpy()
-            true_positive = int((alert & bad).sum())
-            false_positive = int((alert & ~bad).sum())
-            false_negative = int((~alert & bad).sum())
-            true_negative = int((~alert & ~bad).sum())
-            def ratio(numerator, denominator):
-                return float(numerator / denominator) if denominator else np.nan
-            rows.append({
-                "subset": subset, "method": method,
-                "alert_levels": "|".join(alert_levels), "n": len(usable),
-                "bad_forecast_rate": float(bad.mean()), "alert_rate": float(alert.mean()),
-                "true_positive": true_positive, "false_positive": false_positive,
-                "false_negative": false_negative, "true_negative": true_negative,
-                "sensitivity": ratio(true_positive, true_positive + false_negative),
-                "specificity": ratio(true_negative, true_negative + false_positive),
-                "positive_predictive_value": ratio(true_positive, true_positive + false_positive),
-                "negative_predictive_value": ratio(true_negative, true_negative + false_negative),
-                "false_alert_rate": ratio(false_positive, false_positive + true_negative)})
-    return pd.DataFrame(rows)
-
 
 def run_validation(long: pd.DataFrame, *, wide: pd.DataFrame | None = None,
                    calibration: pd.DataFrame | None = None,
-                   reliability: pd.DataFrame | None = None,
                    point_pairs=(), distribution_pairs=(), taus=()) -> dict[str, pd.DataFrame]:
-    """Every V1 and V2 table, from already-issued forecasts only."""
+    """Every V1 table, from already-issued forecasts only."""
     tables = {
         "v1_flat_line_comparison": flat_line_comparison(long),
         "v1_pairwise_point": pairwise_loss_comparison(long, point_pairs, "absolute_error"),
@@ -402,231 +213,5 @@ def run_validation(long: pd.DataFrame, *, wide: pd.DataFrame | None = None,
         "v1_interval_calibration_by_lag": interval_calibration_by_lag(calibration, taus),
         "v1_regime_stratified_differences": regime_stratified_differences(
             long, wide, list(point_pairs)),
-        # V2, revised-harm spec: the three components of R_rel are validated
-        # against their OWN outcomes and never combined -- q_err by upper-tail
-        # coverage and discrimination, f_harm by discrimination and support,
-        # M_harm by conditional severity on its own comparable set. Neither
-        # q_regret nor any harm probability exists.
-        "v2_reliability_coverage": reliability_coverage(reliability),
-        "v2_qerr_discrimination": risk_discrimination(reliability),
-        "v2_fharm_discrimination": harm_frequency_discrimination(reliability),
-        "v2_mharm_severity": harm_severity_validation(reliability),
-        "v2_qerr_vs_interval_width": interval_width_value_added(reliability, long),
-        "v2_opposed_objective_diagnostic": opposed_objective_diagnostic(reliability),
-        # Retained for support accounting, no longer a risk category.
-        "v2_profile_availability": alert_stratification(reliability, long),
     }
     return {name: frame for name, frame in tables.items() if frame is not None}
-
-
-# RETIRED: operational_alert_summary summarises the categorical alert system
-# that the spec removed. It is kept only so archived runs remain readable and
-# is deliberately NOT wired into run_validation.
-
-
-# ---------------------------------------------------------------------------
-# Post-prediction validation of the historical assessments (Sec. 3.2.5)
-# ---------------------------------------------------------------------------
-
-def harm_frequency_discrimination(reliability: pd.DataFrame, bins: int = 5,
-                                  early_lag_max: int = EARLY_LAG_MAX) -> pd.DataFrame:
-    """Descriptive/discriminative value of ``f_harm`` (final spec V2b).
-
-    NO probability-accuracy analysis is performed, and that is deliberate:
-    ``f_harm`` is a comparable-history frequency, not a prospective
-    probability, so a reliability diagram against the identity line, a Brier
-    score, and a comparison with a constant-probability predictor are all out
-    of scope. The previous revision did score it that way and it failed on 4 of
-    5 datasets -- which is the reason the probability claim was dropped rather
-    than the metric.
-
-    What is assessed instead: whether realized harm frequency rises across
-    bins of issued ``f_harm`` (discrimination), with the support and Wilson
-    width that make each bin interpretable, plus the temporal drift of the
-    harm base rate -- a drifting base rate is exactly what makes any fixed
-    historical frequency a poor guide to the present.
-    """
-    if reliability.empty or "f_harm" not in reliability:
-        return pd.DataFrame()
-    rows = []
-    for subset, frame in _subsets(reliability, early_lag_max):
-        frame = frame.dropna(subset=["f_harm", "realized_regret"])
-        if frame.empty:
-            continue
-        for method, group in frame.groupby("method", observed=True):
-            issued = group.f_harm.astype(float)
-            realized = (group.realized_regret > 0).astype(float)
-            spearman = _spearman(issued, realized)
-            # Temporal stability of the base rate, per spec V2b item (4).
-            drift = np.nan
-            if "cutoff" in group:
-                by_origin = realized.groupby(pd.to_datetime(group.cutoff)).mean()
-                if len(by_origin) > 2:
-                    drift = float(by_origin.max() - by_origin.min())
-            try:
-                edges = pd.qcut(issued, bins, duplicates="drop", labels=False)
-            except ValueError:
-                edges = pd.Series(np.zeros(len(issued), int), index=issued.index)
-            for value, cell in group.groupby(edges, observed=True):
-                cell_realized = (cell.realized_regret > 0).astype(float)
-                rows.append({
-                    "subset": subset, "method": method, "bin": int(value), "n": len(cell),
-                    "mean_issued_f_harm": float(cell.f_harm.astype(float).mean()),
-                    "realized_harm_frequency": float(cell_realized.mean()),
-                    "mean_k_harm": float(cell.k_harm.mean()) if "k_harm" in cell else np.nan,
-                    "mean_n_harmfreq": float(cell.n_harmfreq.mean()) if "n_harmfreq" in cell else np.nan,
-                    "mean_wilson_width": (float((cell.f_harm_wilson_high - cell.f_harm_wilson_low).mean())
-                                          if "f_harm_wilson_high" in cell else np.nan),
-                    "spearman_fharm_vs_harm": spearman,
-                    "base_rate": float(realized.mean()),
-                    "base_rate_drift_across_origins": drift})
-    return pd.DataFrame(rows)
-
-
-def interval_width_value_added(reliability: pd.DataFrame, long: pd.DataFrame,
-                               level: str = "0.95", early_lag_max: int = EARLY_LAG_MAX
-                               ) -> pd.DataFrame:
-    """Does ``q_eta^err`` add information beyond calibrated interval width? (V2a')
-
-    The upstream system already issues calibrated predictive intervals, so a
-    difficulty quantity earns its place only if it carries information those
-    intervals do not. The decisive test is the third one: whether
-    ``q_eta^err`` still stratifies realized AE WITHIN broad bins of the width
-    ``W_q``. Marginal association alone cannot distinguish added information
-    from a relabelling of width.
-    """
-    if reliability is None or reliability.empty or long is None or long.empty:
-        return pd.DataFrame()
-    lower, upper = f"q{(1 - float(level)) / 2:g}", f"q{1 - (1 - float(level)) / 2:g}"
-    if lower not in long or upper not in long:
-        return pd.DataFrame()
-    keys = [c for c in ("method", "fold", "geo_value", "reference_date", "lag") if c in long.columns
-            and c in reliability.columns]
-    widths = long[keys + [lower, upper]].copy()
-    widths["interval_width"] = widths[upper].astype(float) - widths[lower].astype(float)
-    merged = reliability.merge(widths[keys + ["interval_width"]], on=keys, how="inner")
-    merged = merged[np.isfinite(merged.interval_width) & np.isfinite(merged.q_error)
-                    & np.isfinite(merged.realized_ae)]
-    if len(merged) < 40:
-        return pd.DataFrame()
-    rows = []
-    for method, group in merged.groupby("method", observed=True):
-        marginal = _spearman(group.q_error, group.interval_width)
-        try:
-            width_bins = pd.qcut(group.interval_width, 3, labels=False, duplicates="drop")
-        except ValueError:
-            width_bins = pd.Series(np.zeros(len(group), int), index=group.index)
-        for band, cell in group.groupby(width_bins, observed=True):
-            if len(cell) < 20:
-                continue
-            try:
-                inner = pd.qcut(cell.q_error, 3, labels=False, duplicates="drop")
-            except ValueError:
-                continue
-            trend = cell.groupby(inner, observed=True).realized_ae.mean()
-            if len(trend) < 2:
-                continue
-            rows.append({
-                "method": method, "level": level, "width_band": int(band), "n": len(cell),
-                "spearman_qerr_vs_width": marginal,
-                "mean_interval_width": float(cell.interval_width.mean()),
-                "ae_lowest_qerr_tercile": float(trend.iloc[0]),
-                "ae_highest_qerr_tercile": float(trend.iloc[-1]),
-                "within_band_ae_ratio": float(trend.iloc[-1] / trend.iloc[0]) if trend.iloc[0] > 0 else np.nan,
-                "stratifies_within_band": bool(trend.iloc[-1] > trend.iloc[0]),
-                "spearman_qerr_vs_ae_within_band": _spearman(
-                    cell.q_error, cell.realized_ae)})
-    return pd.DataFrame(rows)
-
-
-def harm_severity_validation(reliability: pd.DataFrame, eta: float = DEFAULT_ETA,
-                             early_lag_max: int = EARLY_LAG_MAX) -> pd.DataFrame:
-    """Does ``M_harm_eta`` describe harm severity CONDITIONAL on harm? (V2.3)
-
-    Two claims are tested, both restricted to cases where harm was realized,
-    which is what makes them statements about severity rather than frequency:
-
-      * the conditional upper-tail interpretation
-        ``Cov_eta^M = (1/n_+) sum_{q: H_q=1} 1{Delta_q <= M_harm_eta(q)}``,
-        which should sit near ``eta``; and
-      * discrimination -- whether a larger issued ``M_harm`` goes with a larger
-        realized positive regret, by rank association and within quantile bins
-        of the issued value.
-
-    "If M_harm_eta does not discriminate or achieve a defensible conditional
-    upper-tail interpretation across datasets, it is abandoned rather than
-    replaced by the failed unconditional regret quantile." This table is the
-    evidence for that decision.
-    """
-    if reliability is None or reliability.empty or "m_harm" not in reliability:
-        return pd.DataFrame()
-    rows = []
-    for subset, frame in _subsets(reliability, early_lag_max):
-        for method, group in frame.groupby("method", observed=True):
-            harmed = group[group.get("realized_harm", False).astype(bool)
-                           & np.isfinite(group.m_harm)
-                           & np.isfinite(group.realized_regret)]
-            if len(harmed) < 10:
-                continue
-            severity = harmed.realized_regret.to_numpy(float)
-            issued = harmed.m_harm.to_numpy(float)
-            spearman = _spearman(issued, severity)
-            bins = min(5, max(2, len(harmed) // 20))
-            try:
-                labels = pd.qcut(pd.Series(issued), bins, labels=False, duplicates="drop")
-            except ValueError:
-                labels = pd.Series(np.zeros(len(harmed), int))
-            grouped = pd.DataFrame({"bin": labels.to_numpy(), "severity": severity}).groupby("bin")
-            trend = grouped.severity.mean()
-            rows.append({
-                "subset": subset, "method": method,
-                "n_harm": int(len(harmed)),
-                "conditional_coverage": float(np.mean(severity <= issued)),
-                "eta": float(eta),
-                "coverage_error": float(np.mean(severity <= issued) - eta),
-                "spearman_mharm_vs_severity": spearman,
-                "mean_severity_lowest_bin": float(trend.iloc[0]) if len(trend) else np.nan,
-                "mean_severity_highest_bin": float(trend.iloc[-1]) if len(trend) else np.nan,
-                "monotone_in_bins": bool(np.all(np.diff(trend.to_numpy()) >= 0)) if len(trend) > 1 else False,
-                "insufficient_severity_share": float(
-                    (group.get("harm_severity_status", pd.Series(dtype=object))
-                     == "insufficient harm-severity history").mean())
-                if "harm_severity_status" in group else np.nan})
-    return pd.DataFrame(rows)
-
-
-def opposed_objective_diagnostic(reliability: pd.DataFrame,
-                                 early_lag_max: int = EARLY_LAG_MAX) -> pd.DataFrame:
-    """Association of ``q_err`` with regret and harm (spec V2.4).
-
-    A NEGATIVE association here is not a failure of ``q_err``: difficult,
-    high-revision cases give correction more room to help, while already
-    settled cases are easy to predict yet vulnerable to needless correction.
-    This table is the evidence for keeping the two axes separate rather than
-    collapsing them, so it reports the sign explicitly.
-    """
-    if reliability.empty or "q_error" not in reliability:
-        return pd.DataFrame()
-    rows = []
-    for subset, frame in _subsets(reliability, early_lag_max):
-        frame = frame.dropna(subset=["q_error", "realized_ae", "realized_regret"])
-        if len(frame) < 3:
-            continue
-        for method, group in frame.groupby("method", observed=True):
-            if len(group) < 3:
-                continue
-            harm = (group.realized_regret > 0).astype(float)
-            def rank(a, b):
-                return _spearman(pd.Series(a).reset_index(drop=True),
-                                 pd.Series(b).reset_index(drop=True))
-            error = group.q_error.reset_index(drop=True)
-            rows.append({
-                "subset": subset, "method": method, "n": len(group),
-                "spearman_qerr_vs_ae": rank(error, group.realized_ae),
-                "spearman_qerr_vs_regret": rank(error, group.realized_regret),
-                "spearman_qerr_vs_harm": rank(error, harm),
-                "spearman_fharm_vs_harm": (rank(group.f_harm.reset_index(drop=True), harm)
-                                           if "f_harm" in group else np.nan),
-                "interpretation": "negative qerr-vs-regret/harm supports keeping the axes separate"})
-    return pd.DataFrame(rows)
-# End of validation helpers.

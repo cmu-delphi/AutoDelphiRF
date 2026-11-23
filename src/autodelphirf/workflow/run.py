@@ -20,10 +20,8 @@ from ..core.defaults import EVALUATION_DEFAULTS
 from ..post_assessment.reliability import (add_interval_columns, pit_diagnostics,
                                            LEVELS,
                                            prospective_calibration,
-                                           prospective_quantile_mapping,
-                                           reliability_history)
+                                           prospective_quantile_mapping)
 from ..post_assessment.inference import bootstrap, primary_comparison_pairs
-from ..post_assessment.validation import run_validation
 
 from ..core.config import DatasetConfig, write_resolved_config
 from ..comparators.schema import validate_comparator_file
@@ -357,45 +355,15 @@ def standardize_predictions(wide: pd.DataFrame, config: DatasetConfig) -> pd.Dat
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
-def _load_reliability_reference(config: DatasetConfig, method: str | None = None) -> tuple[np.ndarray | None, np.ndarray | None]:
-    """Load a frozen, pre-evaluation q_error/q_regret reference if configured.
-
-    See ``DatasetConfig.reliability_reference_file``: without one, the
-    risk-score layer still reports continuous quantities and degrades the
-    categorical alert to "reference distribution unavailable", rather than
-    fabricating a reference from data
-    that overlaps this run's own outer evaluation.
-    """
-    if not config.reliability_reference_file:
-        return None, None
-    reference = read_csv(config.reliability_reference_file)
-    if "method" in reference:
-        if method is None:
-            raise ValueError("method-specific reliability references require a method")
-        reference = reference[reference.method.eq(method)]
-        if reference.empty:
-            return None, None
-    required = {"q_error", "q_regret"}
-    if not required.issubset(reference.columns):
-        raise ValueError(f"reliability reference missing columns: {sorted(required - set(reference.columns))}")
-    multiplicity = (reference.case_n.to_numpy(int) if "case_n" in reference
-                    else np.ones(len(reference), dtype=int))
-    error_reference = np.repeat(reference.q_error.to_numpy(float), multiplicity)
-    regret_reference = np.repeat(reference.q_regret.to_numpy(float), multiplicity)
-    return error_reference, regret_reference
-
-
 def run_reliability_and_calibration(long: pd.DataFrame, config: DatasetConfig,
                                     wide: pd.DataFrame | None = None,
                                     pool_assignments: pd.DataFrame | None = None,
                                     mode: str = "full") -> dict[str, pd.DataFrame]:
-    """Interval calibration from completed revisions, risk-score/alert, bootstrap CIs.
+    """Interval calibration from completed revisions, PIT diagnostics, bootstrap CIs.
 
-    Wired into the standard pipeline output (not an optional side
-    computation): every dataset run produces a calibration table, a
-    per-method reliability table for every method that issues genuine
-    predictive quantiles, and episode-clustered bootstrap CIs for whichever
-    primary-comparison pairs the configured ``prediction_layers`` support.
+    The legacy full report produces calibration, quantile reliability and
+    episode-clustered bootstrap comparisons. PIT and recalibration can also
+    be requested independently from frozen forecasts.
     """
     if mode not in {"full", "pit", "recalibration"}:
         raise ValueError("mode must be 'full', 'pit', or 'recalibration'")
@@ -415,7 +383,7 @@ def run_reliability_and_calibration(long: pd.DataFrame, config: DatasetConfig,
         return {"calibration": empty, "calibration_variants": empty,
                 "calibration_comparison": empty,
                 "quantile_reliability": quantile_reliability, "pit_diagnostics": pit,
-                "interval_calibration": empty, "reliability": empty, "bootstrap": empty}
+                "interval_calibration": empty, "bootstrap": empty}
     calibration = (prospective_calibration(long, distribution_methods,
                                             working_scale=config.working_scale) if distribution_methods
                   else long.iloc[:0].copy())
@@ -488,15 +456,7 @@ def run_reliability_and_calibration(long: pd.DataFrame, config: DatasetConfig,
         return {"calibration": calibration, "calibration_variants": calibration_variants,
                 "calibration_comparison": calibration_comparison,
                 "quantile_reliability": quantile_reliability, "pit_diagnostics": pit,
-                "interval_calibration": interval_calibration,
-                "reliability": empty, "bootstrap": empty}
-    reliability_frames = []
-    for method in distribution_methods:
-        error_reference, regret_reference = _load_reliability_reference(config, method)
-        reliability_frames.append(reliability_history(long, method, error_reference=error_reference,
-                                                      regret_reference=regret_reference))
-    reliability = (pd.concat(reliability_frames, ignore_index=True) if reliability_frames
-                  else long.iloc[:0].copy())
+                "interval_calibration": interval_calibration, "bootstrap": empty}
     methods_present = {role: name for name, role in BOOTSTRAP_ROLE_BY_METHOD.items()
                        if name in config.prediction_layers}
     point_pairs, distribution_pairs = primary_comparison_pairs(methods_present)
@@ -507,26 +467,20 @@ def run_reliability_and_calibration(long: pd.DataFrame, config: DatasetConfig,
     ], ignore_index=True) if (point_pairs or distribution_pairs) else pd.DataFrame(
         columns=["subset", "comparison", "metric", "estimate", "ci_low", "ci_high",
                  "improvement_probability", "episodes"])
-    # V1/V2 prospective validation. Pure post-processing on forecasts that were
-    # already issued and scored: nothing is re-predicted and no threshold is
-    # tuned here.
-    validation = run_validation(long, wide=wide, calibration=calibration, reliability=reliability,
-                                point_pairs=point_pairs, distribution_pairs=distribution_pairs,
-                                taus=ROUTED_TAUS)
     return {"calibration": calibration, "calibration_variants": calibration_variants,
             "calibration_comparison": calibration_comparison,
             "quantile_reliability": quantile_reliability, "pit_diagnostics": pit,
             "interval_calibration": interval_calibration,
-            "reliability": reliability, "bootstrap": bootstrap_rows, **validation}
+            "bootstrap": bootstrap_rows}
 
 
 def forecast_time_assessment(history: pd.DataFrame, newly_issued: pd.DataFrame,
                              config: DatasetConfig,
                              pool_assignments: pd.DataFrame | None = None) -> dict[str, pd.DataFrame]:
-    """Attach prospective calibration and reliability only to new forecasts.
+    """Attach prospective calibration and PIT diagnostics only to new forecasts.
 
-    Accuracy, coverage, and realized-harm fields remain unavailable until a
-    later archive exposes the target. Historical ledger rows supply only the
+    Accuracy and coverage fields remain unavailable until a later archive
+    exposes the target. Historical ledger rows supply only the
     information that would have been observable at the new forecast cutoff.
     """
     assessment_history = _genuine_event_rows(history)
@@ -534,8 +488,7 @@ def forecast_time_assessment(history: pd.DataFrame, newly_issued: pd.DataFrame,
     if assessment_new.empty:
         empty = newly_issued.iloc[:0].copy()
         return {"calibration": empty, "calibration_variants": empty.copy(),
-                "quantile_reliability": empty.copy(), "pit_diagnostics": empty.copy(),
-                "reliability": empty.copy()}
+                "quantile_reliability": empty.copy(), "pit_diagnostics": empty.copy()}
     eligible = set(DISTRIBUTION_METHODS)
     if config.comparator_quantile_template:
         eligible |= set(config.comparator_methods)
@@ -555,14 +508,6 @@ def forecast_time_assessment(history: pd.DataFrame, newly_issued: pd.DataFrame,
             working_scale=config.working_scale))
     variants = (pd.concat([frame for frame in variants if not frame.empty], ignore_index=True)
                 if any(not frame.empty for frame in variants) else assessment_new.iloc[:0].copy())
-    reliability_parts = []
-    for method in methods:
-        error_reference, regret_reference = _load_reliability_reference(config, method)
-        reliability_parts.append(reliability_history(
-            assessment_history, method, error_reference=error_reference,
-            regret_reference=regret_reference))
-    reliability = (pd.concat(reliability_parts, ignore_index=True)
-                   if reliability_parts else assessment_new.iloc[:0].copy())
     identity = ["method", "cutoff", "geo_value", "reference_date",
                 "report_date", "target_date", "lag"]
     wanted = assessment_new[identity].drop_duplicates()
@@ -576,15 +521,9 @@ def forecast_time_assessment(history: pd.DataFrame, newly_issued: pd.DataFrame,
         for strategy, frame in variants.groupby("calibration_strategy", observed=True):
             diagnostic_sets[strategy] = frame
     quantile_reliability, pit = pit_diagnostics(diagnostic_sets)
-    calibrated, variants, reliability = select(calibrated), select(variants), select(reliability)
-    for frame in (calibrated, variants, reliability):
-        for column in ("realized_ae", "realized_null_ae", "realized_regret",
-                       "realized_harm", "qerr_covered", "mharm_covered"):
-            if column in frame:
-                frame[column] = np.nan
+    calibrated, variants = select(calibrated), select(variants)
     return {"calibration": calibrated, "calibration_variants": variants,
-            "quantile_reliability": quantile_reliability, "pit_diagnostics": pit,
-            "reliability": reliability}
+            "quantile_reliability": quantile_reliability, "pit_diagnostics": pit}
 
 
 def _genuine_event_rows(frame: pd.DataFrame) -> pd.DataFrame:
@@ -620,7 +559,7 @@ def write_runtime_tables(output: Path, timing: pd.DataFrame, params: dict, confi
 
 def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_stop=None,
                  *, model_mode: str = "train", incremental_update: bool = False,
-                 post_assessment: bool = True) -> dict:
+                 post_assessment: bool = True, generate_report: bool = True) -> dict:
     started = perf_counter()
     pipeline_timings = []
     def record_stage(name, began):
@@ -633,6 +572,7 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
                               read_deployment_origin, read_forecast_ledger,
                               refresh_forecast_ledger_truth, select_update_schedule,
                               write_deployment_origin, write_model_manifest)
+    from ..post_assessment.reassessment import write_reassessment
     stage = perf_counter()
     preparation = read_autodelphirf_preparation(config.prepared_dir)
     # The diagnosis (Python) and preparation (R) clean the raw archive with one
@@ -800,26 +740,24 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
                                 **{name: DELPHIRF_METHODS[name]
                                    for name in requested_delphirf}},
             comparator_quantile_template="q{tau:g}")
-    # Freeze every effective default and bundle any external assessment input.
-    # This is the restart boundary used by ``autodelphirf assess``; it is
-    # intentionally written before post-forecast work begins.
-    from ..post_assessment.run import freeze_reliability_reference
-    config, reliability_input = freeze_reliability_reference(config, output)
+    # Freeze every effective default. This is the restart boundary used by
+    # ``autodelphirf assess``; it is intentionally written before post-forecast
+    # work begins.
     write_resolved_config(config, output / "resolved_config.json")
-    input_manifest = {"reliability_reference": reliability_input}
-    (output / "assessment_inputs.json").write_text(
-        json.dumps(input_manifest, indent=2, default=str) + "\n")
     stage = perf_counter()
     cases = (incremental_cases if incremental_update else
              build_cases(prepared, schedule, config.genuine_testing))
     if cases.empty:
         if incremental_update:
+            reassessment = (write_reassessment(existing_ledger, output)
+                            if post_assessment and not existing_ledger.empty else None)
             raw_update = raw_archive_state(config.prepared_dir, output)
             manifest = {
                 "dataset": config.name, "cases": 0, "origins": 0,
                 "methods": list(config.prediction_layers), "incremental_update": True,
                 "retraining_required": retraining_required,
                 "new_forecasts": 0, "truth_update": truth_update,
+                "reassessment": reassessment,
                 "raw_archive_update": raw_update,
                 "forecast_ledger": {"path": str(output / "forecast_ledger.csv.gz"),
                                     "previous_rows": len(existing_ledger), "new_rows": 0,
@@ -933,6 +871,7 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
                     "wall_seconds": perf_counter() - started, "method_params": params,
                     "delphirf_provenance": delphirf_provenance, "model_mode": model_mode,
                     "post_assessment": False, "forecast_ledger": ledger,
+                    "report_generated": False,
                     "delphirf_seconds": delphirf_seconds,
                     "skipped_locations": skipped_locations.to_dict("records")}
         (output / "run_manifest.json").write_text(json.dumps(manifest, indent=2, default=str))
@@ -951,7 +890,6 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
             "calibration_variants": forecast_outputs["calibration_variants"],
             "quantile_reliability": forecast_outputs["quantile_reliability"],
             "pit_diagnostics": forecast_outputs["pit_diagnostics"],
-            "reliability": forecast_outputs["reliability"],
             "calibration_comparison": pd.DataFrame(),
             "interval_calibration": pd.DataFrame(), "bootstrap": pd.DataFrame(),
         }
@@ -960,8 +898,8 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
         pool_assignments = (read_csv(pool_path, parse_dates=["cutoff"])
                             if pool_path.is_file() else None)
         # Calibration and PIT describe model-issued forecasts, not values that
-        # were merely carried forward.  The main report still receives the
-        # complete scored population below, preserving its historical scope.
+        # were merely carried forward. Web score tables and an explicitly
+        # requested report receive the complete scored population below.
         assessment_long = _genuine_event_rows(scored_long)
         assessment_wide = _genuine_event_rows(scored_wide)
         reliability_outputs = run_reliability_and_calibration(
@@ -972,6 +910,9 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
     long.to_csv(output / "predictions.csv.gz", index=False, compression="gzip")
     if not incremental_update:
         ledger = append_forecast_ledger(long, output)
+    stage = perf_counter()
+    reassessment = write_reassessment(read_forecast_ledger(output), output)
+    record_stage("forecast_reassessment", stage)
     # An update has just re-prepared from the current raw archive; a rerun of
     # an already-prepared dataset uses the state recorded at preparation and
     # never rereads the raw archive.
@@ -979,7 +920,6 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
                   else recorded_archive_state(config.prepared_dir, output))
     reliability_outputs["calibration"].to_csv(output / "calibration.csv.gz", index=False, compression="gzip")
     reliability_outputs["interval_calibration"].to_csv(output / "interval_calibration.csv", index=False)
-    reliability_outputs["reliability"].to_csv(output / "reliability.csv.gz", index=False, compression="gzip")
     reliability_outputs["bootstrap"].to_csv(output / "bootstrap_pairwise_comparisons.csv", index=False)
     reliability_outputs["calibration_variants"].to_csv(
         output / "calibration_variants.csv.gz", index=False, compression="gzip")
@@ -994,15 +934,11 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
             "scope": "newly issued unresolved forecasts only",
             "new_forecast_rows": len(long),
             "calibrated_forecast_rows": len(reliability_outputs["calibration"]),
-            "reliability_rows": len(reliability_outputs["reliability"]),
             "realized_scores": "pending until target values become observable",
             "truth_rows_resolved_this_update": truth_update["resolved_rows"],
             "truth_rows_corrected_this_update": truth_update["corrected_rows"],
             "truth_rows_withheld_until_target_date": truth_update["withheld_rows"],
         }, indent=2) + "\n")
-    for name, frame in reliability_outputs.items():
-        if name.startswith(("v1_", "v2_", "v3_", "v4_")) and frame is not None and not frame.empty:
-            frame.to_csv(output / f"{name}.csv", index=False)
     runtime = write_runtime_tables(output, timing, params, config, requested_delphirf,
                                    delphirf_seconds)
     manifest = {"dataset": config.name, "cases": len(wide), "origins": int(wide.cutoff.nunique()),
@@ -1012,28 +948,28 @@ def run_pipeline(config: DatasetConfig, diagnosis_only: bool = False, should_sto
                 "delphirf_provenance": delphirf_provenance,
                 "uncertainty_layer": config.uncertainty_layer,
                 "model_mode": model_mode, "forecast_ledger": ledger,
+                "reassessment": reassessment,
+                "report_generated": bool(generate_report and not incremental_update),
                 "incremental_update": incremental_update,
                 "retraining_required": retraining_required,
                 "new_forecasts": len(long) if incremental_update else None,
                 "truth_update": truth_update,
                 "raw_archive_update": raw_update,
-                "skipped_locations": skipped_locations.to_dict("records"),
-                "reliability_reference": (str(config.reliability_reference_file)
-                                          if config.reliability_reference_file else None)}
+                "skipped_locations": skipped_locations.to_dict("records")}
     (output / "run_manifest.json").write_text(json.dumps(manifest, indent=2, default=str))
     stage = perf_counter()
-    if not incremental_update:
+    if not incremental_update and generate_report:
         build_report(scored_long, output / "report", wide=scored_wide, runtime=runtime,
                     skipped_locations=skipped_locations,
                     interval_calibration=reliability_outputs["interval_calibration"],
                     calibration_comparison=reliability_outputs["calibration_comparison"],
                     quantile_reliability=reliability_outputs["quantile_reliability"],
-                    reliability=reliability_outputs["reliability"],
                     bootstrap=reliability_outputs["bootstrap"], rr_regimes=rr_audit,
                     rr_clusters=rr_clusters,
-                    validation={k: v for k, v in reliability_outputs.items()
-                                if k.startswith(("v1_", "v2_", "v3_", "v4_"))},
                     dataset_name=config.name)
+    elif not incremental_update:
+        from ..post_assessment.reporting import write_web_metrics
+        write_web_metrics(scored_long, output)
     record_stage("report_generation", stage)
     pd.DataFrame(pipeline_timings).to_csv(output / "runtime_pipeline_stages.csv", index=False)
     return manifest

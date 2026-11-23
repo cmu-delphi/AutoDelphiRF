@@ -56,15 +56,7 @@ class DatasetConfig:
     # the diagnosis-derived profile; the derived values are still reported so
     # any disagreement is visible.
     revision_profile: dict | None
-    # Optional frozen reliability reference: a CSV with
-    # q_error/q_regret columns (and optionally case_n) built from a separate
-    # replay that ends strictly before this dataset's outer evaluation
-    # window, e.g. via post_assessment.reliability.build_reliability_reference.
-    # When absent, the risk-score layer still reports continuous quantities
-    # (q_error, q_regret, harm_frequency) but the categorical alert reports
-    # "reference distribution unavailable" as the configured fallback.
-    reliability_reference_file: Path | None
-    # Interval calibration from completed revisions and per-case risk score are
+    # Interval calibration from completed revisions is a set of
     # per-row prospective scans over growing completed revision history. That is fine at
     # a few thousand evaluated cases and prohibitive at a few million (chng
     # issues 1.77M), so a dataset may switch them off. Bootstrap CIs are not
@@ -118,7 +110,6 @@ def load_dataset_config(path: Path) -> DatasetConfig:
         comparator_quantile_template=raw.get("comparator_quantile_template"),
         method_params=dict(raw.get("method_params", {})),
         revision_profile=(dict(raw["revision_profile"]) if raw.get("revision_profile") else None),
-        reliability_reference_file=resolve(raw.get("reliability_reference_file")),
         uncertainty_layer=bool(raw.get("uncertainty_layer", True)))
 
 
@@ -161,7 +152,6 @@ def write_resolved_config(config: DatasetConfig, path: Path) -> Path:
         "comparator_methods": config.comparator_methods,
         "comparator_quantile_template": config.comparator_quantile_template,
         "method_params": config.method_params,
-        "reliability_reference_file": relative(config.reliability_reference_file),
         "uncertainty_layer": config.uncertainty_layer,
     }
     path.write_text(json.dumps(payload, indent=2) + "\n")

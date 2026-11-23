@@ -6,15 +6,15 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
-import shutil
 
 import pandas as pd
 
 from .. import __version__
-from ..core.config import DatasetConfig, load_dataset_config, write_resolved_config
+from ..core.config import load_dataset_config, write_resolved_config
 from ..core.io import read_csv
 from ..workflow.run import run_reliability_and_calibration
 from .reliability import ROUTED_TAUS
+from .reassessment import write_reassessment
 
 
 DATE_COLUMNS = ("cutoff", "reference_date", "report_date", "target_date")
@@ -51,32 +51,12 @@ def _read_predictions(path: Path, columns: set[str] | frozenset[str] | None = No
     return frame
 
 
-def freeze_reliability_reference(config: DatasetConfig, results_dir: Path) -> tuple[DatasetConfig, dict | None]:
-    """Copy an external reliability reference into the result bundle."""
-    source = config.reliability_reference_file
-    if source is None:
-        return config, None
-    source = Path(source).resolve()
-    if not source.is_file():
-        raise FileNotFoundError(f"reliability reference not found: {source}")
-    inputs = Path(results_dir) / "inputs"
-    inputs.mkdir(parents=True, exist_ok=True)
-    suffix = "".join(source.suffixes) or ".csv"
-    destination = inputs / f"reliability_reference{suffix}"
-    if source != destination.resolve():
-        shutil.copy2(source, destination)
-    record = {"source": str(source), "bundled_path": str(destination.relative_to(results_dir)),
-              "sha256": sha256(destination), "bytes": destination.stat().st_size}
-    return replace(config, reliability_reference_file=destination.resolve()), record
-
-
 def save_assessment_outputs(outputs: dict[str, pd.DataFrame], output: Path,
                             mode: str = "full") -> None:
     if mode != "pit":
         outputs["calibration"].to_csv(output / "calibration.csv.gz", index=False, compression="gzip")
         outputs["interval_calibration"].to_csv(output / "interval_calibration.csv", index=False)
     if mode == "full":
-        outputs["reliability"].to_csv(output / "reliability.csv.gz", index=False, compression="gzip")
         outputs["bootstrap"].to_csv(output / "bootstrap_pairwise_comparisons.csv", index=False)
     optional = {
         "calibration_variants": ("calibration_variants.csv.gz", "gzip"),
@@ -90,20 +70,19 @@ def save_assessment_outputs(outputs: dict[str, pd.DataFrame], output: Path,
         frame = outputs.get(key)
         if frame is not None:
             frame.to_csv(output / name, index=False, compression=compression)
-    for name, frame in outputs.items():
-        if name.startswith(("v1_", "v2_", "v3_", "v4_")) and frame is not None and not frame.empty:
-            frame.to_csv(output / f"{name}.csv", index=False)
 
 
 def assess_results(results_dir: Path, output_dir: Path | None = None, *,
-                   assessment_mode: str = "full",
+                   assessment_mode: str = "reassessment",
                    event_filter: str = "genuine") -> Path:
     """Recompute assessment and report files without fitting any model."""
     mode = assessment_mode
-    if mode not in {"full", "pit", "recalibration"}:
-        raise ValueError("assessment_mode must be 'full', 'pit', or 'recalibration'")
+    if mode not in {"reassessment", "full", "pit", "recalibration"}:
+        raise ValueError("assessment_mode must be 'reassessment', 'full', 'pit', or 'recalibration'")
     if event_filter not in {"genuine", "carried", "all"}:
         raise ValueError("event_filter must be 'genuine', 'carried', or 'all'")
+    if mode == "reassessment" and event_filter != "genuine":
+        raise ValueError("forecast-to-forecast reassessment requires --event-filter genuine")
     results = Path(results_dir).resolve()
     required = [results / "predictions.csv.gz", results / "resolved_config.json"]
     missing = [path.name for path in required if not path.is_file()]
@@ -120,18 +99,29 @@ def assess_results(results_dir: Path, output_dir: Path | None = None, *,
     output.mkdir(parents=True, exist_ok=True)
 
     config = load_dataset_config(results / "resolved_config.json")
-    frozen_inputs_path = results / "assessment_inputs.json"
-    frozen_inputs = (json.loads(frozen_inputs_path.read_text())
-                     if frozen_inputs_path.is_file() else {})
-    reliability_input = frozen_inputs.get("reliability_reference")
-    if reliability_input is not None:
-        reliability_path = results / reliability_input["bundled_path"]
-        if not reliability_path.is_file():
-            raise FileNotFoundError(f"frozen reliability reference not found: {reliability_path}")
-        if sha256(reliability_path) != reliability_input["sha256"]:
-            raise ValueError(
-                "frozen reliability reference does not match assessment_inputs.json: "
-                f"{reliability_path}")
+    if mode == "reassessment":
+        ledger = results / "forecast_ledger.csv.gz"
+        source = ledger if ledger.is_file() else results / "predictions.csv.gz"
+        forecasts = _read_predictions(source)
+        summary = write_reassessment(forecasts, output)
+        write_resolved_config(replace(config, output_dir=output), output / "resolved_config.json")
+        inputs = {path.name: {"path": str(path), "sha256": sha256(path),
+                              "bytes": path.stat().st_size}
+                  for path in (source, results / "resolved_config.json")}
+        manifest = {
+            "generated_by": "autodelphirf assess",
+            "autodelphirf_version": __version__,
+            "created_at_utc": datetime.now(timezone.utc).isoformat(),
+            "forecast_results": str(results), "assessment_output": str(output),
+            "model_fitting_performed": False, "assessment_mode": mode,
+            "event_filter": event_filter, "inputs": inputs,
+            "rows": {"long": len(forecasts), "wide": None},
+            "methods": ["delphirf"], "working_scale": config.working_scale,
+            "horizon_days": 14, "bootstrap_resamples": 1000,
+            "reassessment": summary,
+        }
+        (output / "assessment_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        return output
     # Assessment scores only forecasts whose target exists, exactly as the run
     # that produced these predictions did.
     long = _read_predictions(
@@ -173,9 +163,7 @@ def assess_results(results_dir: Path, output_dir: Path | None = None, *,
                      interval_calibration=outputs["interval_calibration"],
                      calibration_comparison=outputs.get("calibration_comparison"),
                      quantile_reliability=outputs.get("quantile_reliability"),
-                     reliability=outputs["reliability"], bootstrap=outputs["bootstrap"],
-                     validation={k: v for k, v in outputs.items()
-                                 if k.startswith(("v1_", "v2_", "v3_", "v4_"))},
+                     bootstrap=outputs["bootstrap"],
                      dataset_name=config.name)
     assessment_config = replace(config, output_dir=output)
     write_resolved_config(assessment_config, output / "resolved_config.json")
@@ -188,11 +176,6 @@ def assess_results(results_dir: Path, output_dir: Path | None = None, *,
         if not path.is_file():
             continue
         inputs[name] = {"path": str(path), "sha256": sha256(path), "bytes": path.stat().st_size}
-    if reliability_input is not None:
-        reliability_path = results / reliability_input["bundled_path"]
-        inputs["reliability_reference"] = {
-            "path": str(reliability_path), "sha256": sha256(reliability_path),
-            "bytes": reliability_path.stat().st_size}
     if mode != "pit" and pools_path.is_file():
         inputs["revroute_pools.csv"] = {
             "path": str(pools_path), "sha256": sha256(pools_path),

@@ -93,186 +93,40 @@ def _early_lag_location_summary(data: pd.DataFrame, maximum_lag: int = 14) -> pd
     return (pd.concat(summaries, ignore_index=True)[columns]
             if summaries else pd.DataFrame(columns=columns))
 
+
+def write_web_metrics(data: pd.DataFrame, output: Path) -> None:
+    """Save the three web evaluation tables without rendering an HTML report."""
+    tables = Path(output) / "web_tables"
+    tables.mkdir(parents=True, exist_ok=True)
+    keys = ["fold", "geo_value", "reference_date", "report_date", "lag"]
+    if data.empty:
+        matched = data.copy()
+    else:
+        groups = data.groupby(keys, observed=True)
+        complete = (groups.method.nunique().eq(data.method.nunique()) &
+                    groups.model_available.all())
+        matched = data[pd.MultiIndex.from_frame(data[keys]).isin(complete[complete].index)].copy()
+    matched["cutoff"] = pd.to_datetime(matched["cutoff"])
+    outputs = {
+        "web_metrics_by_lag": _location_quantile_summary(matched, ["lag", "method"]),
+        "web_metrics_by_origin_lag": _location_quantile_summary(
+            matched, ["cutoff", "lag", "method"]),
+        "web_metrics_by_location": _early_lag_location_summary(matched, maximum_lag=14),
+    }
+    for name, frame in outputs.items():
+        frame.to_csv(tables / f"{name}.csv", index=False)
+
 def table(frame):
     if frame is None or frame.empty: return "<p class='muted'>No eligible rows.</p>"
     shown=frame.copy()
     if "method" in shown: shown["method"]=shown.method.map(label)
     return shown.to_html(index=False,escape=True,float_format=lambda x:f"{x:.4f}")
 
-def validation_figures(validation, figures, palette, methods):
-    """Three-axis post-prediction figures (RRDelphiRF_post_prediction_three_axis).
-
-    The previous set was built around ``S^risk``, the categorical ``Q^pred``
-    and a merged alert grid, none of which the three-axis spec forms. These
-    figures instead ask, one axis at a time, whether the issued quantity
-    actually captures the outcome it claims:
-
-      A1  q_err  -- upper-tail coverage against the claimed eta, by lag
-      A2  q_err  -- does realized AE rise across bins of q_err?
-      B   p_harm -- reliability diagram against the identity line (+ Brier)
-      C1  Dshift -- is the monitor nondegenerate?
-      C2  Dshift -- does realized AE rise across bins of Dshift?
-      D   the opposed-objective diagnostic: q_err ranks error but ANTI-ranks
-          harm, which is why the axes are not combined
-      E1  V4 heatmap, q_err x Dshift -> realized AE
-      E2  V4 heatmap, p_harm x Dshift -> observed harm frequency
-      F   scorecard: one verdict per axis
-
-    Each axis is judged against its own outcome: q_err against absolute error,
-    p_harm against the harm indicator, Dshift against both. No figure mixes
-    them into a single score.
-    """
-    made = {}
-    def colour(name): return palette.get(name, "#777777")
-    def save(fig, key, filename):
-        fig.tight_layout(); fig.savefig(figures/filename, dpi=170); plt.close(fig)
-        made[key] = filename
-    def nonempty(name):
-        frame = validation.get(name)
-        return frame if frame is not None and not frame.empty else None
-
-    # ---- A1: does q_err hold its upper-tail claim, overall and by lag? ----
-    frame = nonempty("v2_reliability_coverage")
-    if frame is not None and "coverage_error_quantity" in frame:
-        by_lag = frame[frame.subset.astype(str).str.startswith("lag=")].copy()
-        fig, ax = plt.subplots(figsize=(7.6, 3.4))
-        eta = float(frame.eta.iloc[0]) if "eta" in frame else .9
-        if len(by_lag):
-            by_lag["lag"] = by_lag.subset.astype(str).str.replace("lag=", "").astype(int)
-            for method, z in by_lag.sort_values("lag").groupby("method", observed=True):
-                ax.plot(z.lag, z.coverage_error_quantity, "o-", ms=4, lw=1.4,
-                        color=colour(method), label=f"{label(method)}  $q^{{err}}$")
-                if "coverage_regret_quantity" in z:
-                    ax.plot(z.lag, z.coverage_regret_quantity, "s--", ms=3.4, lw=1.1,
-                            color=colour(method), alpha=.55,
-                            label=f"{label(method)}  $q^{{reg}}$ (diagnostic)")
-        overall = frame[frame.subset.eq("overall")]
-        for _, row in overall.iterrows():
-            ax.axhline(row.coverage_error_quantity, color=colour(row.method), lw=.8, alpha=.35)
-        ax.axhline(eta, color="#c00000", lw=1.3)
-        ax.annotate(f"claimed $\\eta$ = {eta:g}", xy=(.99, eta), xycoords=("axes fraction", "data"),
-                    ha="right", va="bottom", fontsize=8, color="#c00000")
-        ax.set(xlabel="lag", ylabel="realized coverage", ylim=(0, 1.02),
-               title="A1  Axis 1 ($q^{err}$): is the upper-tail claim honest?")
-        ax.legend(fontsize=7, ncol=2); ax.grid(alpha=.25, lw=.5)
-        save(fig, "a1_qerr_coverage", "a1_qerr_coverage.png")
-
-    # ---- A2: does realized AE rise across bins of q_err? ----
-    frame = nonempty("v2_qerr_discrimination")
-    if frame is not None and {"signal", "bin", "mean_ae"}.issubset(frame.columns):
-        z = frame[frame.subset.eq("overall") & frame.signal.eq("q_error")].sort_values("bin")
-        if len(z):
-            fig, ax = plt.subplots(figsize=(6.4, 3.4))
-            for method, g in z.groupby("method", observed=True):
-                g = g.sort_values("bin")
-                ax.plot(g.bin + 1, g.mean_ae, "o-", color=colour(method), lw=1.6, ms=5,
-                        label=label(method))
-                rho = g.get("spearman_signal_vs_ae")
-                if rho is not None and len(rho.dropna()):
-                    ax.annotate(f"$\\rho$ = {rho.dropna().iloc[0]:+.3f}",
-                                xy=(.03, .92), xycoords="axes fraction", fontsize=9,
-                                color=colour(method))
-            ax.set(xlabel="bin of issued $q^{err}$  (low $\\rightarrow$ high)",
-                   ylabel="realized mean AE",
-                   title="A2  Axis 1 ($q^{err}$): does it rank prediction difficulty?")
-            ax.legend(fontsize=8); ax.grid(alpha=.25, lw=.5)
-            save(fig, "a2_qerr_discrimination", "a2_qerr_discrimination.png")
-
-    # ---- B: p_harm reliability diagram ----
-    frame = nonempty("v2_pharm_calibration")
-    if frame is not None and {"mean_predicted_harm", "observed_harm_frequency"}.issubset(frame.columns):
-        z = frame[frame.subset.eq("overall")]
-        if len(z):
-            fig, ax = plt.subplots(figsize=(4.9, 4.6))
-            ax.plot([0, 1], [0, 1], color="#c00000", lw=1.2, zorder=1)
-            ax.annotate("perfect calibration", xy=(.62, .58), fontsize=8, color="#c00000",
-                        rotation=38)
-            for method, g in z.groupby("method", observed=True):
-                g = g.sort_values("mean_predicted_harm")
-                sizes = 14 + 150 * g.n / max(g.n.max(), 1)
-                ax.plot(g.mean_predicted_harm, g.observed_harm_frequency, "-",
-                        color=colour(method), lw=1.4, zorder=2)
-                ax.scatter(g.mean_predicted_harm, g.observed_harm_frequency, s=sizes,
-                           color=colour(method), edgecolor="white", linewidth=.6, zorder=3,
-                           label=label(method))
-                skill = g.brier_skill_score.dropna()
-                brier = g.brier_score.dropna()
-                if len(brier):
-                    ax.annotate(f"Brier = {brier.iloc[0]:.3f}"
-                                + (f"\nskill = {skill.iloc[0]:+.3f}" if len(skill) else ""),
-                                xy=(.03, .86), xycoords="axes fraction", fontsize=8,
-                                color=colour(method))
-            ax.set(xlabel="issued $p_{harm}$", ylabel="observed $P(\\Delta_q>0)$",
-                   xlim=(0, 1), ylim=(0, 1),
-                   title="B  Axis 2 ($p_{harm}$):\nis the harm probability calibrated?")
-            ax.legend(fontsize=8, loc="lower right"); ax.grid(alpha=.25, lw=.5)
-            ax.set_aspect("equal")
-            save(fig, "b_pharm_reliability", "b_pharm_reliability.png")
-
-    # ---- D: the opposed-objective diagnostic ----
-    frame = nonempty("v2_opposed_objective_diagnostic")
-    if frame is not None:
-        z = frame[frame.subset.eq("overall")]
-        if len(z):
-            keys = [("spearman_qerr_vs_ae", "$q^{err}$ vs AE\n(want +)"),
-                    ("spearman_qerr_vs_regret", "$q^{err}$ vs regret"),
-                    ("spearman_qerr_vs_harm", "$q^{err}$ vs harm"),
-                    ("spearman_pharm_vs_harm", "$p_{harm}$ vs harm\n(want +)")]
-            keys = [(k, t) for k, t in keys if k in z.columns]
-            fig, ax = plt.subplots(figsize=(7.2, 3.4))
-            x = np.arange(len(keys)); width = .8/max(len(z), 1)
-            for index, (_, row) in enumerate(z.iterrows()):
-                values = [row[k] for k, _ in keys]
-                ax.bar(x + (index - (len(z)-1)/2)*width, values, width,
-                       color=colour(row.method), label=label(row.method))
-            ax.axhline(0, color="#333333", lw=.9)
-            ax.set(xticks=x, xticklabels=[t for _, t in keys], ylabel="Spearman $\\rho$",
-                   ylim=(-1, 1),
-                   title="D  Why the axes stay separate: difficulty ranks error but anti-ranks harm")
-            ax.legend(fontsize=8); ax.grid(alpha=.25, lw=.5, axis="y")
-            save(fig, "d_opposed_objectives", "d_opposed_objectives.png")
-
-    # ---- F: one verdict per axis ----
-    verdicts = []
-    cov = nonempty("v2_reliability_coverage")
-    disc = nonempty("v2_qerr_discrimination")
-    if cov is not None and disc is not None:
-        overall = cov[cov.subset.eq("overall")]
-        d = disc[disc.subset.eq("overall") & disc.signal.eq("q_error")]
-        gap = float(overall.coverage_error_gap.iloc[0]) if len(overall) else np.nan
-        rho = float(d.spearman_signal_vs_ae.dropna().iloc[0]) if len(d.spearman_signal_vs_ae.dropna()) else np.nan
-        verdicts.append(("Axis 1  $q^{err}$", f"coverage gap {gap:+.3f}", f"$\\rho$ = {rho:+.3f}",
-                         abs(gap) <= .05 and rho >= .2))
-    ph = nonempty("v2_pharm_calibration")
-    if ph is not None:
-        z = ph[ph.subset.eq("overall")]
-        skill = float(z.brier_skill_score.dropna().iloc[0]) if len(z.brier_skill_score.dropna()) else np.nan
-        rho = float(z.spearman_pharm_vs_harm.dropna().iloc[0]) if len(z.spearman_pharm_vs_harm.dropna()) else np.nan
-        verdicts.append(("Axis 2  $p_{harm}$", f"Brier skill {skill:+.3f}", f"$\\rho$ = {rho:+.3f}",
-                         (np.isfinite(skill) and skill > 0) or (np.isfinite(rho) and rho >= .2)))
-    if verdicts:
-        fig, ax = plt.subplots(figsize=(7.4, .9 + .72*len(verdicts)))
-        ax.axis("off")
-        for index, (axis, left, right, ok) in enumerate(reversed(verdicts)):
-            y = index * .9
-            ax.add_patch(plt.Rectangle((0, y-.3), 10, .62,
-                                       color="#e8f5e9" if ok else "#fdecea", zorder=0))
-            ax.text(.15, y, axis, fontsize=11, va="center", weight="bold")
-            ax.text(3.3, y, left, fontsize=9.5, va="center")
-            ax.text(6.0, y, right, fontsize=9.5, va="center")
-            ax.text(8.6, y, "supported" if ok else "not supported", fontsize=9.5, va="center",
-                    color="#2e7d32" if ok else "#c00000", weight="bold")
-        ax.set(xlim=(0, 10), ylim=(-.5, len(verdicts)*.9 - .3))
-        ax.set_title("F  Do the assessment axes capture prediction quality?", fontsize=11, loc="left")
-        save(fig, "f_scorecard", "f_axis_scorecard.png")
-    return made
-
-
 def build_report(data: pd.DataFrame, output: Path, *, wide: pd.DataFrame|None=None,
                  runtime: pd.DataFrame|None=None, interval_calibration: pd.DataFrame|None=None,
                  calibration_comparison: pd.DataFrame|None=None,
                  quantile_reliability: pd.DataFrame|None=None,
-                 reliability: pd.DataFrame|None=None, bootstrap: pd.DataFrame|None=None,
+                 bootstrap: pd.DataFrame|None=None,
                  rr_regimes: pd.DataFrame|None=None,
                  rr_clusters: pd.DataFrame|None=None,
                  validation: dict|None=None,
@@ -291,8 +145,8 @@ def build_report(data: pd.DataFrame, output: Path, *, wide: pd.DataFrame|None=No
                 f"<title>{html.escape(str(name))}: AutoDelphiRF report</title></head><body>"
                 f"<h1>{html.escape(str(name))}: AutoDelphiRF forecast evaluation report</h1>"
                 "<p class='note'>No forecast outcomes are observable yet. Forecasts may have "
-                "been issued and recorded in the forecast ledger, but accuracy, calibration, "
-                "and reliability require a later raw release in which their targets have "
+                "been issued and recorded in the forecast ledger, but accuracy and calibration "
+                "require a later raw release in which their targets have "
                 "matured.</p></body></html>")
         (output/"report.html").write_text(report)
         return
@@ -421,8 +275,8 @@ def build_report(data: pd.DataFrame, output: Path, *, wide: pd.DataFrame|None=No
     if runtime is not None and runtime.standalone_total_seconds.notna().any():
         z=runtime[runtime.standalone_total_seconds.notna()];fig,ax=plt.subplots(figsize=(8,4));ax.bar([label(x) for x in z["method"]],z.standalone_total_seconds/60,color=[palette.get(x,"#777") for x in z["method"]]);ax.set(ylabel="Minutes",title="Measured standalone-equivalent runtime");ax.tick_params(axis="x",rotation=25);fig.tight_layout();fig.savefig(figures/"runtime_by_method.png",dpi=180);plt.close(fig)
 
-    # Section 4: interval calibration from completed revisions, forecast-quality risk score/
-    # alert, and episode-clustered bootstrap CIs. Written for every run
+    # Section 4: interval calibration from completed revisions and
+    # episode-clustered bootstrap CIs. Written for every run
     # (not an optional side computation); tables are empty rather than
     # absent when a dataset has no distribution-issuing methods configured.
     interval_calibration = pd.DataFrame() if interval_calibration is None else interval_calibration
@@ -430,18 +284,11 @@ def build_report(data: pd.DataFrame, output: Path, *, wide: pd.DataFrame|None=No
                               else calibration_comparison)
     quantile_reliability = (pd.DataFrame() if quantile_reliability is None
                             else quantile_reliability)
-    reliability = pd.DataFrame() if reliability is None else reliability
     bootstrap = pd.DataFrame() if bootstrap is None else bootstrap
     interval_calibration.to_csv(tables/"interval_calibration.csv", index=False)
     calibration_comparison.to_csv(tables/"calibration_strategy_comparison.csv", index=False)
     quantile_reliability.to_csv(tables/"quantile_reliability.csv", index=False)
     bootstrap.to_csv(tables/"bootstrap_pairwise_comparisons.csv", index=False)
-    risk_group = pd.DataFrame()
-    if not reliability.empty and "reliability_level" in reliability:
-        risk_group = reliability.groupby(["method", "reliability_level"], observed=True).agg(
-            n=("realized_ae", "size"), mean_ae=("realized_ae", "mean"), median_ae=("realized_ae", "median"),
-            harm_frequency=("realized_regret", lambda x: (x > 0).mean())).reset_index()
-    risk_group.to_csv(tables/"risk_group_validation.csv", index=False)
     if not interval_calibration.empty:
         fig,ax=plt.subplots(figsize=(7,5))
         for (method,status),g in interval_calibration.groupby(["method","status"],observed=True):
@@ -488,30 +335,15 @@ def build_report(data: pd.DataFrame, output: Path, *, wide: pd.DataFrame|None=No
             "v1_pairwise_distribution":"V1 &mdash; pairwise distribution comparisons (WIS)",
             "v1_interval_calibration_by_lag":"V1 &mdash; interval calibration, base vs calibrated",
             "v1_regime_stratified_differences":"V1 &mdash; loss differences by prospective stratifier",
-            "v2_reliability_coverage":"V2 &mdash; do the risk quantities have their stated upper-tail meaning?",
-            "v2_alert_stratification":"V2 &mdash; realized performance by forecast alert",
-            "v2_risk_discrimination":"V2 &mdash; continuous risk discrimination and rank association",
-            "v2_operational_alert_summary":"V2 &mdash; operational summaries at the frozen thresholds",
 }
-    figure_files=validation_figures(validation, figures, palette, methods)
-    # Each table is preceded by the figure that answers the same question, so
-    # the section reads as pictures first and numbers second.
-    FIGURE_FOR={"v1_flat_line_comparison":"v1_flat_line","v1_pairwise_point":"v1_pairwise",
-                "v1_interval_calibration_by_lag":"v1_calibration",
-                "v2_reliability_coverage":"v2_coverage","v2_alert_stratification":"v2_alert",
-                "v2_risk_discrimination":"v2_discrimination",
-                "v2_operational_alert_summary":"v2_operational"}
     def block(name, frame):
-        picture=figure_files.get(FIGURE_FOR.get(name, ""))
-        image=f"<img src='figures/{picture}'>" if picture else ""
-        return f"<h3>{TITLES.get(name, name)}</h3>{image}{table(frame.head(200))}"
+        return f"<h3>{TITLES.get(name, name)}</h3>{table(frame.head(200))}"
     validation_html="".join(block(name, frame) for name, frame in validation.items()
                             if not name.startswith("_") and frame is not None and not frame.empty)
     validation_section=("" if not validation_html else
-        "<h2>Prospective validation (V1&ndash;V2)</h2><p class='note'>Pure post-processing of forecasts "
-        "that were already issued and scored. Finalized values are used only to evaluate them: nothing is "
-        "re-predicted, and no alert threshold is tuned on these tables. The alert assigned at issuance "
-        "is read, never recomputed.</p>" + validation_html)
+        "<h2>Prospective validation (V1)</h2><p class='note'>Pure post-processing of forecasts "
+        "that were already issued and scored. Target values are used only to evaluate them: nothing is "
+        "re-predicted and nothing is tuned on these tables.</p>" + validation_html)
 
     skipped=(skipped_locations if skipped_locations is not None
              else pd.DataFrame(columns=["geo_value","raw_rows","reason"]))
@@ -519,7 +351,7 @@ def build_report(data: pd.DataFrame, output: Path, *, wide: pd.DataFrame|None=No
     skipped_section=("<p class='note'>Every location in the archive was prepared.</p>" if skipped.empty else
         f"<p class='note'>{len(skipped)} location(s) could not be prepared and are absent from every "
         "forecast and score in this report.</p>"+table(skipped))
-    report=f"""<!doctype html><html><head><meta charset='utf-8'><title>AutoDelphiRF report</title><style>body{{font:14px system-ui;max-width:1320px;margin:30px auto;padding:0 18px;line-height:1.45}}table{{border-collapse:collapse;font-size:12px;display:block;overflow-x:auto;margin-bottom:20px}}th,td{{border:1px solid #ddd;padding:5px 7px;text-align:right}}th{{background:#f1f3f5}}td:first-child,th:first-child{{text-align:left}}img{{max-width:100%;border:1px solid #ddd;margin:8px 0 28px}}.note{{background:#fff7df;border-left:4px solid #d99800;padding:12px}}.muted{{color:#666}}</style></head><body><h1>{html.escape(str(data.dataset.iloc[0]))}: AutoDelphiRF forecast evaluation report</h1><p class='note'>Point accuracy is reported on BOTH the raw reporting scale (primary) and the model's working scale; they can rank methods differently because raw-scale error grows with the level of the series, so high-volume locations dominate it, while working-scale error weights locations roughly equally. Remaining metrics use the raw reporting scale. Point-only methods are excluded from WIS and calibration. Residual uncertainty includes only cases where that residual model was available.</p><h2>Locations skipped during preparation</h2>{skipped_section}<h2>Coverage and availability</h2>{table(availability)}<h2>Overall prediction comparison (raw reporting scale)</h2>{table(point)}<img src='figures/overall_accuracy.png'><h2>Overall prediction comparison (working scale)</h2><p class='note'>Same matched cases and same predictions as above, scored before the inverse transform. A method that helps most on high-volume locations looks better on the raw scale; one that helps uniformly across locations looks better here.</p>{table(point_working)}<h2>Accuracy by exact lag</h2><p class='note'>Mean and median, for AE and WIS, on both scales -- eight columns per lag in <code>comparison_by_lag.csv</code>. Means and medians disagree because revision error is heavy-tailed, so a method can win on one and lose the other. Raw-scale error grows with the level of the series, so high-volume locations dominate it; working-scale error weights locations roughly equally. At a given lag the two can rank methods differently, so read them together.</p><img src='figures/accuracy_by_lag.png'><img src='figures/wis_by_lag.png'>{table(by_lag)}<h2>Stability over time</h2><img src='figures/accuracy_over_time.png'><h2>Early-lag behavior by location</h2><img src='figures/location_gain.png'>{table(by_location)}<h2>Revision-magnitude analysis</h2>{table(by_magnitude)}<h2>Uncertainty: accuracy, calibration, sharpness, and miss direction</h2>{table(uncertainty)}<img src='figures/quantile_calibration.png'><img src='figures/coverage_and_width.png'><h2>Routing audit</h2>{table(routing)}<h2>Uncertainty and reliability: calibration, risk score, alerts, and bootstrap intervals</h2><p class='note'>Interval calibration expands each base quantile endpoint using historical errors from completed revisions (asymmetric, per side); the risk-score/alert layer stratifies forecasts by historical trustworthiness in comparable cases; bootstrap CIs use the reference-date episode as the resampling unit. None of this changes a point forecast.</p><h3>Interval coverage before/after calibration</h3>{table(interval_calibration)}{"<img src='figures/interval_calibration.png'>" if not interval_calibration.empty else ""}<h3>Risk-group validation</h3>{table(risk_group)}<h3>Reference-date clustered bootstrap comparisons</h3>{table(bootstrap)}{validation_section}{rr_section}<h2>Computation</h2><p class='note'>Shared RED routing/history cost is separated from residual-model incremental fit and prediction cost. Imported comparators are marked unavailable when no runtime was recorded.</p>{table(runtime)}<img src='figures/runtime_by_method.png'><h2>Artifacts</h2><p>All tables are under <code>report/tables</code>; figures under <code>report/figures</code>. Per-origin and pipeline-stage timings are stored beside this report.</p></body></html>"""
+    report=f"""<!doctype html><html><head><meta charset='utf-8'><title>AutoDelphiRF report</title><style>body{{font:14px system-ui;max-width:1320px;margin:30px auto;padding:0 18px;line-height:1.45}}table{{border-collapse:collapse;font-size:12px;display:block;overflow-x:auto;margin-bottom:20px}}th,td{{border:1px solid #ddd;padding:5px 7px;text-align:right}}th{{background:#f1f3f5}}td:first-child,th:first-child{{text-align:left}}img{{max-width:100%;border:1px solid #ddd;margin:8px 0 28px}}.note{{background:#fff7df;border-left:4px solid #d99800;padding:12px}}.muted{{color:#666}}</style></head><body><h1>{html.escape(str(data.dataset.iloc[0]))}: AutoDelphiRF forecast evaluation report</h1><p class='note'>Point accuracy is reported on BOTH the raw reporting scale (primary) and the model's working scale; they can rank methods differently because raw-scale error grows with the level of the series, so high-volume locations dominate it, while working-scale error weights locations roughly equally. Remaining metrics use the raw reporting scale. Point-only methods are excluded from WIS and calibration. Residual uncertainty includes only cases where that residual model was available.</p><h2>Locations skipped during preparation</h2>{skipped_section}<h2>Coverage and availability</h2>{table(availability)}<h2>Overall prediction comparison (raw reporting scale)</h2>{table(point)}<img src='figures/overall_accuracy.png'><h2>Overall prediction comparison (working scale)</h2><p class='note'>Same matched cases and same predictions as above, scored before the inverse transform. A method that helps most on high-volume locations looks better on the raw scale; one that helps uniformly across locations looks better here.</p>{table(point_working)}<h2>Accuracy by exact lag</h2><p class='note'>Mean and median, for AE and WIS, on both scales -- eight columns per lag in <code>comparison_by_lag.csv</code>. Means and medians disagree because revision error is heavy-tailed, so a method can win on one and lose the other. Raw-scale error grows with the level of the series, so high-volume locations dominate it; working-scale error weights locations roughly equally. At a given lag the two can rank methods differently, so read them together.</p><img src='figures/accuracy_by_lag.png'><img src='figures/wis_by_lag.png'>{table(by_lag)}<h2>Stability over time</h2><img src='figures/accuracy_over_time.png'><h2>Early-lag behavior by location</h2><img src='figures/location_gain.png'>{table(by_location)}<h2>Revision-magnitude analysis</h2>{table(by_magnitude)}<h2>Uncertainty: accuracy, calibration, sharpness, and miss direction</h2>{table(uncertainty)}<img src='figures/quantile_calibration.png'><img src='figures/coverage_and_width.png'><h2>Routing audit</h2>{table(routing)}<h2>Interval calibration and bootstrap intervals</h2><p class='note'>Interval calibration expands each base quantile endpoint using historical errors from completed revisions (asymmetric, per side); bootstrap CIs use the reference-date episode as the resampling unit. None of this changes a point forecast.</p><h3>Interval coverage before/after calibration</h3>{table(interval_calibration)}{"<img src='figures/interval_calibration.png'>" if not interval_calibration.empty else ""}<h3>Reference-date clustered bootstrap comparisons</h3>{table(bootstrap)}{validation_section}{rr_section}<h2>Computation</h2><p class='note'>Shared RED routing/history cost is separated from residual-model incremental fit and prediction cost. Imported comparators are marked unavailable when no runtime was recorded.</p>{table(runtime)}<img src='figures/runtime_by_method.png'><h2>Artifacts</h2><p>All tables are under <code>report/tables</code>; figures under <code>report/figures</code>. Per-origin and pipeline-stage timings are stored beside this report.</p></body></html>"""
     strategy_section=("<h3>Calibration strategy comparison</h3>"+
                       table(calibration_comparison)+
                       ("<img src='figures/calibration_strategy_reliability.png'>"

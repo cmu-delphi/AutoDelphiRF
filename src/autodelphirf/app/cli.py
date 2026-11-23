@@ -25,7 +25,8 @@ Seven subcommands, in the order a new user meets them:
 which diagnoses the archive, preprocesses it through DelphiRF, runs rolling
 training and testing, and writes ``work/results/report/report.html``.
 
-``autodelphirf web`` is the same workflow with the questions asked on a page.
+``autodelphirf web`` asks the questions on a page and saves compact web score
+tables without generating an HTML report.
 For target lag, diagnosis supplies an evidence range and waits for the user's
 explicit choice.
 """
@@ -481,7 +482,7 @@ def command_update(arguments: argparse.Namespace) -> int:
 def command_assess(arguments: argparse.Namespace) -> int:
     from ..post_assessment.run import assess_results
     mode = ("pit" if arguments.pit_only else "recalibration"
-            if arguments.recalibration_only else "full")
+            if arguments.recalibration_only else "reassessment")
     output = assess_results(arguments.results, arguments.out, assessment_mode=mode,
                             event_filter=arguments.event_filter)
     if mode == "pit":
@@ -489,7 +490,7 @@ def command_assess(arguments: argparse.Namespace) -> int:
     elif mode == "recalibration":
         print(f"Recalibration assessment complete: {output}")
     else:
-        print(f"Assessment complete. Report: {output / 'report' / 'report.html'}")
+        print(f"Reassessment complete: {output / 'reassessment_decisions.csv.gz'}")
     return 0
 
 
@@ -566,7 +567,7 @@ def build_parser() -> argparse.ArgumentParser:
                      help="validate the input and stop before fitting anything")
     run.add_argument("--no-post-assessment", action="store_true",
                      help="fit, predict and evaluate, then stop before calibration, "
-                          "reliability, bootstrap and the report")
+                          "PIT diagnostics, bootstrap and the report")
     run.set_defaults(handler=command_run)
 
     update = subparsers.add_parser(
@@ -587,8 +588,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     assess = subparsers.add_parser(
         "assess", help="rerun assessment and reporting without fitting models",
-        description="Read frozen predictions from a completed result directory and write a "
-                    "new post-forecast assessment. This never invokes R or refits a model.")
+        description="Assess newer forecasts against earlier genuine forecasts of the same "
+                    "target (up to 14 days apart). This never invokes R or refits a model.")
     assess.add_argument("--results", type=Path, required=True, metavar="DIR",
                         help="completed result directory containing predictions and resolved_config.json")
     assess.add_argument("--out", type=Path, metavar="DIR",

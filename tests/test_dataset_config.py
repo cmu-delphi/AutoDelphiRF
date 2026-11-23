@@ -88,15 +88,19 @@ def test_absolute_paths_are_left_alone(tmp_path):
 def test_optional_paths_stay_none_when_unset(tmp_path):
     config = load_dataset_config(write_config(tmp_path / "d.json"))
     assert config.comparator_file is None
-    assert config.reliability_reference_file is None
 
 
 def test_optional_paths_resolve_when_set(tmp_path):
-    path = write_config(tmp_path / "d.json", comparator_file="cmp.csv.gz",
-                        reliability_reference_file="ref/reliability.csv")
+    path = write_config(tmp_path / "d.json", comparator_file="cmp.csv.gz")
     config = load_dataset_config(path)
     assert config.comparator_file == tmp_path / "cmp.csv.gz"
-    assert config.reliability_reference_file == tmp_path / "ref" / "reliability.csv"
+
+
+def test_retired_reliability_reference_key_is_ignored(tmp_path):
+    # Configs written before the reliability layer was removed still load.
+    path = write_config(tmp_path / "d.json", reliability_reference_file="ref/reliability.csv")
+    config = load_dataset_config(path)
+    assert not hasattr(config, "reliability_reference_file")
 
 
 # --- defaults and overrides ----------------------------------------------

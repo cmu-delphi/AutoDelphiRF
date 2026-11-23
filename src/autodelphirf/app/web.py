@@ -308,9 +308,9 @@ RESULT_TABLES = {
     # completed run remains viewable across that harmless artifact change.
     "headline": ("v1_pairwise_point.csv", "report/tables/v1_pairwise_point.csv"),
     "by_origin": ("report/tables/comparison_by_origin.csv",),
-    "web_metrics_by_lag": ("report/tables/web_metrics_by_lag.csv",),
-    "web_metrics_by_origin_lag": ("report/tables/web_metrics_by_origin_lag.csv",),
-    "web_metrics_by_location": ("report/tables/web_metrics_by_location.csv",),
+    "web_metrics_by_lag": ("web_tables/web_metrics_by_lag.csv", "report/tables/web_metrics_by_lag.csv"),
+    "web_metrics_by_origin_lag": ("web_tables/web_metrics_by_origin_lag.csv", "report/tables/web_metrics_by_origin_lag.csv"),
+    "web_metrics_by_location": ("web_tables/web_metrics_by_location.csv", "report/tables/web_metrics_by_location.csv"),
     "availability": ("report/tables/model_availability.csv",),
     "revroute_pools": ("revroute_pool_summary.csv",),
     "_revroute_assignments": ("revroute_pools.csv",),
@@ -379,10 +379,14 @@ def results_summary(output_dir) -> dict:
     produces the results view.
     """
     root = Path(output_dir)
+    manifest_path = root / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text()) if manifest_path.is_file() else {}
     tables, truncated = {}, []
     for key, alternatives in RESULT_TABLES.items():
         path = next((root / relative for relative in alternatives
-                     if (root / relative).is_file()), None)
+                     if (manifest.get("report_generated", True)
+                         or not relative.startswith("report/"))
+                     and (root / relative).is_file()), None)
         if path is None:
             continue
         try:
@@ -432,9 +436,11 @@ def results_summary(output_dir) -> dict:
                 summary.update({key: extra.get(key) for key in
                                 ("largest_pool", "singleton_pools")})
     origins = tables.get("by_origin") or []
+    report_available = (manifest.get("report_generated", True)
+                        and (root / "report" / "report.html").is_file())
     return {"output_dir": str(root), "tables": tables, "truncated": truncated,
             "n_origins": len({row.get("cutoff") for row in origins if row.get("cutoff")}),
-            "report_available": (root / "report" / "report.html").is_file()}
+            "report_available": report_available}
 
 
 @dataclass
@@ -603,8 +609,8 @@ class Session:
             if self.job.state == "running":
                 raise PreparationError("a run is already in progress")
             if (self.job.state == "done" and self.last_request == normalized_request
-                    and self.report_root is not None
-                    and (self.report_root / "report" / "report.html").is_file()):
+                    and self.job.output_dir is not None
+                    and (Path(self.job.output_dir) / "run_manifest.json").is_file()):
                 return
             self.job = Job(state="running", stage="preparing", started=time.time())
             self.last_request = normalized_request
@@ -677,16 +683,15 @@ class Session:
             from ..workflow.run import run_pipeline
             config = load_dataset_config(config_path)
             with _capture_stdout(job.append):
-                run_pipeline(config, should_stop=self._check_stop)
+                run_pipeline(config, should_stop=self._check_stop, generate_report=False)
 
-            report = config.output_dir / "report" / "report.html"
-            self.report_root = config.output_dir
+            self.report_root = None
             job.output_dir = str(config.output_dir)
-            job.report_available = report.is_file()
+            job.report_available = False
             job.stage = "done"
             job.state = "done"
             job.append("")
-            job.append(f"Done. Report written to {report}")
+            job.append(f"Done. Results written to {config.output_dir}")
         except RunStopped:
             job.state = "stopped"
             job.stage = "stopped"

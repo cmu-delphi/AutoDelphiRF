@@ -1,7 +1,5 @@
-"""Prospective interval calibration, reliability scores, and alerts."""
+"""Prospective interval calibration, PIT diagnostics, and interval coverage columns."""
 from __future__ import annotations
-
-from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
@@ -12,20 +10,12 @@ from .scoring import wis
 
 DEFAULT_MINIMUM_HISTORY = CALIBRATION_DEFAULTS.get("minimum_history", 10)
 DEFAULT_ADJACENT_LAG_RADIUS = CALIBRATION_DEFAULTS.get("adjacent_lag_radius", 1)
-DEFAULT_ETA = CALIBRATION_DEFAULTS.get("eta", .9)
-DEFAULT_CAUTION_CUT = CALIBRATION_DEFAULTS.get("caution_cut", .7)
-DEFAULT_HIGH_RISK_CUT = CALIBRATION_DEFAULTS.get("high_risk_cut", .9)
 LEVELS = {50: (.25, .75), 80: (.1, .9), 95: (.025, .975)}
 
 
 # ---------------------------------------------------------------------------
 # Completed-revision history selection
 # ---------------------------------------------------------------------------
-
-#: Minimum positive-regret support before M_harm_eta is issued, and minimum
-#: pre-evaluation pairs before g_harm is fitted. Frozen before evaluation.
-DEFAULT_MIN_HARM_SUPPORT = 10
-
 
 def eligible_history(frame: pd.DataFrame, as_of) -> pd.DataFrame:
     """Historical forecasts whose lag-L target exists by ``as_of`` (Sec. 3.2.5).
@@ -64,8 +54,7 @@ def qhigher(values, q: float) -> float:
 
 def calibration_stratum(row: pd.Series, history: pd.DataFrame, minimum: int | None = None,
                         adjacent_lag_radius: int | None = None) -> tuple[pd.DataFrame, str]:
-    """Select the historical forecast set with available target values used for calibration
-    and reliability.
+    """Select the historical forecast set with available target values used for calibration.
 
     Fallback hierarchy, exact-lag evidence always preferred:
     same location + exact lag -> same location + adjacent lags ->
@@ -89,50 +78,8 @@ def calibration_stratum(row: pd.Series, history: pd.DataFrame, minimum: int | No
 
 
 # ---------------------------------------------------------------------------
-# Origin x reliability-stratum resolution (model-free spec Sec. 2.2, 2.7)
+# Origin x calibration-stratum resolution (model-free spec Sec. 2.2, 2.7)
 # ---------------------------------------------------------------------------
-
-def upper_order_statistic(values: np.ndarray, eta: float) -> float:
-    """``E_(k_eta(n))`` with ``k_eta(n) = min{n, ceil((n+1) eta)}``.
-
-    The final model-free spec replaces the interpolated quantile with a
-    finite-sample upper order statistic: a comparable set is often small, and
-    interpolating an extreme quantile from a handful of points invents a value
-    no historical case attained. This returns a realized historical value, and
-    the ``min{n, .}`` makes it defined for every admissible support size.
-
-    No exact finite-sample coverage is claimed; the construction removes an
-    interpolation artefact, not distribution shift.
-    """
-    values = np.asarray(values, float)
-    values = values[np.isfinite(values)]
-    n = values.size
-    if not n:
-        return float("nan")
-    index = min(n, int(np.ceil((n + 1) * float(eta))))
-    return float(np.sort(values)[index - 1])
-
-
-def wilson_interval(successes: int, total: int, z: float = 1.96) -> tuple[float, float]:
-    """95% Wilson score interval for a historical proportion.
-
-    Used for ``f_harm = k_harm / n_harmfreq``. Wilson rather than Wald because
-    it stays inside [0, 1] and behaves sensibly at k = 0 or k = n, both of
-    which occur routinely at small comparable support.
-
-    This quantifies sampling uncertainty about the frequency IN THE COMPARABLE
-    HISTORICAL SET. It is not a prospective probability interval for the
-    current forecast and must never be presented as one.
-    """
-    n = int(total)
-    if n <= 0:
-        return float("nan"), float("nan")
-    phat = float(successes) / n
-    denominator = 1. + z * z / n
-    centre = (phat + z * z / (2 * n)) / denominator
-    spread = (z / denominator) * np.sqrt(phat * (1 - phat) / n + z * z / (4 * n * n))
-    return float(max(0., centre - spread)), float(min(1., centre + spread))
-
 
 def stratum_keys(test: pd.DataFrame) -> pd.DataFrame:
     """The unique reliability keys ``(geo_value, lag)`` needed at one origin."""
@@ -156,13 +103,8 @@ def resolve_strata(test: pd.DataFrame, history: pd.DataFrame, minimum: int,
     completed revision history. Row order within a stratum is irrelevant: every quantity
     taken from it (quantiles and counts) is order-independent.
 
-    ``counter`` decides what "enough history" means. The default counts rows,
-    which selects ``C_err(q)`` on adequate TOTAL comparable history. Passing a
-    counter over harmful rows selects ``C_harm(q)`` on adequate POSITIVE-HARM
-    history instead, which is a different requirement: a set holding
-    ``n_min^err`` comparable cases may contain very few harmful ones. The
-    hierarchy is identical; only the stopping rule differs, and expansion stops
-    as soon as the rule is met.
+    ``counter`` decides what "enough history" means; the default counts rows.
+    Expansion stops as soon as the rule is met.
 
     Returns ``{(geo_value, lag): (selected, source)}``.
     """
@@ -672,293 +614,3 @@ def add_interval_columns(data: pd.DataFrame, levels: dict[int, tuple[int, int]],
         data[f"{prefix}lower_miss_{level}"] = truth < lower - tol
         data[f"{prefix}upper_miss_{level}"] = truth > upper + tol
     return data
-
-
-# ---------------------------------------------------------------------------
-# Forecast-quality risk score and alert
-# ---------------------------------------------------------------------------
-
-def forecast_quality_summary(history: pd.DataFrame, *, eta: float = DEFAULT_ETA, min_history: int = 20,
-                             min_harm_support: int = DEFAULT_MIN_HARM_SUPPORT,
-                             error_reference: np.ndarray | None = None, regret_reference: np.ndarray | None = None,
-                             caution_cut: float = DEFAULT_CAUTION_CUT, high_risk_cut: float = DEFAULT_HIGH_RISK_CUT) -> dict:
-    """Difficulty and historical harm frequency on ``C_err(q)``.
-
-    Implements the first two components of the final model-free spec:
-
-        q_eta^err(q) = E_(k_eta(n_err))          (finite-sample order statistic)
-        f_harm(q)    = k_harm(q) / n_harmfreq(q) (descriptive frequency)
-
-    ``f_harm`` is reported with its counts and a 95% Wilson interval, and is
-    NOT a prospective probability. There is no probability mapping anywhere in
-    this layer: the spec removed ``p_harm``, the pre-evaluation archive and the
-    isotonic map after the mapped probability failed its own accuracy test
-    (negative Brier skill on 4 of 5 datasets, gaps to 0.45). What survives is
-    an interpretable statement of the form "8 of 42 comparable cases with available target values
-    (19%)".
-
-    Conditional harm severity is NOT computed here: it needs its own comparable
-    set selected on positive-harm support. See ``harm_severity_summary``.
-
-    ``history`` must contain only forecasts whose target value was available before the
-    current origin, with columns ``rr_ae`` and ``null_ae``. The reference
-    arguments are accepted and ignored so archived callers keep working.
-    """
-    if not 0 < eta < 1:
-        raise ValueError("eta must lie strictly between zero and one")
-    if min_history < 1:
-        raise ValueError("min_history must be positive")
-    unavailable = {"reliability_level": "insufficient reliability history",
-                   "profile_status": "insufficient reliability history",
-                   "q_error": np.nan, "n_err": 0,
-                   "f_harm": np.nan, "k_harm": 0, "n_harmfreq": 0,
-                   "f_harm_wilson_low": np.nan, "f_harm_wilson_high": np.nan,
-                   "risk_score": np.nan}
-    if len(history) < min_history:
-        return {**unavailable, "reliability_n": len(history)}
-    routed, null = history.rr_ae.to_numpy(float), history.null_ae.to_numpy(float)
-    valid = np.isfinite(routed) & np.isfinite(null)
-    error, regret = routed[valid], routed[valid] - null[valid]
-    if len(error) < min_history:
-        return {**unavailable, "reliability_n": len(error)}
-    harmful_count = int(np.sum(regret > 0))
-    total = int(error.size)
-    low, high = wilson_interval(harmful_count, total)
-    return {
-        # Component 1: prediction difficulty, a realized historical error.
-        "q_error": upper_order_statistic(error, eta),
-        "n_err": total,
-        # Component 2: descriptive comparable-history harm frequency, with the
-        # counts that make it interpretable and its sampling uncertainty.
-        "f_harm": harmful_count / total,
-        "k_harm": harmful_count,
-        "n_harmfreq": total,
-        "f_harm_wilson_low": low,
-        "f_harm_wilson_high": high,
-        "reliability_n": total,
-        "profile_status": "profile available",
-        # Retained so existing report code keeps working; a SUPPORT status.
-        "reliability_level": "profile available",
-        "risk_score": np.nan,
-    }
-
-
-def harm_severity_summary(history: pd.DataFrame, *, eta: float = DEFAULT_ETA,
-                          min_harm_support: int = DEFAULT_MIN_HARM_SUPPORT) -> dict:
-    """Conditional harm severity on ``C_harm(q)``: ``Delta^+_(k_eta(m))``.
-
-    Answers "if correction hurts, how bad has the harm historically been?" over
-    a set selected until it holds at least ``min_harm_support`` POSITIVE-regret
-    cases. Reporting it from the total-support set instead left it unissuable
-    for 35-60% of cases on five datasets, which is what motivated giving
-    severity its own selection.
-
-    Not a guaranteed prospective bound; its conditional upper-tail
-    interpretation must earn support in V2c.
-    """
-    unavailable = {"m_harm": np.nan, "harm_positive_n": 0,
-                   "harm_severity_status": "insufficient harm-severity history"}
-    if history is None or history.empty:
-        return unavailable
-    routed, null = history.rr_ae.to_numpy(float), history.null_ae.to_numpy(float)
-    valid = np.isfinite(routed) & np.isfinite(null)
-    regret = routed[valid] - null[valid]
-    harmful = regret[regret > 0]
-    if harmful.size < int(min_harm_support):
-        return {**unavailable, "harm_positive_n": int(harmful.size)}
-    return {"m_harm": upper_order_statistic(harmful, eta),
-            "harm_positive_n": int(harmful.size),
-            "harm_severity_status": "severity available"}
-
-
-def build_reliability_reference(training_predictions: pd.DataFrame, *, eta: float = DEFAULT_ETA,
-                                min_history: int = 10, adjacent_lag_radius: int = 1,
-                                working_scale: str = "log_value", method: str | None = None,
-                                prediction_column: str | None = None,
-                                null_column: str | None = None) -> pd.DataFrame:
-    """Build frozen q-error/q-regret references from inner rolling predictions.
-
-    The input must be a separate pre-evaluation replay on the dataset's own
-    working scale; pass that dataset's ``working_scale`` so the errors below
-    are formed on the original reporting scale. It defaults to "log_value", which
-    is right for count and directly-supplied-rate datasets but WRONG for a
-    num/denom fraction triangle (those are "log_ratio"). Each inner case is summarized only from forecasts
-    whose target values were available by its own report date. The result must
-    be frozen before outer evaluation: build this from data
-    that ends strictly before the outer evaluation window begins.
-    """
-    required = {"cutoff", "report_date", "target_date", "geo_value", "lag", "truth"}
-    missing = required.difference(training_predictions.columns)
-    if missing:
-        raise ValueError(f"reliability training predictions missing columns: {sorted(missing)}")
-    if not 0 < eta < 1 or min_history < 1 or adjacent_lag_radius < 0:
-        raise ValueError("invalid reliability reference settings")
-    data = training_predictions.copy()
-    if method is not None:
-        if "method" not in data:
-            raise ValueError("method was supplied but training predictions have no method column")
-        data = data[data.method.eq(method)].copy()
-    if data.empty:
-        return pd.DataFrame(columns=["method", "cutoff", "report_date", "geo_value", "lag",
-                                     "case_n", "source", "history_n", "q_error", "q_regret"])
-    # Standardized long prediction archives are already on the raw reporting
-    # scale.  Legacy replay-wide archives retain working-scale columns such as
-    # ``red_prediction`` and ``Null`` and are inverse-transformed below.
-    if prediction_column is None:
-        prediction_column = "prediction" if "prediction" in data else "red_prediction"
-    if null_column is None:
-        null_column = "provisional_value" if "provisional_value" in data else "Null"
-    required = {prediction_column, null_column}
-    missing = required.difference(data.columns)
-    if missing:
-        raise ValueError(f"reliability training predictions missing columns: {sorted(missing)}")
-    # Replay frames may carry a large residual-training table in ``attrs``;
-    # pandas propagates it through every filter unless explicitly cleared.
-    data.attrs = {}
-    data["cutoff"] = pd.to_datetime(data.cutoff)
-    data["report_date"] = pd.to_datetime(data.report_date)
-    data["target_date"] = pd.to_datetime(data.target_date)
-    standardized_raw = prediction_column == "prediction" and null_column == "provisional_value"
-    truth_raw = (data.truth.astype(float) if standardized_raw
-                 else to_reporting_scale(data.truth.astype(float), working_scale))
-    prediction_raw = (data[prediction_column].astype(float) if standardized_raw
-                      else to_reporting_scale(data[prediction_column].astype(float), working_scale))
-    null_raw = (data[null_column].astype(float) if standardized_raw
-                else to_reporting_scale(data[null_column].astype(float), working_scale))
-    data["rr_ae"] = np.abs(truth_raw - prediction_raw)
-    data["null_ae"] = np.abs(truth_raw - null_raw)
-    rows = []
-    completed = _HistoryByDate(data)
-    for issued, current in data.groupby("report_date", sort=True, observed=True):
-        available_history = completed.at(issued)
-        cases = current.groupby(["geo_value", "lag"], observed=True).size().rename("case_n").reset_index()
-        for _, case in cases.iterrows():
-            candidates = [
-                (available_history[(available_history.geo_value.eq(case.geo_value)) & available_history.lag.eq(case.lag)],
-                 "location/exact-lag"),
-                (available_history[(available_history.geo_value.eq(case.geo_value)) &
-                         (available_history.lag.sub(case.lag).abs() <= adjacent_lag_radius)],
-                 "location/adjacent-lags"),
-                (available_history[available_history.lag.eq(case.lag)], "global/exact-lag"),
-                (available_history[available_history.lag.sub(case.lag).abs() <= adjacent_lag_radius],
-                 "global/adjacent-lags"),
-            ]
-            selected = source = None
-            for candidate, label in candidates:
-                valid = candidate[np.isfinite(candidate.rr_ae) & np.isfinite(candidate.null_ae)]
-                if len(valid) >= min_history:
-                    selected, source = valid, label
-                    break
-            if selected is None:
-                continue
-            regret = selected.rr_ae.to_numpy(float) - selected.null_ae.to_numpy(float)
-            rows.append({"method": method if method is not None else (data.method.iloc[0] if "method" in data else None),
-                         "cutoff": current.cutoff.iloc[0], "report_date": issued,
-                         "geo_value": case.geo_value,
-                         "lag": case.lag, "case_n": int(case.case_n),
-                         "source": source, "history_n": len(selected),
-                         "q_error": float(np.quantile(selected.rr_ae, eta)),
-                         "q_regret": float(np.quantile(regret, eta))})
-    return pd.DataFrame(rows, columns=["method", "cutoff", "report_date", "geo_value", "lag",
-                                      "case_n", "source", "history_n", "q_error", "q_regret"])
-
-
-# ---------------------------------------------------------------------------
-# Per-method reliability wiring
-# ---------------------------------------------------------------------------
-
-def reliability_history(long: pd.DataFrame, method: str, *, eta: float | None = None,
-                        min_history: int | None = None,
-                        min_harm_support: int = DEFAULT_MIN_HARM_SUPPORT,
-                        caution_cut: float | None = None,
-                        high_risk_cut: float | None = None, adjacent_lag_radius: int | None = None,
-                        error_reference: np.ndarray | None = None, regret_reference: np.ndarray | None = None,
-                        prediction_column: str = "prediction", null_column: str = "provisional_value") -> pd.DataFrame:
-    """Per-case post-prediction assessment quantities for one evaluated method.
-
-    Resolves TWO comparable sets per report date and reliability key, because the
-    final model-free spec requires different support rules:
-
-      * ``C_err(q)``  -- adequate TOTAL history; supports q_eta^err, n_err,
-        f_harm, its counts and Wilson interval;
-      * ``C_harm(q)`` -- adequate POSITIVE-HARM history; supports
-        M_harm_eta and m(q), and is allowed to expand one or more fallback
-        levels further only when harmful cases are too few.
-
-    Both use the identical exact-lag-first hierarchy; only the stopping rule
-    differs, and ``C_harm`` is not expanded once its minimum is met. Caching is
-    per key, so the eligible sets are exactly those the fallback rules define.
-    """
-    eta = DEFAULT_ETA if eta is None else eta
-    min_history = DEFAULT_MINIMUM_HISTORY if min_history is None else min_history
-    caution_cut = DEFAULT_CAUTION_CUT if caution_cut is None else caution_cut
-    high_risk_cut = DEFAULT_HIGH_RISK_CUT if high_risk_cut is None else high_risk_cut
-    adjacent_lag_radius = DEFAULT_ADJACENT_LAG_RADIUS if adjacent_lag_radius is None else adjacent_lag_radius
-    base = long[long.method.eq(method)].copy()
-    if "model_available" in base:
-        base = base[base.model_available].copy()
-    if base.empty:
-        return base
-    # Raw-scale errors for the whole archive once, not per selected stratum.
-    base["rr_ae"] = (base.truth - base[prediction_column]).abs()
-    base["null_ae"] = (base.truth - base[null_column]).abs()
-    carried = [c for c in ("cutoff", "geo_value", "reference_date", "report_date",
-                           "target_date", "lag") if c in base.columns]
-    err_fields = ("reliability_level", "reliability_n", "q_error", "n_err",
-                  "f_harm", "k_harm", "n_harmfreq", "f_harm_wilson_low",
-                  "f_harm_wilson_high", "risk_score", "profile_status")
-    harm_fields = ("m_harm", "harm_positive_n", "harm_severity_status")
-    frames = []
-    completed = _HistoryByDate(base)
-    for (fold, issued), test in base.groupby(["fold", "report_date"], sort=True, observed=True):
-        history = completed.at(issued)
-        # C_err: stop on total support.
-        err_strata = resolve_strata(test, history, min_history, adjacent_lag_radius)
-        # C_harm: same hierarchy, stop on POSITIVE-HARM support. The counter
-        # reads a precomputed harmful mask so expansion costs no extra scans.
-        if history.empty:
-            harm_strata = {k: (history, "insufficient history") for k in err_strata}
-        else:
-            harmful_mask = (history.rr_ae.to_numpy(float) - history.null_ae.to_numpy(float)) > 0
-            harm_strata = resolve_strata(
-                test, history, int(min_harm_support), adjacent_lag_radius,
-                counter=lambda positions: int(harmful_mask[positions].sum()))
-        cache = {}
-        for key, (selected, source) in err_strata.items():
-            summary = forecast_quality_summary(
-                selected, eta=eta, min_history=min_history, caution_cut=caution_cut,
-                high_risk_cut=high_risk_cut, error_reference=error_reference,
-                regret_reference=regret_reference, min_harm_support=min_harm_support)
-            harm_selected, harm_source = harm_strata.get(key, (history.iloc[:0], "insufficient history"))
-            severity = harm_severity_summary(harm_selected, eta=eta,
-                                             min_harm_support=min_harm_support)
-            cache[key] = (source, harm_source, summary, severity)
-        keys = list(zip(test.geo_value, test.lag))
-        entry = pd.DataFrame({"method": method, "fold": fold,
-                              "calibration_source": [cache[k][0] for k in keys],
-                              "harm_source": [cache[k][1] for k in keys],
-                              "truth": test.truth.to_numpy(),
-                              prediction_column: test[prediction_column].to_numpy(),
-                              null_column: test[null_column].to_numpy()})
-        for column in carried:
-            entry[column] = test[column].to_numpy()
-        for field in err_fields:
-            entry[field] = [cache[k][2].get(field, np.nan) for k in keys]
-        for field in harm_fields:
-            entry[field] = [cache[k][3].get(field, np.nan) for k in keys]
-        frames.append(entry)
-    rows = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-    result = rows
-    if not result.empty:
-        result["realized_ae"] = (result.truth - result[prediction_column]).abs()
-        result["realized_null_ae"] = (result.truth - result[null_column]).abs()
-        result["realized_regret"] = result.realized_ae - result.realized_null_ae
-        result["realized_harm"] = result.realized_regret > 0
-        # Upper-tail interpretation checks (V2a and V2c). The severity check is
-        # CONDITIONAL on realized harm, which is what makes it a statement
-        # about severity rather than about frequency.
-        result["qerr_covered"] = result.realized_ae <= result.q_error
-        result["mharm_covered"] = np.where(
-            result.realized_harm & np.isfinite(result.m_harm),
-            result.realized_regret <= result.m_harm, np.nan)
-    return result

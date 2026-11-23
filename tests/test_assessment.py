@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from autodelphirf.post_assessment.run import (assess_results, freeze_reliability_reference,
+from autodelphirf.post_assessment.run import (assess_results,
                                               save_assessment_outputs, sha256)
 from autodelphirf.post_assessment import reporting
 from autodelphirf.post_assessment.reporting import (_early_lag_location_summary,
@@ -95,22 +95,14 @@ def config_payload(tmp_path, results):
     }
 
 
-def write_restart_bundle(tmp_path, *, reliability_reference=None):
+def write_restart_bundle(tmp_path):
     """Create the complete, model-free side of the forecast/assessment boundary."""
     results = tmp_path / "results"
     results.mkdir()
     source = tmp_path / "source.json"
-    payload = config_payload(tmp_path, results)
-    if reliability_reference is not None:
-        payload["reliability_reference_file"] = str(reliability_reference)
-    source.write_text(json.dumps(payload))
+    source.write_text(json.dumps(config_payload(tmp_path, results)))
     config = load_dataset_config(source)
-    reliability_record = None
-    if reliability_reference is not None:
-        config, reliability_record = freeze_reliability_reference(config, results)
     write_resolved_config(config, results / "resolved_config.json")
-    (results / "assessment_inputs.json").write_text(json.dumps({
-        "reliability_reference": reliability_record}) + "\n")
     frame = pd.DataFrame({
         "fold": [1], "cutoff": ["2024-01-01"], "geo_value": ["aa"],
         "reference_date": ["2023-12-31"], "report_date": ["2024-01-01"],
@@ -118,7 +110,7 @@ def write_restart_bundle(tmp_path, *, reliability_reference=None):
     })
     frame.to_csv(results / "predictions.csv.gz", index=False, compression="gzip")
     frame.to_csv(results / "predictions_wide.csv.gz", index=False, compression="gzip")
-    return results, config, reliability_record
+    return results, config
 
 
 def test_resolved_config_round_trips_every_assessment_setting(tmp_path):
@@ -134,48 +126,8 @@ def test_resolved_config_round_trips_every_assessment_setting(tmp_path):
     assert raw["comparator_quantile_template"] == "q{tau:g}"
 
 
-def test_reliability_reference_is_copied_and_hashed(tmp_path):
-    results = tmp_path / "results"
-    source = tmp_path / "reference.csv"
-    source.write_text("q_error,q_regret\n1,2\n")
-    config_file = tmp_path / "source.json"
-    payload = config_payload(tmp_path, results)
-    payload["reliability_reference_file"] = str(source)
-    config_file.write_text(json.dumps(payload))
-    frozen, record = freeze_reliability_reference(load_dataset_config(config_file), results)
-    assert frozen.reliability_reference_file.is_file()
-    assert frozen.reliability_reference_file.parent == results / "inputs"
-    assert record["sha256"] and record["bytes"] == source.stat().st_size
-
-
-def test_compressed_reliability_reference_keeps_both_suffixes(tmp_path):
-    results = tmp_path / "results"
-    source = tmp_path / "reference.csv.gz"
-    pd.DataFrame({"q_error": [1]}).to_csv(source, index=False, compression="gzip")
-    config_file = tmp_path / "source.json"
-    payload = config_payload(tmp_path, results)
-    payload["reliability_reference_file"] = str(source)
-    config_file.write_text(json.dumps(payload))
-
-    frozen, record = freeze_reliability_reference(load_dataset_config(config_file), results)
-
-    assert frozen.reliability_reference_file.name == "reliability_reference.csv.gz"
-    assert record["sha256"] == sha256(source)
-
-
-def test_assessment_refuses_a_modified_frozen_reliability_reference(tmp_path):
-    source = tmp_path / "reference.csv"
-    source.write_text("q_error,q_regret\n1,2\n")
-    results, config, _ = write_restart_bundle(
-        tmp_path, reliability_reference=source)
-    config.reliability_reference_file.write_text("q_error,q_regret\n3,4\n")
-
-    with pytest.raises(ValueError, match="does not match assessment_inputs"):
-        assess_results(results)
-
-
 def test_assessment_restarts_from_predictions_without_model_fitting(tmp_path, monkeypatch):
-    results, _, _ = write_restart_bundle(tmp_path)
+    results, _ = write_restart_bundle(tmp_path)
     pd.DataFrame({"method": ["delphirf"], "standalone_total_seconds": [12.5]}).to_csv(
         results / "runtime_by_method.csv", index=False)
     empty = pd.DataFrame()
@@ -187,25 +139,21 @@ def test_assessment_restarts_from_predictions_without_model_fitting(tmp_path, mo
         called["pool_assignments"] = pool_assignments
         called["date_types"] = (long.cutoff.dtype, wide.reference_date.dtype)
         return {"calibration": empty, "interval_calibration": empty,
-                "reliability": empty, "bootstrap": empty,
-                "v1_example": pd.DataFrame({"passed": [True]})}
+                "bootstrap": empty}
 
     def fake_report(data, output, **kwargs):
         called["runtime"] = kwargs["runtime"]
-        called["validation"] = kwargs["validation"]
         output.mkdir(parents=True)
         (output / "report.html").write_text("ok")
 
     monkeypatch.setattr("autodelphirf.post_assessment.run.run_reliability_and_calibration", fake_assessment)
     monkeypatch.setattr("autodelphirf.post_assessment.run.build_report", fake_report)
-    output = assess_results(results, tmp_path / "assessment")
+    output = assess_results(results, tmp_path / "assessment", assessment_mode="full")
     assert called["rows"] == (1, 1)
     assert called["mode"] == "full"
     assert called["pool_assignments"] is None
     assert all(str(dtype).startswith("datetime64") for dtype in called["date_types"])
     assert called["runtime"].standalone_total_seconds.tolist() == [12.5]
-    assert list(called["validation"]) == ["v1_example"]
-    assert (output / "v1_example.csv").is_file()
     manifest = json.loads((output / "assessment_manifest.json").read_text())
     assert manifest["model_fitting_performed"] is False
     assert set(manifest["inputs"]) == {
@@ -215,33 +163,47 @@ def test_assessment_restarts_from_predictions_without_model_fitting(tmp_path, mo
         assert record["bytes"] == (results / name).stat().st_size
     assert (output / "report" / "report.html").is_file()
     with pytest.raises(FileExistsError, match="not empty"):
-        assess_results(results, output)
+        assess_results(results, output, assessment_mode="full")
 
 
-def test_assessment_manifest_includes_the_verified_reliability_reference(tmp_path, monkeypatch):
-    source = tmp_path / "reference.csv"
-    source.write_text("q_error,q_regret\n1,2\n")
-    results, _, record = write_restart_bundle(tmp_path, reliability_reference=source)
-    empty = pd.DataFrame()
-    monkeypatch.setattr(
-        "autodelphirf.post_assessment.run.run_reliability_and_calibration",
-        lambda *args, **kwargs: {"calibration": empty, "interval_calibration": empty,
-                                "reliability": empty, "bootstrap": empty})
-    monkeypatch.setattr("autodelphirf.post_assessment.run.build_report", lambda *args, **kwargs: None)
+def test_default_reassessment_uses_issued_ledger_and_grades_after_truth_matures(tmp_path):
+    results, _ = write_restart_bundle(tmp_path)
+    forecasts = pd.DataFrame({
+        "method": ["delphirf", "delphirf"], "geo_value": ["aa", "aa"],
+        "reference_date": ["2023-12-31"] * 2,
+        "report_date": ["2024-01-01", "2024-01-02"],
+        "target_date": ["2024-01-28"] * 2,
+        "genuine_event": [True, True], "model_available": [True, True],
+        "truth": [float("nan"), float("nan")],
+    })
+    for tau in (.01, .025, .1, .25, .5, .75, .9, .975, .99):
+        forecasts[f"q{tau:g}_working"] = [10 * (tau - .5), 5 + 10 * (tau - .5)]
+        forecasts[f"q{tau:g}"] = forecasts[f"q{tau:g}_working"]
+    forecasts.to_csv(results / "forecast_ledger.csv.gz", index=False, compression="gzip")
 
-    output = assess_results(results, tmp_path / "assessment")
+    output = assess_results(results, tmp_path / "before")
+    decisions = pd.read_csv(output / "reassessment_decisions.csv.gz")
+    assert len(decisions) == 1
+    assert decisions.iloc[0].flag == 1
+    assert pd.isna(decisions.iloc[0]["miss"])
+    assert pd.read_csv(output / "reassessment_by_age.csv").empty
     manifest = json.loads((output / "assessment_manifest.json").read_text())
+    assert manifest["assessment_mode"] == "reassessment"
+    assert "forecast_ledger.csv.gz" in manifest["inputs"]
 
-    frozen = results / record["bundled_path"]
-    assert manifest["inputs"]["reliability_reference"]["sha256"] == sha256(frozen)
-    assert manifest["model_fitting_performed"] is False
+    forecasts["truth"] = 5.
+    forecasts.to_csv(results / "forecast_ledger.csv.gz", index=False, compression="gzip")
+    output = assess_results(results, tmp_path / "after")
+    decisions = pd.read_csv(output / "reassessment_decisions.csv.gz")
+    assert decisions.iloc[0]["miss"] == 1
+    assert pd.read_csv(output / "reassessment_by_age.csv").iloc[0]["n"] == 1
 
 
 def test_assessment_writes_optional_calibration_diagnostics(tmp_path):
     empty = pd.DataFrame()
     outputs = {
         "calibration": empty, "interval_calibration": empty,
-        "reliability": empty, "bootstrap": empty,
+        "bootstrap": empty,
         "calibration_variants": pd.DataFrame({"calibration_strategy": ["quantile_map_pool"]}),
         "calibration_comparison": pd.DataFrame({"strategy": ["endpoint"]}),
         "quantile_reliability": pd.DataFrame({"strategy": ["base"]}),
@@ -257,7 +219,7 @@ def test_pit_only_writes_diagnostics_without_recalibration_files(tmp_path):
     empty = pd.DataFrame()
     outputs = {
         "calibration": empty, "interval_calibration": empty,
-        "reliability": empty, "bootstrap": empty,
+        "bootstrap": empty,
         "calibration_variants": empty, "calibration_comparison": empty,
         "quantile_reliability": pd.DataFrame({"strategy": ["base"]}),
         "pit_diagnostics": pd.DataFrame({"strategy": ["base"]}),
@@ -273,7 +235,7 @@ def test_recalibration_only_writes_exact_recalibration_file_set(tmp_path):
     empty = pd.DataFrame()
     outputs = {
         "calibration": empty, "interval_calibration": empty,
-        "reliability": empty, "bootstrap": empty,
+        "bootstrap": empty,
         "calibration_variants": empty, "calibration_comparison": empty,
         "quantile_reliability": empty, "pit_diagnostics": empty,
     }
@@ -288,7 +250,7 @@ def test_recalibration_only_writes_exact_recalibration_file_set(tmp_path):
 
 
 def test_recalibration_only_runs_from_frozen_predictions_without_a_report(tmp_path):
-    results, _, _ = write_restart_bundle(tmp_path)
+    results, _ = write_restart_bundle(tmp_path)
     frame = pd.read_csv(results / "predictions.csv.gz")
     frame["method"] = "delphirf"
     frame["truth"] = 1.
@@ -344,7 +306,6 @@ def test_reliability_and_calibration_modes_return_only_their_outputs(monkeypatch
 
     assert not outputs["quantile_reliability"].empty
     assert not outputs["pit_diagnostics"].empty
-    assert outputs["reliability"].empty
     assert outputs["bootstrap"].empty
     if mode == "pit":
         assert outputs["calibration"].empty
@@ -359,7 +320,7 @@ def test_reliability_and_calibration_modes_return_only_their_outputs(monkeypatch
 
 
 def test_assessment_defaults_to_genuine_events_and_can_include_all(tmp_path, monkeypatch):
-    results, _, _ = write_restart_bundle(tmp_path)
+    results, _ = write_restart_bundle(tmp_path)
     frame = pd.read_csv(results / "predictions.csv.gz")
     frame = pd.concat([frame.assign(genuine_event=True),
                        frame.assign(genuine_event=False, geo_value="bb")], ignore_index=True)
@@ -371,7 +332,7 @@ def test_assessment_defaults_to_genuine_events_and_can_include_all(tmp_path, mon
     def fake_assessment(long, config, wide=None, **kwargs):
         seen.append((len(long), None if wide is None else len(wide), kwargs))
         return {"calibration": empty, "interval_calibration": empty,
-                "reliability": empty, "bootstrap": empty,
+                "bootstrap": empty,
                 "calibration_variants": empty, "calibration_comparison": empty,
                 "quantile_reliability": empty, "pit_diagnostics": empty}
 
@@ -389,14 +350,14 @@ def test_assessment_defaults_to_genuine_events_and_can_include_all(tmp_path, mon
 
 
 def test_pit_only_does_not_read_or_hash_wide_predictions(tmp_path, monkeypatch):
-    results, _, _ = write_restart_bundle(tmp_path)
+    results, _ = write_restart_bundle(tmp_path)
     (results / "predictions_wide.csv.gz").write_bytes(b"not a gzip file")
     empty = pd.DataFrame()
     monkeypatch.setattr(
         "autodelphirf.post_assessment.run.run_reliability_and_calibration",
         lambda *args, **kwargs: {
             "calibration": empty, "interval_calibration": empty,
-            "reliability": empty, "bootstrap": empty,
+            "bootstrap": empty,
             "calibration_variants": empty, "calibration_comparison": empty,
             "quantile_reliability": empty, "pit_diagnostics": empty})
 
@@ -408,7 +369,7 @@ def test_pit_only_does_not_read_or_hash_wide_predictions(tmp_path, monkeypatch):
 
 
 def test_carried_filter_requires_event_provenance(tmp_path):
-    results, _, _ = write_restart_bundle(tmp_path)
+    results, _ = write_restart_bundle(tmp_path)
     for name in ("predictions.csv.gz", "predictions_wide.csv.gz"):
         path = results / name
         frame = pd.read_csv(path).drop(columns="genuine_event")
@@ -448,13 +409,12 @@ def test_forecast_time_assessment_filters_carried_rows_from_every_history_path(m
 
     monkeypatch.setattr("autodelphirf.workflow.run.prospective_calibration", capture)
     monkeypatch.setattr("autodelphirf.workflow.run.prospective_quantile_mapping", capture)
-    monkeypatch.setattr("autodelphirf.workflow.run.reliability_history", capture)
     monkeypatch.setattr("autodelphirf.workflow.run.pit_diagnostics",
                         lambda *args, **kwargs: (pd.DataFrame(), pd.DataFrame()))
     config = SimpleNamespace(
         comparator_quantile_template=None, comparator_methods=[],
         prediction_layers=["delphirf"], uncertainty_layer=True,
-        working_scale="identity", reliability_reference_file=None)
+        working_scale="identity")
 
     outputs = forecast_time_assessment(history, newly_issued, config)
 
@@ -478,7 +438,7 @@ def test_genuine_event_filter_rejects_missing_provenance():
 
 @pytest.mark.parametrize("missing", ["predictions.csv.gz", "resolved_config.json"])
 def test_assessment_names_each_missing_required_input(tmp_path, missing):
-    results, _, _ = write_restart_bundle(tmp_path)
+    results, _ = write_restart_bundle(tmp_path)
     (results / missing).unlink()
 
     with pytest.raises(FileNotFoundError, match=missing):

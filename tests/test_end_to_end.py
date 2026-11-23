@@ -94,7 +94,6 @@ def test_one_command_turns_a_raw_archive_into_a_report(tmp_path):
     assert (results / "diagnostics" / "summary.json").is_file()
     assert (results / "run_manifest.json").is_file()
     assert (results / "resolved_config.json").is_file()
-    assert (results / "assessment_inputs.json").is_file()
     deployment = json.loads((results / "deployment_state.json").read_text())
     schedule = pd.read_csv(prepared / "test_dates.csv")
     assert deployment["latest_trained_origin"] == schedule.test_date.max()
@@ -117,9 +116,12 @@ def test_one_command_turns_a_raw_archive_into_a_report(tmp_path):
                      "--out", str(reassessment)]) == 0
     assessment_manifest = json.loads((reassessment / "assessment_manifest.json").read_text())
     assert assessment_manifest["model_fitting_performed"] is False
-    assert assessment_manifest["rows"]["wide"] == len(
-        pd.read_csv(results / "predictions_wide.csv.gz"))
-    assert (reassessment / "report" / "report.html").is_file()
+    assert assessment_manifest["assessment_mode"] == "reassessment"
+    assert assessment_manifest["rows"]["long"] == len(
+        pd.read_csv(results / "forecast_ledger.csv.gz"))
+    assert (reassessment / "reassessment_decisions.csv.gz").is_file()
+    assert (reassessment / "reassessment_by_age.csv").is_file()
+    assert (results / "reassessment_decisions.csv.gz").is_file()
 
 
 @requires_delphirf

@@ -316,6 +316,6 @@ def test_no_post_assessment_writes_evaluated_predictions_and_stops(tmp_path):
     unavailable = predictions[predictions.method.eq("naive_delphirf")
                               & ~predictions.model_available.astype(bool)]
     assert len(unavailable) >= len(dropped)
-    for skipped in ("calibration.csv.gz", "reliability.csv.gz",
+    for skipped in ("calibration.csv.gz",
                     "bootstrap_pairwise_comparisons.csv", "report"):
         assert not (results / skipped).exists()

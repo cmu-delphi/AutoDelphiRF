@@ -239,22 +239,15 @@ def test_an_as_of_date_replays_the_archive_without_later_releases(tmp_path):
 
 
 def test_history_is_judged_at_each_cases_own_report_date():
-    from autodelphirf.post_assessment.reliability import reliability_history
-    rows = []
-    # Twelve forecasts issued early in the fold; their targets exist from 03-05.
-    for i in range(12):
-        rows.append({"report_date": "2022-03-01", "target_date": "2022-03-05",
-                     "reference_date": f"2022-02-{10 + i:02d}", "truth": 100. + i})
-    # Two later forecasts in the same fold, issued before and after 03-05.
+    from autodelphirf.post_assessment.reliability import _HistoryByDate
+    rows = [{"report_date": "2022-03-01", "target_date": "2022-03-05",
+             "reference_date": f"2022-02-{10 + i:02d}", "truth": 100. + i} for i in range(12)]
     rows.append({"report_date": "2022-03-03", "target_date": "2022-03-20",
                  "reference_date": "2022-03-02", "truth": np.nan})
-    rows.append({"report_date": "2022-03-10", "target_date": "2022-03-27",
-                 "reference_date": "2022-03-09", "truth": np.nan})
-    frame = pd.DataFrame(rows).assign(
-        method="delphirf", fold=1, cutoff=pd.Timestamp("2022-03-01"), geo_value="aa", lag=1,
-        prediction=105., provisional_value=100.)
+    frame = pd.DataFrame(rows)
     for column in ("report_date", "target_date", "reference_date"):
         frame[column] = pd.to_datetime(frame[column])
-    result = reliability_history(frame, "delphirf", min_history=10).set_index("report_date")
-    assert result.loc["2022-03-03", "n_err"] != 12
-    assert result.loc["2022-03-10", "n_err"] == 12
+    history = _HistoryByDate(frame)
+    # Targets exist from 03-05: none is history for a forecast issued 03-03, all twelve by 03-10.
+    assert len(history.at(pd.Timestamp("2022-03-03"))) == 0
+    assert len(history.at(pd.Timestamp("2022-03-10"))) == 12

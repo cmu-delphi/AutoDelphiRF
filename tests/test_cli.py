@@ -57,7 +57,7 @@ def test_readme_raw_example_names_the_repository_archive_and_update_workspace():
     assert (root / "my_archive.csv").is_file()
     assert example["archive"] == "../my_archive.csv"
     assert example["work_dir"] == "../autodelphirf_work/readme_example"
-    assert example["preprocessing"]["target_lag"] == 28
+    assert example["preprocessing"]["target_lag"] == 60
 
 
 # --- layer validation -----------------------------------------------------
@@ -165,7 +165,7 @@ def test_assess_reports_missing_frozen_inputs(tmp_path, capsys):
 
 
 @pytest.mark.parametrize("flag, mode, message", [
-    (None, "full", "report.html"),
+    (None, "reassessment", "reassessment_decisions.csv.gz"),
     ("--pit-only", "pit", "PIT diagnostics complete"),
     ("--recalibration-only", "recalibration", "Recalibration assessment complete"),
 ])

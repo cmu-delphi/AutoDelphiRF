@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -24,6 +25,56 @@ from autodelphirf.app.web import (ALLOWED_SUFFIXES, DEFAULT_LAYERS, AutoDelphiRF
                                  results_summary, safe_stem)
 
 from conftest import archive_frame
+
+
+def test_web_run_skips_html_report_and_keeps_results(tmp_path, monkeypatch):
+    from autodelphirf.post_assessment.reporting import write_web_metrics
+
+    result = tmp_path / "results"
+    result.mkdir()
+    data = pd.DataFrame({
+        "fold": [1, 1], "geo_value": ["aa", "aa"],
+        "reference_date": ["2024-01-01"] * 2,
+        "report_date": ["2024-01-02"] * 2, "cutoff": ["2024-01-02"] * 2,
+        "lag": [1, 1], "method": ["baseline_null", "delphirf"],
+        "model_available": [True, True], "absolute_error": [3., 1.],
+        "wis_reporting": [3., 1.], "relative_error_pct": [30., 10.],
+        "relative_wis_pct": [30., 10.],
+    })
+    write_web_metrics(data, result)
+    assert not (result / "report").exists()
+    assert len(results_summary(result)["tables"]["web_metrics_by_lag"]) == 8
+    (result / "report" / "tables").mkdir(parents=True)
+    (result / "report" / "report.html").write_text("stale")
+    (result / "run_manifest.json").write_text(json.dumps({"report_generated": False}))
+    assert results_summary(result)["report_available"] is False
+    assert "by_origin" not in results_summary(result)["tables"]
+
+    session = Session(tmp_path / "work")
+    session.archive_path = tmp_path / "archive.csv"
+    session.dataset_name = "demo"
+    spec = SimpleNamespace(output_dir=tmp_path / "prepared", name="demo",
+                           ref_lag=14, testing_days=7,
+                           start_date="2024-01-01", end_date="2024-02-01")
+    spec.output_dir.mkdir()
+    pd.DataFrame({"test_date": ["2024-01-01"]}).to_csv(
+        spec.output_dir / "test_dates.csv", index=False)
+    monkeypatch.setattr(web, "build_spec", lambda *args, **kwargs: spec)
+    monkeypatch.setattr(web, "prepare_dataset", lambda *args, **kwargs: tmp_path / "config.json")
+    monkeypatch.setattr("autodelphirf.core.config.load_dataset_config",
+                        lambda *args: SimpleNamespace(output_dir=result))
+    called = {}
+    def fake_pipeline(config, **kwargs):
+        called.update(kwargs)
+    monkeypatch.setattr("autodelphirf.workflow.run.run_pipeline", fake_pipeline)
+    session._run({"reference_col": "reference_date", "report_col": "report_date",
+                  "value_cols": ["value"]})
+    assert session.job.state == "done"
+    assert called["generate_report"] is False
+    assert session.job.report_available is False
+    assert session.report_root is None
+    assert "Results written" in session.job.log[-1]
+
 
 
 # --- filename handling ----------------------------------------------------

@@ -1,0 +1,32 @@
+{
+  "version": "autodelphirf-defaults",
+  "status": "fixed design constants; not selected on outer-test outcomes",
+  "red_routing": {
+    "note": "Settings of the optional RED comparator only. gamma is RED's routing bandwidth, not Delphi-RF's decay parameter (fixed at 0.1 in training).",
+    "min_curve_episodes": 3,
+    "spline_method": "pchip",
+    "spline_method_note": "Use shape-preserving PCHIP interpolation for curve-template routing. spline_basis and spline_penalty apply only when spline_method is 'penalized_bspline'.",
+    "gamma": 1.0,
+    "spline_basis": 6,
+    "spline_penalty": 0.001,
+    "initial_lag_source": "minimum lag in immutable full prepared-stream metadata"
+  },
+  "calibration_reliability": {
+    "minimum_history": 10,
+    "adjacent_lag_radius": 1,
+    "eta": 0.9,
+    "caution_cut": 0.7,
+    "high_risk_cut": 0.9,
+    "reference_policy": "completed pre-evaluation inner rolling origins only"
+  },
+  "evaluation": {
+    "early_lag_max": 14,
+    "bootstrap_repetitions": 500,
+    "scale": "raw reporting scale"
+  },
+  "required_validation": [
+    "report all settings with each run",
+    "report sensitivity analyses for routing bandwidth, history windows, and support thresholds",
+    "do not describe these constants as data-selected unless a completed inner-origin selection artifact is supplied"
+  ]
+}

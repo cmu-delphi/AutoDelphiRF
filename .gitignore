@@ -22,5 +22,20 @@ autodelphirf_work/
 output/
 results/
 
+# Experiment definitions (configs and run scripts) are source; their generated
+# logs, prepared data, fitted models, and result bundles are local artifacts.
+experiments/*/logs/
+experiments/*/work/
+
+# Local research materials and data-specific study artifacts. These may contain
+# real data, generated reports, fitted outputs, or unpublished thesis work.
+/research/
+/Jingjing_Thesis-*.pdf
+/examples/thesis/
+/experiments/
+/data/
+/reports/
+/intermediate/
+
 # OS
 .DS_Store

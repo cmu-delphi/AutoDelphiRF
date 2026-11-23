@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from autodelphirf.prepare import (DEFAULT_FIRST_ORIGIN_OFFSET_DAYS, DEFAULT_RETRAIN_DAYS,
+from autodelphirf.pre_diagnosis.preparation import (DEFAULT_FIRST_ORIGIN_OFFSET_DAYS, DEFAULT_RETRAIN_DAYS,
                                      PreparationError, retraining_calendar)
 
 

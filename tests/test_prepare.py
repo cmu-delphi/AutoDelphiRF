@@ -14,8 +14,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from autodelphirf import prepare
-from autodelphirf.prepare import (PreparationError, build_spec, diagnose_archive,
+from autodelphirf.pre_diagnosis import preparation as prepare
+from autodelphirf.pre_diagnosis.preparation import (PreparationError, build_spec, diagnose_archive,
                                      read_archive, write_dataset_config)
 
 from conftest import archive_frame
@@ -24,7 +24,9 @@ from conftest import archive_frame
 @pytest.fixture
 def archive_csv(tmp_path):
     path = tmp_path / "archive.csv"
-    archive_frame().to_csv(path, index=False)
+    # Episodes reach lag 70, so target-lag evidence has eligible episodes
+    # (largest lag of at least 60 days).
+    archive_frame(max_lag=70).to_csv(path, index=False)
     return path
 
 
@@ -55,10 +57,16 @@ def test_missing_columns_are_named_with_what_is_actually_present(tmp_path):
 
 # --- column-mapping validation -------------------------------------------
 
-def test_fraction_signal_requires_two_value_columns(tmp_path, archive_csv):
-    with pytest.raises(PreparationError, match="exactly two value columns"):
+def test_fraction_signal_accepts_one_precomputed_rate_column(tmp_path, archive_csv):
+    spec = build_spec("d", archive_csv, tmp_path / "out", value_type="fraction",
+                      value_cols=("value",), target_lag=21)
+    assert spec.value_cols == ("value",)
+
+
+def test_fraction_signal_rejects_more_than_two_value_columns(tmp_path, archive_csv):
+    with pytest.raises(PreparationError, match="one precomputed rate column or two columns"):
         build_spec("d", archive_csv, tmp_path / "out", value_type="fraction",
-                   value_cols=("value",))
+                   value_cols=("value", "numerator", "denominator"))
 
 
 def test_count_signal_rejects_two_value_columns(tmp_path, archive_csv):
@@ -81,7 +89,7 @@ def test_calendar_endpoints_must_be_given_together(tmp_path, archive_csv):
 
 def test_invalid_temporal_resolution_is_rejected(tmp_path, archive_csv):
     with pytest.raises(PreparationError, match="daily.*weekly"):
-        build_spec("d", archive_csv, tmp_path / "out", temporal_resol="hourly")
+        build_spec("d", archive_csv, tmp_path / "out", temporal_resol="hourly", target_lag=21)
 
 
 # --- diagnosis ------------------------------------------------------------
@@ -92,7 +100,9 @@ def test_diagnosis_recovers_the_archive_shape(archive_csv):
                                  value_cols=("value",), value_type="count")
     assert diagnosis["n_locations"] == 2
     assert diagnosis["temporal_resolution"] == "daily"
-    assert diagnosis["resolved_target_lag"] > 0
+    assert diagnosis["resolved_target_lag"] is None
+    assert diagnosis["target_lag_resolution"] == "awaiting_user_choice"
+    assert diagnosis["target_lag_suggested_range"]["upper"] > 0
 
 
 def test_single_location_archive_is_diagnosed_not_rejected(tmp_path):
@@ -105,11 +115,13 @@ def test_single_location_archive_is_diagnosed_not_rejected(tmp_path):
                                  value_type="count")
     assert diagnosis["n_locations"] == 1
     assert any("single-location" in note for note in diagnosis["notes"])
+    assert any("pool across lags" in note for note in diagnosis["notes"])
+    assert any("cross-location pooling is not possible" in note for note in diagnosis["notes"])
 
 
 def test_fraction_signals_are_diagnosed_on_the_ratio_not_the_numerator(tmp_path):
     """A rate's revision behaviour is the rate's, not its numerator's."""
-    frame = archive_frame(days=120, locations=("aa",))
+    frame = archive_frame(days=120, max_lag=70, locations=("aa",))
     # A numerator that never settles, over a denominator that tracks it: the
     # RATIO is stable from lag 0, so diagnosing the numerator alone would
     # report a long target lag where the modelled quantity needs a short one.
@@ -123,22 +135,28 @@ def test_fraction_signals_are_diagnosed_on_the_ratio_not_the_numerator(tmp_path)
     numerator_only = diagnose_archive(path, geo_col="geo_value", reference_col="reference_date",
                                       report_col="report_date", value_cols=("numerator",),
                                       value_type="count")
-    assert ratio["resolved_target_lag"] < numerator_only["resolved_target_lag"]
+    assert (ratio["target_lag_suggested_range"]["upper"]
+            < numerator_only["target_lag_suggested_range"]["upper"])
 
 
 # --- what gets handed to DelphiRF -----------------------------------------
 
-def test_diagnosed_settings_are_used_when_nothing_is_overridden(tmp_path, archive_csv):
-    spec = build_spec("d", archive_csv, tmp_path / "out")
-    assert spec.overrides == ()
-    assert spec.ref_lag == spec.diagnosis["resolved_target_lag"]
+def test_preparation_stops_for_a_target_lag_decision(tmp_path, archive_csv):
+    with pytest.raises(PreparationError, match="requires a user decision"):
+        build_spec("d", archive_csv, tmp_path / "out")
+
+
+def test_diagnosed_settings_are_used_except_for_explicit_target_lag(tmp_path, archive_csv):
+    spec = build_spec("d", archive_csv, tmp_path / "out", target_lag=21)
+    assert spec.overrides == ("target_lag",)
+    assert spec.ref_lag == 21
     assert spec.temporal_resol == spec.diagnosis["temporal_resolution"]
     assert list(spec.lag_terms) == spec.diagnosis["reference_axis_feature_lags"]
 
 
 def test_each_override_is_recorded_so_provenance_survives(tmp_path, archive_csv):
     spec = build_spec("d", archive_csv, tmp_path / "out", temporal_resol="weekly",
-                      lag_terms=(7, 14), training_days=365, smoothed=False)
+                      lag_terms=(7, 14), training_days=365, smoothed=False, target_lag=21)
     assert set(spec.overrides) >= {"temporal_resol", "lag_terms", "training_days", "smoothed"}
     assert spec.temporal_resol == "weekly"
     assert spec.lag_terms == (7, 14)
@@ -146,63 +164,107 @@ def test_each_override_is_recorded_so_provenance_survives(tmp_path, archive_csv)
     assert spec.smoothed is False
 
 
-def test_a_user_target_lag_is_reconciled_with_the_diagnosis_rather_than_taken_blindly(
+def test_a_user_target_lag_is_always_used_exactly(
         tmp_path, archive_csv):
-    """The longer target lag wins by default; the disagreement is kept on record."""
     spec = build_spec("d", archive_csv, tmp_path / "out", target_lag=120)
     assert "target_lag" in spec.overrides
     assert spec.diagnosis["user_target_lag"] == 120
-    assert spec.ref_lag == 120                     # larger than diagnosed -> kept
-    assert spec.diagnosis["target_lag_confirmation_prompt"]
+    assert spec.ref_lag == 120
+    assert spec.diagnosis["target_lag_resolution"] == "user_choice"
+    assert spec.diagnosis["target_lag_confirmation_prompt"] is None
+
+
+def test_target_lag_cannot_exceed_the_modelled_two_year_horizon(tmp_path, archive_csv):
+    with pytest.raises(PreparationError, match="between 1 and 730 days"):
+        build_spec("d", archive_csv, tmp_path / "out", target_lag=731)
 
 
 def test_the_target_column_follows_the_smoothing_choice(tmp_path, archive_csv):
     """The schedule must name the column data_preprocessing actually writes."""
-    smoothed = build_spec("d", archive_csv, tmp_path / "out", smoothed=True)
-    unsmoothed = build_spec("d", archive_csv, tmp_path / "out", smoothed=False)
+    smoothed = build_spec("d", archive_csv, tmp_path / "out", smoothed=True, target_lag=21)
+    unsmoothed = build_spec("d", archive_csv, tmp_path / "out", smoothed=False, target_lag=21)
     assert smoothed.target_column == "log_value_target_7dav"
     assert unsmoothed.target_column == "log_value_target"
 
 
 def test_weekly_streams_get_no_weekday_encoding(tmp_path, archive_csv):
-    """There is no within-week reporting structure in a weekly stream to encode."""
-    weekly = build_spec("d", archive_csv, tmp_path / "out", temporal_resol="weekly")
-    daily = build_spec("d", archive_csv, tmp_path / "out", temporal_resol="daily")
-    assert weekly.onehot_weekdays == {}
-    assert daily.onehot_weekdays
+    """There is no within-week reporting structure in a weekly stream to model."""
+    weekly = build_spec("d", archive_csv, tmp_path / "out", temporal_resol="weekly", target_lag=21)
+    daily = build_spec("d", archive_csv, tmp_path / "out", temporal_resol="daily", target_lag=21)
+    assert weekly.weekday_groups == {}
+    assert daily.weekday_groups
+
+
+def test_weekday_groups_are_model_settings_not_preprocessing_arguments(tmp_path, archive_csv):
+    spec = build_spec("d", archive_csv, tmp_path / "out",
+                      temporal_resol="daily", weekday_groups={"weekend": [6, 7]},
+                      target_lag=21)
+    payload = spec.to_r_spec()
+    assert payload["weekday_groups"] == {"weekend": ["Sat", "Sun"]}
+    assert payload["weekday_groups_source"] == "manual"
+    assert "onehot_weekdays" not in payload
+
+
+def test_pre_diagnosis_chooses_model_groups_from_observed_report_weekdays(
+        tmp_path, archive_csv, monkeypatch):
+    diagnosis = prepare.diagnose_archive(archive_csv, geo_col="geo_value",
+                                         reference_col="reference_date",
+                                         report_col="report_date", value_cols=("value",),
+                                         value_type="count")
+    diagnosis["temporal_resolution"] = "daily"
+    diagnosis["report_axis_weekdays"] = {"Wed": 0.5, "Fri": 0.5}
+    diagnosis["resolved_target_lag"] = 21
+    diagnosis["target_lag_resolution"] = "user_choice"
+    monkeypatch.setattr(prepare, "diagnose_archive", lambda *args, **kwargs: diagnosis)
+    spec = build_spec("d", archive_csv, tmp_path / "out", target_lag=21)
+    assert spec.weekday_groups == {"Fri": ["Fri"]}
+
+
+def test_weekday_groups_must_be_disjoint_and_leave_a_reference_day(tmp_path, archive_csv):
+    with pytest.raises(PreparationError, match="assigned to both"):
+        build_spec("d", archive_csv, tmp_path / "out", temporal_resol="daily",
+                   weekday_groups={"A": [1, 2], "B": [2]}, target_lag=21)
+    with pytest.raises(PreparationError, match="reference category"):
+        build_spec("d", archive_csv, tmp_path / "out", temporal_resol="daily",
+                   weekday_groups={f"day{day}": [day] for day in range(1, 8)},
+                   target_lag=21)
 
 
 def test_the_r_spec_is_json_serializable_with_no_python_objects(tmp_path, archive_csv):
     """It crosses a process boundary as JSON; a Path or numpy scalar breaks it."""
-    spec = build_spec("d", archive_csv, tmp_path / "out")
+    spec = build_spec("d", archive_csv, tmp_path / "out", target_lag=21)
     payload = json.loads(json.dumps(spec.to_r_spec()))
     assert payload["raw_csv"].endswith("archive.csv")
     assert isinstance(payload["ref_lag"], int)
+    assert payload["max_observed_lag_days"] == 730
     assert all(isinstance(term, int) for term in payload["lag_terms"])
 
 
 # --- the generated dataset config ----------------------------------------
 
 def test_the_written_config_loads_and_points_at_the_triangle(tmp_path, archive_csv):
-    from autodelphirf.config import load_dataset_config
+    from autodelphirf.core.config import load_dataset_config
 
-    spec = build_spec("mine", archive_csv, tmp_path / "work" / "mine")
+    spec = build_spec("mine", archive_csv, tmp_path / "work" / "mine", target_lag=21)
     config_path = write_dataset_config(spec, tmp_path / "work" / "mine.json",
                                        ("baseline_null", "red"))
     config = load_dataset_config(config_path)
     assert config.name == "mine"
     assert config.prepared_dir == spec.output_dir
     assert config.prediction_layers == ("baseline_null", "red")
+    # The weekday groups and lag terms live only in preparation.json.
+    assert config.revision_profile is None
+    assert "revision_profile" not in json.loads(config_path.read_text())
 
 
 def test_generated_config_paths_are_relative_so_the_directory_can_be_moved(
         tmp_path, archive_csv):
     import shutil
 
-    from autodelphirf.config import load_dataset_config
+    from autodelphirf.core.config import load_dataset_config
 
     work = tmp_path / "work"
-    spec = build_spec("mine", archive_csv, work / "mine")
+    spec = build_spec("mine", archive_csv, work / "mine", target_lag=21)
     spec.output_dir.mkdir(parents=True)
     config_path = write_dataset_config(spec, work / "mine.json", ("red",))
     assert not json.loads(config_path.read_text())["prepared_dir"].startswith("/")
@@ -239,7 +301,7 @@ def test_a_failing_r_bridge_is_reported_as_a_preparation_error(tmp_path, archive
 
     monkeypatch.setattr(prepare, "rscript_executable", lambda: "Rscript")
     monkeypatch.setattr(prepare.subprocess, "run", lambda *a, **k: Failed())
-    spec = build_spec("d", archive_csv, tmp_path / "out")
+    spec = build_spec("d", archive_csv, tmp_path / "out", target_lag=21)
     with pytest.raises(PreparationError, match="exit 3"):
         prepare.run_r_bridge(spec)
 
@@ -257,7 +319,7 @@ def test_the_spec_file_is_cleaned_up_even_when_r_fails(tmp_path, archive_csv, mo
 
     monkeypatch.setattr(prepare, "rscript_executable", lambda: "Rscript")
     monkeypatch.setattr(prepare.subprocess, "run", capture)
-    spec = build_spec("d", archive_csv, tmp_path / "out")
+    spec = build_spec("d", archive_csv, tmp_path / "out", target_lag=21)
     with pytest.raises(PreparationError):
         prepare.run_r_bridge(spec)
     assert not written["spec"].exists()
@@ -265,7 +327,7 @@ def test_the_spec_file_is_cleaned_up_even_when_r_fails(tmp_path, archive_csv, mo
 
 def test_the_r_bridge_script_ships_and_calls_delphirf(tmp_path, archive_csv):
     """The bridge must call DelphiRF, not reimplement its feature engineering."""
-    from autodelphirf.resources import resource_path
+    from autodelphirf.core.resources import resource_path
 
     source = resource_path("prepare_triangle.R").read_text()
     assert "data_preprocessing" in source

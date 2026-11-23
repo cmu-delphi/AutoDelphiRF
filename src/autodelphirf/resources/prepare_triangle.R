@@ -22,43 +22,31 @@ if (length(args) != 1) stop("usage: prepare_triangle.R SPEC_JSON", call. = FALSE
 spec <- fromJSON(args[[1]], simplifyVector = TRUE)
 
 # --- DelphiRF -------------------------------------------------------------
-# AutoDelphiRF's native methods may use the explicitly recorded local checkout for
-# preprocessing while an older installed DelphiRF is being updated. The path
-# is preserved in preparation.json, so the source of the triangle is auditable.
-if (!is.null(spec$delphirf_dir) && nzchar(spec$delphirf_dir)) {
-  if (!requireNamespace("pkgload", quietly = TRUE)) {
-    stop("loading the local DelphiRF checkout needs the R package 'pkgload'.", call. = FALSE)
-  }
-  suppressPackageStartupMessages(pkgload::load_all(spec$delphirf_dir, quiet = TRUE))
-} else {
-  if (!requireNamespace("DelphiRF", quietly = TRUE)) {
-    stop("DelphiRF is not installed and no local source checkout was configured.", call. = FALSE)
-  }
-  suppressPackageStartupMessages(library(DelphiRF))
+# Always the DelphiRF installed in R's library, never a source checkout, so the
+# triangle is built by the same package version that trains the models.
+if (!requireNamespace("DelphiRF", quietly = TRUE)) {
+  stop("DelphiRF is not installed; install it as the AutoDelphiRF README describes, e.g. ",
+       "remotes::install_github('cmu-delphi/DelphiRF@refactor-clean').", call. = FALSE)
 }
+suppressPackageStartupMessages(library(DelphiRF))
 
-preprocess <- get("data_preprocessing")
+preprocess <- DelphiRF::data_preprocessing
+# revision_start_lag: revision magnitudes are measured from the initial report
+# (l_min, Ch. 2), not from the lag-0 row that grid completion fills in.
 required_arguments <- c("ref_lag", "lagged_term_list", "value_type", "temporal_resol",
-                        "smoothed", "target_lag_lower_tolerance",
-                        "target_lag_upper_tolerance", "onehot_weekdays")
+                        "smoothed", "revision_start_lag")
 missing_arguments <- setdiff(required_arguments, names(formals(preprocess)))
 if (length(missing_arguments) > 0) {
   stop("the available DelphiRF::data_preprocessing() does not accept: ",
        paste(missing_arguments, collapse = ", "),
-       ". This is an older DelphiRF than RevRoute requires; update it with ",
-       "remotes::install_github('cmu-delphi/DelphiRF').", call. = FALSE)
+       ". This is an older DelphiRF than AutoDelphiRF requires; reinstall it as the ",
+       "AutoDelphiRF README describes.", call. = FALSE)
 }
 
 normalize_weekly <- NULL
 if (identical(spec$temporal_resol, "weekly")) {
-  normalize_weekly <- tryCatch(get("normalize_weekly_observations"),
+  normalize_weekly <- tryCatch(getFromNamespace("normalize_weekly_observations", "DelphiRF"),
                                error = function(e) NULL)
-  if (is.null(normalize_weekly)) {
-    normalize_weekly <- tryCatch(
-      if ("DelphiRF" %in% loadedNamespaces())
-        getFromNamespace("normalize_weekly_observations", "DelphiRF") else NULL,
-      error = function(e) NULL)
-  }
   if (is.null(normalize_weekly)) {
     stop("a weekly archive needs DelphiRF's normalize_weekly_observations(), which this ",
          "DelphiRF install does not provide. Install a current DelphiRF release.",
@@ -67,15 +55,19 @@ if (identical(spec$temporal_resol, "weekly")) {
 }
 
 # --- Raw archive ----------------------------------------------------------
-read_archive <- function(path) {
+# A location is a label, never a number: "01" and "1" are different locations,
+# so the geography column is always read as text.
+read_archive <- function(path, geo_col = NULL) {
+  text <- if (!is.null(geo_col) && nzchar(geo_col)) setNames(list(geo_col), "character") else NULL
   if (requireNamespace("data.table", quietly = TRUE)) {
-    return(as.data.frame(data.table::fread(path, showProgress = FALSE)))
+    return(as.data.frame(data.table::fread(path, showProgress = FALSE, colClasses = text)))
   }
-  utils::read.csv(path, stringsAsFactors = FALSE)
+  utils::read.csv(path, stringsAsFactors = FALSE,
+                  colClasses = if (is.null(text)) NA else setNames("character", geo_col))
 }
 
 message("Reading ", spec$raw_csv)
-raw_all <- read_archive(spec$raw_csv)
+raw_all <- read_archive(spec$raw_csv, spec$geo_col)
 
 reference_col <- spec$reference_col
 report_col <- spec$report_col
@@ -87,24 +79,132 @@ if (length(missing_columns) > 0) {
        ". Present: ", paste(utils::head(names(raw_all), 40), collapse = ", "), call. = FALSE)
 }
 
-raw_all[[reference_col]] <- as.Date(raw_all[[reference_col]])
-raw_all[[report_col]] <- as.Date(raw_all[[report_col]])
+# The shared raw-archive contract (resources/raw_archive_contract.json). This
+# script implements version 2 and refuses any other.
+SUPPORTED_RAW_CONTRACT_VERSION <- 2L
+if (is.null(spec$raw_contract_version) ||
+    as.integer(spec$raw_contract_version) != SUPPORTED_RAW_CONTRACT_VERSION) {
+  stop("unsupported raw-archive contract version ", format(spec$raw_contract_version),
+       "; this preparation script implements version ", SUPPORTED_RAW_CONTRACT_VERSION,
+       call. = FALSE)
+}
+
+# A date is the calendar date written at the start of the value: 2024-12-06
+# and 2024-12-06T00:00:00Z are the same day, and a time of day or UTC offset
+# is ignored, never converted. Anything else is invalid (removed below), not
+# an error. Python's calendar_dates() applies the same rule.
+calendar_dates <- function(values) {
+  text <- trimws(as.character(values))
+  text[!grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}($|[T ])", text)] <- NA_character_
+  as.Date(substr(text, 1L, 10L), format = "%Y-%m-%d")
+}
+raw_all[[reference_col]] <- calendar_dates(raw_all[[reference_col]])
+raw_all[[report_col]] <- calendar_dates(raw_all[[report_col]])
 raw_all$lag <- as.integer(raw_all[[report_col]] - raw_all[[reference_col]])
+
+
+# Cleaning, in the order the Python diagnosis applies the same rules
+# (pre_diagnosis/archive.py clean_raw_archive), with this stage's scope: the
+# as-of date and the feature horizon (target lag + 100 days, at most two
+# years). Every removal is counted in raw_cleaning_audit.json.
+audit <- list(scope = "feature_preparation",
+              contract_version = as.integer(spec$raw_contract_version),
+              input_rows = nrow(raw_all))
+keep_rows <- function(frame, mask, name) {
+  mask[is.na(mask)] <- FALSE
+  audit[[name]] <<- sum(!mask)
+  frame[mask, , drop = FALSE]
+}
 
 if (!is.null(spec$geo_col) && nzchar(spec$geo_col)) {
   raw_all$geo_value <- as.character(raw_all[[spec$geo_col]])
-} else if (!("geo_value" %in% names(raw_all))) {
+  # A declared geography column must name a location on every row: missing or
+  # blank labels are invalid and dropped, as in the Python diagnosis.
+  raw_all <- keep_rows(raw_all, !(is.na(raw_all$geo_value) | trimws(raw_all$geo_value) == ""),
+                       "missing_location_rows")
+  if (nrow(raw_all) == 0) {
+    stop("the geography column '", spec$geo_col, "' has no valid location on any row; ",
+         "check --geo-col, or use --no-geo for a single-location archive", call. = FALSE)
+  }
+} else {
+  # --no-geo is an explicit declaration that this is one series. Force the
+  # synthetic label even if an unrelated column happens to be named
+  # geo_value, so the choice can never be silently reinterpreted.
   raw_all$geo_value <- spec$constant_geo
+  audit$missing_location_rows <- 0L
 }
 
-raw_all <- raw_all[!is.na(raw_all[[reference_col]]) & !is.na(raw_all[[report_col]]), , drop = FALSE]
+raw_all <- keep_rows(raw_all, !is.na(raw_all[[reference_col]]) & !is.na(raw_all[[report_col]]),
+                     "invalid_date_rows")
+
+# The archive's as-of date is the last report date anyone could have seen. An
+# explicit as-of date replays an earlier state of the archive, so nothing
+# reported after it may enter the triangle.
+explicit_as_of <- !is.null(spec$as_of_date) && nzchar(spec$as_of_date)
+as_of_date <- if (explicit_as_of) as.Date(spec$as_of_date) else max(raw_all[[report_col]])
+audit$effective_as_of_date <- format(as_of_date)
+audit$as_of_source <- if (explicit_as_of) "explicit" else "inferred"
+raw_all <- keep_rows(raw_all, raw_all[[report_col]] <= as_of_date, "future_report_rows")
+audit$max_visible_report_date <- format(max(raw_all[[report_col]]))
+
+# A row without a usable value is not an observation. For a numerator and
+# denominator pair the value is their ratio, undefined unless both are present
+# and the denominator is positive. Value columns become numeric here.
+for (column in value_cols) raw_all[[column]] <- suppressWarnings(as.numeric(raw_all[[column]]))
+observed_value <- if (length(value_cols) == 2L) {
+  !is.na(raw_all[[value_cols[[1]]]]) & !is.na(raw_all[[value_cols[[2]]]]) &
+    raw_all[[value_cols[[2]]]] > 0
+} else {
+  !is.na(raw_all[[value_cols[[1]]]])
+}
+raw_all <- keep_rows(raw_all, observed_value, "unusable_value_rows")
+
 # A negative lag is a report filed before its own reference date: not a
-# revision, so it is dropped rather than modelled. The upper bound keeps the
-# follow-up needed for the target plus a margin, and nothing beyond it.
-raw_all <- raw_all[raw_all$lag >= 0 & raw_all$lag <= spec$ref_lag + 100, , drop = FALSE]
+# revision. The upper bound keeps the follow-up needed for the target plus a
+# margin, without exceeding the two-year horizon of the diagnosis.
+effective_max_lag <- min(spec$ref_lag + 100, spec$max_observed_lag_days)
+audit$lag_upper_bound <- as.integer(effective_max_lag)
+raw_all <- keep_rows(raw_all, raw_all$lag >= 0, "negative_lag_rows")
+raw_all <- keep_rows(raw_all, raw_all$lag <= effective_max_lag, "over_lag_limit_rows")
+
+# Several rows for one (location, reference date, report date) are one release
+# reported more than once. Keep the last in file order, the same rule as the
+# Python diagnosis (drop_duplicates(keep="last")), so DelphiRF sees one value.
+raw_all <- keep_rows(raw_all, !duplicated(raw_all[, c("geo_value", reference_col, report_col)],
+                                          fromLast = TRUE),
+                     "duplicate_rows_removed")
+audit$retained_rows <- nrow(raw_all)
+audit$retained_locations <- length(unique(raw_all$geo_value))
+dir.create(spec$output_dir, recursive = TRUE, showWarnings = FALSE)
+audit_fields <- c("scope", "contract_version", "effective_as_of_date", "as_of_source",
+                  "max_visible_report_date", "lag_upper_bound", "input_rows",
+                  "missing_location_rows", "invalid_date_rows", "future_report_rows",
+                  "unusable_value_rows", "negative_lag_rows", "over_lag_limit_rows",
+                  "duplicate_rows_removed", "retained_rows", "retained_locations")
+write_audit <- function() {
+  jsonlite::write_json(audit[intersect(c(audit_fields, "experiment_window",
+                                         "outside_experiment_window_rows", "min_location_rows",
+                                         "skipped_location_rows"), names(audit))],
+                       file.path(spec$output_dir, "raw_cleaning_audit.json"),
+                       auto_unbox = TRUE, pretty = TRUE)
+}
+write_audit()
+removed <- unlist(audit[grepl("_rows(_removed)?$", names(audit)) &
+                         !names(audit) %in% c("input_rows", "retained_rows")])
+if (any(removed > 0)) {
+  message("Raw-archive cleaning removed: ",
+          paste(sprintf("%s=%d", names(removed)[removed > 0], removed[removed > 0]),
+                collapse = ", "))
+}
+if (isTRUE(spec$write_cleaned_releases)) {
+  utils::write.csv(raw_all[, c("geo_value", reference_col, report_col, value_cols)],
+                   file.path(spec$output_dir, "cleaned_releases.csv"), row.names = FALSE)
+}
 if (nrow(raw_all) == 0) {
-  stop("no rows left after dropping negative lags and lags beyond ref_lag + 100 (ref_lag=",
-       spec$ref_lag, "). Check that reference/report columns are not swapped.", call. = FALSE)
+  stop("no rows left after keeping lags from 0 through ", effective_max_lag,
+       " days (target lag=", spec$ref_lag, ", archive lag cap=",
+       spec$max_observed_lag_days,
+       "). Check that reference/report columns are not swapped.", call. = FALSE)
 }
 
 # --- Experiment calendar --------------------------------------------------
@@ -137,9 +237,16 @@ if (length(test_dates) == 0) {
 
 # Keep a common target lag plus enough earlier reference dates for
 # every training window; this shrinks the grid without dropping eligible rows.
-min_reference <- min(test_dates) - spec$training_days - spec$ref_lag - spec$upper - 35
-max_report <- max(test_dates) + spec$ref_lag
-raw_all <- raw_all[raw_all[[reference_col]] >= min_reference & raw_all[[report_col]] <= max_report, ,
+# Every release up to the as-of date is kept for the forecast windows, and the
+# target of the last window's cases needs releases through its end plus L.
+min_reference <- min(test_dates) - spec$training_days - spec$ref_lag - 35
+max_report <- min(as_of_date, as.Date(experiment_end_date) + spec$ref_lag)
+# Stage-specific scope beyond the shared contract: the experiment window.
+in_window <- raw_all[[reference_col]] >= min_reference & raw_all[[report_col]] <= max_report
+audit$experiment_window <- list(min_reference_date = format(min_reference),
+                                max_report_date = format(as.Date(max_report)))
+audit$outside_experiment_window_rows <- sum(!in_window)
+raw_all <- raw_all[in_window, ,
                    drop = FALSE]
 if (nrow(raw_all) == 0) {
   stop("no rows fall inside the experiment window (reference >= ", min_reference,
@@ -150,10 +257,6 @@ if (nrow(raw_all) == 0) {
 # --- Per-location preprocessing ------------------------------------------
 output_dir <- spec$output_dir
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
-
-weekdays_spec <- spec$onehot_weekdays
-if (is.null(weekdays_spec)) weekdays_spec <- list()
-weekdays_spec <- lapply(weekdays_spec, as.character)
 
 write_triangle <- function(frame, stem) {
   if (identical(spec$triangle_format, "csv")) {
@@ -168,6 +271,14 @@ write_triangle <- function(frame, stem) {
 if (!identical(spec$triangle_format, "csv") && !requireNamespace("arrow", quietly = TRUE)) {
   stop("writing Parquet triangles needs the 'arrow' R package; install it, or pass ",
        "--triangle-format csv.", call. = FALSE)
+}
+
+# DelphiRF's daily mode lays reference dates out day by day. Days absent from
+# the archive are synthetic episodes (all zero) and are removed. Forward-filled
+# rows of real episodes are kept: they carry each real episode's trajectory.
+drop_synthetic_reference_dates <- function(prepared, raw) {
+  real <- unique(as.Date(raw[[reference_col]]))
+  prepared[as.Date(prepared$reference_date) %in% real, , drop = FALSE]
 }
 
 locations <- sort(unique(raw_all$geo_value))
@@ -194,9 +305,7 @@ for (i in seq_along(locations)) {
                ref_lag = spec$ref_lag, lagged_term_list = as.numeric(spec$lag_terms),
                value_type = spec$value_type, temporal_resol = spec$temporal_resol,
                smoothed = spec$smoothed,
-               target_lag_lower_tolerance = spec$lower,
-               target_lag_upper_tolerance = spec$upper,
-               target_as_of_date = NULL, onehot_weekdays = weekdays_spec),
+               target_as_of_date = max_report),
     error = function(e) {
       message("  ", location, ": data_preprocessing() failed -- ", conditionMessage(e))
       NULL
@@ -208,6 +317,7 @@ for (i in seq_along(locations)) {
     next
   }
   prepared$geo_value <- location
+  prepared <- drop_synthetic_reference_dates(prepared, raw)
 
   write_triangle(prepared, location)
   inventory[[length(inventory) + 1]] <- data.frame(
@@ -216,6 +326,14 @@ for (i in seq_along(locations)) {
     min_report = min(prepared$report_date), max_report = max(prepared$report_date))
   if (i %% 5 == 0) message("Prepared ", i, " of ", length(locations), " locations")
 }
+
+# Stage-specific scope: locations too small to prepare (or that DelphiRF could
+# not prepare) are skipped; their rows are recorded in the audit.
+audit$min_location_rows <- as.integer(spec$min_location_rows)
+audit$skipped_location_rows <- if (length(skipped)) {
+  as.integer(sum(vapply(skipped, function(row) as.numeric(row$raw_rows), numeric(1))))
+} else 0L
+write_audit()
 
 if (length(inventory) == 0) {
   stop("no location produced a prepared triangle. ",
@@ -238,8 +356,7 @@ utils::write.csv(
              testing_days = spec$testing_days,
              experiment_end_date = as.Date(experiment_end_date),
              target_column = spec$target_column,
-             target_lag_lower_tolerance = spec$lower,
-             target_lag_upper_tolerance = spec$upper,
+             target_as_of_date = as.Date(max_report),
              temporal_resolution = spec$temporal_resol),
   file.path(output_dir, "test_dates.csv"), row.names = FALSE)
 writeLines(normalizePath(spec$raw_csv), file.path(output_dir, "raw_source.txt"))

@@ -16,13 +16,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from autodelphirf.diagnosis import diagnose_prepared_data, diagnose_target_lag
-from autodelphirf.ingest import diagnose_raw_archive
-from autodelphirf.pipeline import (INTEGER_COLUMNS, apply_input_schema, build_cases,
+from autodelphirf.pre_diagnosis.diagnosis import (diagnose_prepared_data,
+                                                  resolve_target_lag)
+from autodelphirf.pre_diagnosis.archive import diagnose_raw_archive
+from autodelphirf.workflow.run import (INTEGER_COLUMNS, build_cases,
                                       normalize_lag_dtypes)
-from autodelphirf.resources import load_resource
 
-CANONICAL = load_resource("prepared_triangle_schema.json")["columns"]
 
 
 def prepared_frame(rows: int = 6, **overrides) -> pd.DataFrame:
@@ -82,11 +81,6 @@ def test_a_fractional_lag_is_refused_rather_than_truncated():
         normalize_lag_dtypes(frame)
 
 
-def test_normalization_happens_inside_apply_input_schema():
-    """The single choke point: no downstream module should have to care."""
-    frame = prepared_frame().astype({"lag": "float64"})
-    normalized = apply_input_schema(frame, CANONICAL)
-    assert normalized.lag.dtype == np.dtype("int64")
 
 
 def test_a_triangle_missing_a_lag_column_entirely_is_not_broken_by_normalization():
@@ -99,88 +93,7 @@ def test_the_normalized_columns_are_the_join_keys_downstream_uses():
     assert set(INTEGER_COLUMNS) == {"lag", "target_lag"}
 
 
-# --- target-lag diagnosis edge cases (regression) --------------------------
-
-def diagnosis_frame(max_lag: int, episodes: int = 40) -> pd.DataFrame:
-    rows = []
-    for episode in range(episodes):
-        reference_date = pd.Timestamp("2024-01-01") + pd.Timedelta(days=episode)
-        for lag in range(max_lag + 1):
-            rows.append({"geo_value": "aa", "reference_date": reference_date,
-                         "report_date": reference_date + pd.Timedelta(days=lag),
-                         "lag": lag, "value_7dav": 100.0 * (1 - 0.5 * np.exp(-lag / 3))})
-    return pd.DataFrame(rows)
-
-
-def test_a_triangle_shorter_than_the_cadence_reports_instead_of_crashing():
-    """No cadence-aligned target lag exists below lag 7; that is a status, not a stack trace."""
-    result = diagnose_target_lag(diagnosis_frame(max_lag=6), value_column="value_7dav")
-    assert result["selected_target_lag"] is None
-    assert "no candidate target lag" in result["status"]
-    # The message must say what to do about it.
-    assert "cadence_days" in result["status"]
-    assert result["completion"] == []
-
-
-def test_the_reported_ceiling_is_the_triangles_own_reach():
-    result = diagnose_target_lag(diagnosis_frame(max_lag=5), value_column="value_7dav")
-    assert result["rule"]["max_lag_examined"] == 5
-
-
-def test_a_shorter_cadence_finds_a_target_lag_in_the_same_short_triangle():
-    """Confirms the early return is about the cadence, not about the data being unusable."""
-    result = diagnose_target_lag(diagnosis_frame(max_lag=6), value_column="value_7dav",
-                                 cadence_days=2)
-    assert result["selected_target_lag"] is not None
-
-
-def test_a_missing_value_column_is_reported_by_name():
-    result = diagnose_target_lag(diagnosis_frame(max_lag=30), value_column="absent_column")
-    assert result["selected_target_lag"] is None
-    assert "absent_column" in result["status"]
-
-
-def test_an_all_future_selection_cutoff_empties_the_frame_cleanly():
-    result = diagnose_target_lag(diagnosis_frame(max_lag=30), value_column="value_7dav",
-                                 selection_cutoff="2000-01-01")
-    assert result["selected_target_lag"] is None
-    assert "selection cutoff" in result["status"]
-
-
-@pytest.mark.parametrize("bad", [{"completion_rate": 0}, {"completion_rate": 1.5},
-                                 {"relative_error": -0.1}, {"cadence_days": 0}])
-def test_invalid_rule_settings_are_rejected(bad):
-    with pytest.raises(ValueError, match="invalid target-lag rule"):
-        diagnose_target_lag(diagnosis_frame(max_lag=30), value_column="value_7dav", **bad)
-
-
-def test_follow_up_requirement_can_exclude_every_episode_without_crashing():
-    result = diagnose_target_lag(diagnosis_frame(max_lag=30), value_column="value_7dav",
-                                 min_followup_days=999)
-    assert result["selected_target_lag"] is None
-    assert result["completion"] == []
-
-
-def test_target_lag_requires_ninety_percent_of_tasks_within_tolerance():
-    rows = []
-    for episode in range(10):
-        reference_date = pd.Timestamp("2024-01-01") + pd.Timedelta(days=episode)
-        values = {0: 40.0, 7: 90.0 if episode < 6 else 50.0,
-                  14: 90.0, 21: 100.0}
-        for lag, value in values.items():
-            rows.append({"geo_value": "aa", "reference_date": reference_date,
-                         "report_date": reference_date + pd.Timedelta(days=lag),
-                         "lag": lag, "value_7dav": value})
-    result = diagnose_target_lag(pd.DataFrame(rows), value_column="value_7dav")
-    by_lag = {item["lag"]: item for item in result["completion"]}
-
-    # At lag 7 the median error is 10%, but just 60% of tasks are within
-    # 10%. The former median rule selected lag 7; the 90%-of-tasks rule must not.
-    assert by_lag[7]["median_relative_error"] == pytest.approx(0.1)
-    assert by_lag[7]["within_tolerance_rate"] == pytest.approx(0.6)
-    assert result["selected_target_lag"] == 14
-    assert result["within_tolerance_rate"] == pytest.approx(1.0)
-
+# --- raw-archive target-lag diagnosis --------------------------------------
 
 def test_raw_archive_target_lag_uses_the_same_ninety_percent_rule():
     rows = []
@@ -201,39 +114,93 @@ def test_raw_archive_target_lag_uses_the_same_ninety_percent_rule():
     # now uses the 90%-of-tasks completion rule.
     assert report.target_lag_completion_curve[7] == pytest.approx(0.1)
     assert report.target_lag_completion_curve[14] == pytest.approx(0.1)
-    assert report.target_lag_completion_band[7] == pytest.approx({"q10": 0.1, "q90": 0.5})
-    assert report.target_lag_completion_band[14] == pytest.approx({"q10": 0.1, "q90": 0.1})
-    assert report.recommended_target_lag == 14
+    assert report.target_lag_completion_band[7]["q10"] == pytest.approx(0.1)
+    assert report.target_lag_completion_band[7]["q60"] == pytest.approx(0.26)
+    assert report.target_lag_completion_band[7]["q75"] == pytest.approx(0.5)
+    assert report.target_lag_completion_band[7]["q90"] == pytest.approx(0.5)
+    assert report.target_lag_completion_band[7]["q95"] == pytest.approx(0.5)
+    assert report.target_lag_completion_band[14]["q10"] == pytest.approx(0.1)
+    assert report.target_lag_completion_band[14]["q90"] == pytest.approx(0.1)
+    assert report.target_lag_suggested_range == {
+        "lower": 14, "upper": 21, "completion_rate": 0.9,
+        "lower_relative_error": 0.10, "upper_relative_error": 0.01}
+    assert report.available_target_lags == [7, 14, 21]
+    assert report.resolved_target_lag is None
+
+
+def test_raw_archive_default_diagnoses_every_observed_positive_lag():
+    reference = pd.Timestamp("2024-01-01")
+    raw = pd.DataFrame([
+        {"geo_value": "aa", "reference_date": reference,
+         "report_date": reference + pd.Timedelta(days=lag), "value": value}
+        for lag, value in ((0, 5.0), (7, 8.0), (8, 9.0), (14, 10.0))
+    ])
+    report = diagnose_raw_archive(raw, late_observation_floor_days=0)
+
+    assert report.available_target_lags == [7, 8, 14]
+    assert sorted(report.target_lag_completion_curve) == [7, 8, 14]
+
+
+def test_raw_diagnosis_ignores_observations_after_two_years():
+    reference = pd.Timestamp("2022-01-01")
+    raw = pd.DataFrame([
+        {"geo_value": "aa", "reference_date": reference,
+         "report_date": reference + pd.Timedelta(days=lag), "value": float(lag)}
+        for lag in (0, 7, 730, 731, 900)
+    ])
+
+    report = diagnose_raw_archive(raw, late_observation_floor_days=0)
+
+    assert report.n_rows == 3
+    assert report.max_observed_lag_days == 730
+    assert report.available_target_lags == [7, 730]
+    assert sorted(report.target_lag_completion_curve) == [7, 730]
+
+
+def test_raw_diagnosis_uses_observed_reports_directly_without_a_genuine_event_concept():
+    reference = pd.Timestamp("2024-01-01")
+    raw = pd.DataFrame([
+        {"geo_value": "aa", "reference_date": reference,
+         "report_date": reference + pd.Timedelta(days=lag), "value": value}
+        for lag, value in ((0, 10.0), (1, 10.0), (2, 12.0))
+    ])
+
+    report = diagnose_raw_archive(raw, late_observation_floor_days=0)
+
+    # The first release and the unchanged repeat are both raw observations.
+    # Their spacing is diagnosed directly; genuine_event only becomes useful
+    # after DelphiRF adds completed-grid rows.
+    assert report.observed_report_gap_days == {
+        "n": 2, "q25": 1.0, "median": 1.0, "q75": 1.0,
+        "most_common_gap_days": {1: 2}}
+    payload = report.to_dict()
+    assert "genuine_event_rate" not in payload
+    assert "genuine_event_weekday_share" not in payload
+
+
+@pytest.mark.parametrize("chosen", [1, 14, 21, 400])
+def test_user_target_lag_always_wins_without_range_reconciliation(chosen):
+    diagnosed = {"selected_target_lag": None,
+                 "suggested_target_lag_range": {"lower": 14, "upper": 21}}
+    resolved, reason = resolve_target_lag(diagnosed, chosen, False, "example")
+    assert resolved == chosen
+    assert reason == "explicit user choice"
+
+
+def test_pipeline_target_lag_resolution_stops_without_a_user_choice():
+    diagnosed = {"suggested_target_lag_range": {"lower": 14, "upper": 21}}
+    with pytest.raises(ValueError, match="Set target_lag explicitly"):
+        resolve_target_lag(diagnosed, None, False, "example")
 
 
 # --- input schema ---------------------------------------------------------
 
-def test_a_mapping_missing_a_semantic_field_is_refused():
-    incomplete = {k: v for k, v in CANONICAL.items() if k != "target_date"}
-    with pytest.raises(ValueError, match="target_date"):
-        apply_input_schema(prepared_frame(), incomplete)
 
 
-def test_a_source_column_that_is_absent_from_the_triangle_is_named():
-    mapping = {**CANONICAL, "geo_value": "location_id"}
-    with pytest.raises(ValueError, match="location_id"):
-        apply_input_schema(prepared_frame(), mapping)
 
 
-def test_renaming_onto_an_existing_column_is_refused_rather_than_silently_dropping_one():
-    frame = prepared_frame().assign(location_id=["aa"] * 6)
-    mapping = {**CANONICAL, "geo_value": "location_id"}
-    with pytest.raises(ValueError, match="existing column"):
-        apply_input_schema(frame, mapping)
 
 
-def test_noncanonical_source_names_are_renamed_to_the_internal_schema():
-    frame = prepared_frame().rename(columns={"geo_value": "location_id",
-                                             "log_value_7dav": "log_current"})
-    mapping = {**CANONICAL, "geo_value": "location_id", "as_of_value": "log_current"}
-    renamed = apply_input_schema(frame, mapping)
-    assert "geo_value" in renamed and "log_value_7dav" in renamed
-    assert "location_id" not in renamed
 
 
 # --- case construction ----------------------------------------------------
@@ -262,9 +229,11 @@ def test_genuine_event_filtering_keeps_exactly_the_genuine_rows():
     filtered = build_cases(prepared, schedule, True)
     unfiltered = build_cases(prepared, schedule, False)
     assert len(unfiltered) == 6 and len(filtered) == 3
-    # build_cases does not carry genuine_event into its output, so identity is
-    # checked on the report dates that survived.
     assert set(filtered.report_date) == set(prepared[prepared.genuine_event].report_date)
+    # Every case records whether it came from a real release, so an unfiltered
+    # run can still be evaluated on the genuine rows alone.
+    assert filtered.genuine_event.all()
+    assert unfiltered.genuine_event.tolist() == prepared.genuine_event.tolist()
 
 
 def test_a_missing_genuine_event_flag_is_treated_as_not_genuine():
@@ -276,21 +245,23 @@ def test_a_missing_genuine_event_flag_is_treated_as_not_genuine():
     assert len(build_cases(prepared, schedule, True)) == 2
 
 
-def test_a_triangle_without_a_genuine_event_column_is_not_filtered_away():
-    """The column is optional; its absence must not empty the case set."""
+def test_a_triangle_without_a_genuine_event_column_is_rejected():
     prepared = prepared_frame(rows=4).drop(columns=["genuine_event"]).assign(
         log_value_target_7dav=1.0)
     schedule = schedule_frame(test_date=[pd.Timestamp("2024-01-01")],
                               experiment_end_date=[pd.Timestamp("2024-02-01")])
-    assert len(build_cases(prepared, schedule, True)) == 4
+    with pytest.raises(ValueError, match="requires a genuine_event column"):
+        build_cases(prepared, schedule, True)
 
 
-def test_rows_with_no_available_target_value_are_excluded_from_evaluation():
-    """A case with no truth cannot be scored, so it is not a case."""
+def test_rows_with_no_available_target_value_remain_forecast_cases():
+    """Operational forecasts survive until their truth becomes available."""
     prepared = prepared_frame(rows=4).assign(log_value_target_7dav=[1.0, np.nan, 3.0, np.nan])
     schedule = schedule_frame(test_date=[pd.Timestamp("2024-01-01")],
                               experiment_end_date=[pd.Timestamp("2024-02-01")])
-    assert len(build_cases(prepared, schedule, True)) == 2
+    cases = build_cases(prepared, schedule, True)
+    assert len(cases) == 4
+    assert cases.truth.notna().sum() == 2
 
 
 # --- prepared-data diagnosis ---------------------------------------------

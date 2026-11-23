@@ -633,6 +633,7 @@ def write_dataset_config(spec: PreparationSpec, config_path: Path,
         "method_params": {},
         "comparator_file": None,
         "comparator_methods": {},
+        "reliability_reference_file": None,
     }
     config_path.write_text(json.dumps(payload, indent=2) + "\n")
     return config_path
